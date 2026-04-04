@@ -1,5 +1,7 @@
 # Jenking
 
+[![Latest Release](https://img.shields.io/github/v/release/Breina/Jenking)](https://github.com/Breina/Jenking/releases/latest)
+
 A terminal UI for Jenkins, inspired by [k9s](https://k9scli.io). Navigate jobs, monitor builds, and tail logs — without leaving your terminal.
 
 > **Alpha:** Core functionality works. Expect rough edges. Feedback welcome via [GitHub Issues](../../issues).
@@ -32,18 +34,21 @@ A terminal UI for Jenkins, inspired by [k9s](https://k9scli.io). Navigate jobs, 
 
 ### Pre-built binary (recommended)
 
-Download the latest release for your platform from the [Releases page](../../releases).
-
-**Linux / macOS:**
+**Linux (amd64):**
 ```sh
-# Replace X.Y.Z and <os>_<arch> with your values (e.g. linux_amd64, darwin_arm64)
-curl -Lo jenking https://github.com/Breina/Jenking/releases/download/vX.Y.Z/jenking_<os>_<arch>
-chmod +x jenking
-sudo mv jenking /usr/local/bin/
+curl -Lo jenking.tar.gz https://github.com/Breina/Jenking/releases/latest/download/jenking_linux_amd64.tar.gz
+tar -xzf jenking.tar.gz jenking && rm jenking.tar.gz
+chmod +x jenking && sudo mv jenking /usr/local/bin/
 ```
 
-**Windows:**
-Download the `.exe` from the Releases page and place it somewhere on your `%PATH%`.
+**macOS (Apple Silicon):**
+```sh
+curl -Lo jenking.tar.gz https://github.com/Breina/Jenking/releases/latest/download/jenking_darwin_arm64.tar.gz
+tar -xzf jenking.tar.gz jenking && rm jenking.tar.gz
+chmod +x jenking && sudo mv jenking /usr/local/bin/
+```
+
+Other platforms (macOS Intel, Windows, Linux arm64) are available on the [Releases page](../../releases).
 
 ### Via `go install`
 
