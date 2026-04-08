@@ -37,18 +37,20 @@ A terminal UI for Jenkins, inspired by [k9s](https://k9scli.io). Navigate jobs, 
 **Linux (amd64):**
 ```sh
 curl -Lo jenking.tar.gz https://github.com/Breina/Jenking/releases/latest/download/jenking_linux_amd64.tar.gz
-tar -xzf jenking.tar.gz jenking && rm jenking.tar.gz
-chmod +x jenking && sudo mv jenking /usr/local/bin/
+tar -xf jenking.tar.gz jenking && rm jenking.tar.gz
+chmod u+x jenking && sudo mv jenking /usr/local/bin/
 ```
 
 **macOS (Apple Silicon):**
 ```sh
 curl -Lo jenking.tar.gz https://github.com/Breina/Jenking/releases/latest/download/jenking_darwin_arm64.tar.gz
-tar -xzf jenking.tar.gz jenking && rm jenking.tar.gz
-chmod +x jenking && sudo mv jenking /usr/local/bin/
+tar -xf jenking.tar.gz jenking && rm jenking.tar.gz
+chmod u+x jenking && sudo mv jenking /usr/local/bin/
 ```
 
 Other platforms (macOS Intel, Windows, Linux arm64) are available on the [Releases page](../../releases).
+
+Run with `jenking`
 
 ### Via `go install`
 
