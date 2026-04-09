@@ -147,9 +147,28 @@ func (dv *DescribeView) buildScriptLines() {
 		}
 	}
 	dv.scriptLines = lines
-	if maxOff := max(0, len(dv.scriptLines)-dv.previewHeight); dv.scriptOffset > maxOff {
+	if maxOff := max(0, len(dv.scriptLines)-dv.scriptViewHeight()); dv.scriptOffset > maxOff {
 		dv.scriptOffset = maxOff
 	}
+}
+
+// hasActivePreview reports whether the params panel should be shown.
+// Returns true while loading (params unknown) or when params are present.
+func (dv *DescribeView) hasActivePreview() bool {
+	return dv.dataLoading || len(dv.params) > 0
+}
+
+// HasActivePreview implements the conditionalPreview interface checked by app.go.
+func (dv *DescribeView) HasActivePreview() bool {
+	return dv.hasActivePreview()
+}
+
+// scriptViewHeight returns the effective viewport height for the script pane.
+func (dv *DescribeView) scriptViewHeight() int {
+	if dv.hasActivePreview() {
+		return dv.previewHeight
+	}
+	return dv.height
 }
 
 func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -198,8 +217,9 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if handled, cmd := dv.trigger.handleKey(msg); handled {
 			return dv, cmd
 		}
-		maxOffset := max(0, len(dv.scriptLines)-dv.previewHeight)
-		pageSize := max(1, dv.previewHeight-1)
+		vh := dv.scriptViewHeight()
+		maxOffset := max(0, len(dv.scriptLines)-vh)
+		pageSize := max(1, vh-1)
 		switch msg.String() {
 		case "up", "k":
 			dv.scriptOffset = max(0, dv.scriptOffset-1)
@@ -266,12 +286,33 @@ func (dv *DescribeView) View() string {
 	if dv.height <= 0 {
 		return ""
 	}
+	if !dv.hasActivePreview() {
+		// No params panel: render the script as the main content.
+		end := min(dv.scriptOffset+dv.height, len(dv.scriptLines))
+		visible := dv.scriptLines[dv.scriptOffset:end]
+		rows := make([]string, dv.height)
+		copy(rows, visible)
+		content := strings.Join(rows, "\n")
+		return dv.trigger.overlay(content, dv.width, dv.height)
+	}
 	end := min(dv.paramOffset+dv.height, len(dv.paramLines))
 	visible := dv.paramLines[dv.paramOffset:end]
 	rows := make([]string, dv.height)
 	copy(rows, visible)
-	content := strings.Join(rows, "\n")
-	return content
+	return strings.Join(rows, "\n")
+}
+
+// ScrollInfo implements HasScrollInfo for when the script is rendered as the main panel.
+func (dv *DescribeView) ScrollInfo() ScrollInfo {
+	if dv.hasActivePreview() {
+		return ScrollInfo{}
+	}
+	return ScrollInfo{Offset: dv.scriptOffset, TotalLines: len(dv.scriptLines), ViewHeight: dv.height}
+}
+
+// PreviewScrollInfo implements HasPreviewScrollInfo for the script preview panel.
+func (dv *DescribeView) PreviewScrollInfo() ScrollInfo {
+	return ScrollInfo{Offset: dv.scriptOffset, TotalLines: len(dv.scriptLines), ViewHeight: dv.previewHeight}
 }
 
 // PreviewView implements PreviewProvider — renders the script pane.
@@ -311,10 +352,13 @@ func (dv *DescribeView) Title() string {
 }
 
 func (dv *DescribeView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("describe", dv.nc)
+	return BreadcrumbFor("parameters", dv.nc)
 }
 
 func (dv *DescribeView) ItemCount() int {
+	if !dv.hasActivePreview() {
+		return len(dv.scriptLines)
+	}
 	return len(dv.paramLines)
 }
 

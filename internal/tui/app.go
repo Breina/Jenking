@@ -14,6 +14,7 @@ import (
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/monitor"
+	"github.com/Breina/Jenking/internal/notify"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/component"
 	"github.com/Breina/Jenking/internal/tui/theme"
@@ -75,11 +76,13 @@ type App struct {
 	height                int
 	cmdInput              string
 	searchInput           string
+	notifications         bool
+	termFocused           bool // true while the terminal window has focus
 	dbg                   *debugStats // non-nil when log_level=debug
 }
 
 // NewApp creates the root application model.
-func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType theme.ColorblindnessType, keys KeyMap, client jenkins.JenkinsClient, store *cache.Store, username string, friendlyName string, gitUsernames []string, slowInterval time.Duration, header component.Header, breadcrumb component.Breadcrumb, statusBar component.StatusBar, initialView view.View, saveFn func(theme.ColorblindnessType) error, saveThemeFn func(string) error, debug bool, sponsorKey string) App {
+func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType theme.ColorblindnessType, keys KeyMap, client jenkins.JenkinsClient, store *cache.Store, username string, friendlyName string, gitUsernames []string, slowInterval time.Duration, header component.Header, breadcrumb component.Breadcrumb, statusBar component.StatusBar, initialView view.View, saveFn func(theme.ColorblindnessType) error, saveThemeFn func(string) error, debug bool, sponsorKey string, notifications bool) App {
 	registry := command.NewRegistry()
 
 	registry.Register(command.Command{
@@ -199,6 +202,8 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		navTags:            component.NewNavTags(t),
 		currentView:        initialView,
 		initialView:        initialView,
+		notifications:      notifications,
+		termFocused:        true, // assume focused until a BlurMsg says otherwise
 		dbg:                dbg,
 	}
 }
@@ -206,6 +211,7 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 func (a App) Init() tea.Cmd {
 	var cmds []tea.Cmd
 	cmds = append(cmds, tea.SetWindowTitle("Jenking"))
+	cmds = append(cmds, tea.EnableReportFocus)
 	if a.currentView != nil {
 		cmds = append(cmds, a.currentView.Init())
 	}
@@ -301,6 +307,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.FocusMsg:
+		a.termFocused = true
+		return a, nil
+
+	case tea.BlurMsg:
+		a.termFocused = false
+		return a, nil
+
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
@@ -399,9 +413,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// RunningBuildsUpdatedMsg — update header count and forward to active view.
+	// RunningBuildsUpdatedMsg — update header count, notify on new builds, forward to active view.
 	if msg, ok := msg.(view.RunningBuildsUpdatedMsg); ok {
 		a.header.SetRunningBuilds(msg.Count, "R")
+		if watchPath := a.notifyJobPath(); watchPath != "" {
+			for _, key := range msg.Arrived {
+				jobPath, number := jenkins.ParseBuildKey(key)
+				if strings.HasPrefix(jobPath, watchPath) {
+					notify.Send("Build Started", fmt.Sprintf("#%d · %s", number, jobPath))
+				}
+			}
+		}
 		if v := a.activeView(); v != nil {
 			model, cmd := v.Update(msg)
 			a.currentView = model.(view.View)
@@ -531,7 +553,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Handle navigation messages
 	if push, ok := msg.(view.PushViewMsg); ok {
-		a.activeView().Close()
+		prev := a.activeView()
+		// If pushing from a wildcard stages view, tell the child so ESC returns there.
+		if mbv, ok := prev.(*view.MyBuildsView); ok {
+			if sp, ok := push.View.(view.ScopedParentTarget); ok {
+				sp.SetScopedParent(mbv.NC(), a.slowInterval)
+			}
+		}
+		prev.Close()
 		a.currentView = push.View
 		a.updateBreadcrumb()
 		return a, push.View.Init()
@@ -569,6 +598,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cv.Init()
 	}
 
+	// BuildCompletedMsg — notify on completion then forward to active view.
+	if msg, ok := msg.(view.BuildCompletedMsg); ok {
+		if msg.Err == nil {
+			if watchPath := a.notifyJobPath(); watchPath != "" && strings.HasPrefix(msg.JobPath, watchPath) {
+				notify.Send(
+					fmt.Sprintf("Build #%d: %s", msg.Number, view.StatusLabel(msg.Build.Status)),
+					msg.JobPath,
+				)
+			}
+		}
+		if v := a.activeView(); v != nil {
+			model, cmd := v.Update(msg)
+			a.currentView = model.(view.View)
+			return a, cmd
+		}
+		return a, nil
+	}
+
 	// Delegate non-key messages to active view
 	if v := a.activeView(); v != nil {
 		model, cmd := v.Update(msg)
@@ -577,6 +624,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
+}
+
+// notifyJobPath returns the job path to match against for desktop notifications,
+// or "" if the active view should not produce notifications.
+// Notifications are suppressed for the all-builds wildcard view (CtxRoot).
+func (a App) notifyJobPath() string {
+	if !a.notifications || a.termFocused {
+		return ""
+	}
+	v := a.activeView()
+	switch v.(type) {
+	case *view.BuildsView, *view.StageView, *view.StageLogView, *view.ConsoleView, *view.ScopedView:
+	default:
+		return ""
+	}
+	nc, ok := v.(view.NavigationContextProvider)
+	if !ok {
+		return ""
+	}
+	ctx := nc.NC()
+	if ctx.Level == view.CtxRoot {
+		return ""
+	}
+	return ctx.JobPath()
 }
 
 func (a App) View() string {
@@ -631,6 +702,16 @@ func (a App) View() string {
 	// Check if the active view provides a preview panel.
 	v := a.activeView()
 	pp, hasPreview := v.(view.PreviewProvider)
+	// A ScopedView always satisfies PreviewProvider at the type level (delegation
+	// methods), but only creates a real split when its inner view also implements
+	// PreviewProvider. Honour that with an optional HasActivePreview check.
+	if hasPreview {
+		type conditionalPreview interface{ HasActivePreview() bool }
+		if cp, ok := v.(conditionalPreview); ok && !cp.HasActivePreview() {
+			hasPreview = false
+			pp = nil
+		}
+	}
 
 	contentBorderOverhead := 2 // top + bottom border
 	previewBorderOverhead := 0
@@ -759,6 +840,10 @@ func (a App) View() string {
 			previewBadge = pbv.PreviewBadge()
 		}
 		previewPanel = injectBorderTitle(previewPanel, previewBC.View(), previewBadge, borderColor, a.width)
+		if psi, ok := v.(view.HasPreviewScrollInfo); ok {
+			thumbColor, _ := a.theme.Table.Selected.GetForeground().(lipgloss.Color)
+			previewPanel = injectScrollbar(previewPanel, psi.PreviewScrollInfo(), thumbColor)
+		}
 
 		sections = append(sections, previewPanel)
 	}

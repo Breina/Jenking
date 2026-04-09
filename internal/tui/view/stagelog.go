@@ -39,6 +39,19 @@ type StageLogView struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	trigger      triggerMixin
+	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
+	// using the stored scope. Set when this view is opened from a scoped view.
+	hasScopedParent     bool
+	scopedParentScope    NavigationContext
+	scopedParentInterval time.Duration
+}
+
+// SetScopedParent implements ScopedParentTarget. When set, ESC returns to a
+// fresh MyBuildsView for the given scope rather than the default StageView.
+func (sl *StageLogView) SetScopedParent(scope NavigationContext, slowInterval time.Duration) {
+	sl.hasScopedParent = true
+	sl.scopedParentScope = scope
+	sl.scopedParentInterval = slowInterval
 }
 
 func NewStageLogView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool) *StageLogView {
@@ -325,6 +338,9 @@ func (sl *StageLogView) Badge() string { return sl.lv.Badge() }
 func (sl *StageLogView) ScrollInfo() ScrollInfo { return sl.lv.ScrollInfo() }
 
 func (sl *StageLogView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View {
+	if sl.hasScopedParent {
+		return NewMyBuildsView(t, c, s, sl.scopedParentScope, sl.scopedParentInterval)
+	}
 	sv := NewStageView(t, c, s, sl.nc.AtBuild(sl.nc.Build.Number), jenkins.Build{Number: sl.nc.Build.Number})
 	sv.selectStageName = sl.nc.StageName
 	return sv

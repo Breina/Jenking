@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/component"
@@ -65,12 +66,14 @@ func (sv *ScopedView) ToggleRunning() { sv.resolver.filterRunning = !sv.resolver
 func (sv *ScopedView) ToggleMine()    { sv.resolver.filterMine = !sv.resolver.filterMine }
 
 func (sv *ScopedView) Init() tea.Cmd {
+	dbg("ScopedView.Init: title=%q scope.Level=%v scope.JobPath=%q", sv.cfg.Title, sv.resolver.scope.Level, sv.resolver.scope.JobPath())
 	sv.resolver.preloadFromCache()
 	var cmds []tea.Cmd
 	if cmd := sv.reEvaluate(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 	if sv.cfg.HandleSlowFetch && !sv.resolver.filterRunning {
+		dbg("ScopedView.Init: scheduling fetchSlow for jobPath=%q", sv.resolver.scope.JobPath())
 		cmds = append(cmds, sv.resolver.fetchSlow)
 	}
 	return tea.Batch(cmds...)
@@ -276,7 +279,25 @@ func (sv *ScopedView) HasPopup() bool {
 
 func (sv *ScopedView) NC() NavigationContext { return sv.resolver.scope }
 
+// ParentView implements HasParent. ESC from a scoped view returns to the
+// natural parent based on the scope level: project → job list, branch →
+// builds view, folder → folder job list, root → Dashboard (nil).
+func (sv *ScopedView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View {
+	scope := sv.resolver.scope
+	username := sv.resolver.username
+	switch scope.Level {
+	case CtxFolder:
+		return NewJobList(t, c, s, scope.FolderPath, shortName(decodeName(scope.FolderPath)), false, username)
+	case CtxProject:
+		return NewJobList(t, c, s, scope.JobPath(), scope.ProjectName, true, username)
+	case CtxBranch:
+		return NewBuildsView(t, c, s, scope, NewBranchBuildsProvider(c, s, scope))
+	}
+	return nil // CtxRoot → Dashboard
+}
+
 func (sv *ScopedView) Close() error {
+	dbg("ScopedView.Close: title=%q jobPath=%q", sv.cfg.Title, sv.resolver.scope.JobPath())
 	sv.resolver.cancel()
 	if sv.inner != nil {
 		return sv.inner.Close()
@@ -285,6 +306,16 @@ func (sv *ScopedView) Close() error {
 }
 
 // PreviewProvider delegation — active only when inner supports it.
+
+// HasActivePreview reports whether the inner view currently implements PreviewProvider.
+// Used by the app to decide whether to render the split-pane layout.
+func (sv *ScopedView) HasActivePreview() bool {
+	if sv.inner == nil {
+		return false
+	}
+	_, ok := sv.inner.(PreviewProvider)
+	return ok
+}
 
 func (sv *ScopedView) PreviewView() string {
 	if sv.inner != nil {

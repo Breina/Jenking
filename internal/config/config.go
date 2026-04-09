@@ -33,6 +33,7 @@ type PreferencesConfig struct {
 	LogLevel            string        `mapstructure:"log_level"`
 	GitUsernames        []string      `mapstructure:"git_usernames"`
 	SponsorKey          string        `mapstructure:"sponsor_key"`
+	Notifications       bool          `mapstructure:"notifications"`
 }
 
 // Manager wraps Config and the underlying viper instance so preferences can
@@ -67,6 +68,7 @@ func Load() (*Manager, error) {
 	v.SetDefault("preferences.max_log_lines", 10000)
 	v.SetDefault("preferences.colorblindness_type", "none")
 	v.SetDefault("preferences.log_level", "off")
+	v.SetDefault("preferences.notifications", true)
 
 	// Config file location
 	v.SetConfigName("config")

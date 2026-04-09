@@ -66,23 +66,36 @@ func newBuildResolver(client jenkins.JenkinsClient, store *cache.Store, scope Na
 // the shared cache store, if available.
 func (r *buildResolver) preloadFromCache() {
 	if r.store == nil {
+		dbg("preloadFromCache: store is nil")
 		return
 	}
 	if cached := r.store.RunningBuilds.Get(""); cached != nil {
 		r.lastRunningBuilds = cached.Value
+		dbg("preloadFromCache: loaded %d running builds", len(r.lastRunningBuilds))
 	}
 	switch r.scope.Level {
 	case CtxRoot, CtxFolder:
 		if cached := r.store.AllBuilds.Get(""); cached != nil {
 			r.lastSlowBuilds = cached.Value
+			dbg("preloadFromCache: CtxRoot/CtxFolder loaded %d slow builds", len(r.lastSlowBuilds))
+		} else {
+			dbg("preloadFromCache: CtxRoot/CtxFolder — no slow builds in cache")
 		}
 	case CtxProject:
-		if cached := r.store.ProjectBuilds.Get(r.scope.JobPath()); cached != nil {
-			r.lastSlowBuilds = projectBuildsToUserBuilds(cached.Value, r.scope.JobPath())
+		key := r.scope.JobPath()
+		if cached := r.store.ProjectBuilds.Get(key); cached != nil {
+			r.lastSlowBuilds = projectBuildsToUserBuilds(cached.Value, key)
+			dbg("preloadFromCache: CtxProject key=%q loaded %d project builds -> %d user builds", key, len(cached.Value), len(r.lastSlowBuilds))
+		} else {
+			dbg("preloadFromCache: CtxProject key=%q — no project builds in cache", key)
 		}
 	case CtxBranch:
-		if cached := r.store.Builds.Get(r.scope.JobPath()); cached != nil {
-			r.lastSlowBuilds = buildsToUserBuilds(cached.Value, r.scope.JobPath())
+		key := r.scope.JobPath()
+		if cached := r.store.Builds.Get(key); cached != nil {
+			r.lastSlowBuilds = buildsToUserBuilds(cached.Value, key)
+			dbg("preloadFromCache: CtxBranch key=%q loaded %d builds", key, len(r.lastSlowBuilds))
+		} else {
+			dbg("preloadFromCache: CtxBranch key=%q — no builds in cache", key)
 		}
 	}
 }
@@ -91,17 +104,33 @@ func (r *buildResolver) preloadFromCache() {
 func (r *buildResolver) fetchSlow() tea.Msg {
 	switch r.scope.Level {
 	case CtxProject:
-		builds, err := r.client.ListProjectBuilds(r.ctx, r.scope.JobPath())
+		key := r.scope.JobPath()
+		dbg("fetchSlow: CtxProject key=%q starting", key)
+		builds, err := r.client.ListProjectBuilds(r.ctx, key)
+		dbg("fetchSlow: CtxProject key=%q got %d builds, err=%v, ctxErr=%v", key, len(builds), err, r.ctx.Err())
+		if err == nil && r.store != nil {
+			r.store.ProjectBuilds.Put(key, builds)
+			dbg("fetchSlow: CtxProject key=%q cached %d project builds", key, len(builds))
+		}
 		if r.ctx.Err() != nil {
+			dbg("fetchSlow: CtxProject key=%q context cancelled, returning nil", key)
 			return nil
 		}
-		return myBuildsFullMsg{builds: projectBuildsToUserBuilds(builds, r.scope.JobPath()), err: err}
+		return myBuildsFullMsg{builds: projectBuildsToUserBuilds(builds, key), err: err}
 	case CtxBranch:
-		builds, err := r.client.ListBuilds(r.ctx, r.scope.JobPath())
+		key := r.scope.JobPath()
+		dbg("fetchSlow: CtxBranch key=%q starting", key)
+		builds, err := r.client.ListBuilds(r.ctx, key)
+		dbg("fetchSlow: CtxBranch key=%q got %d builds, err=%v, ctxErr=%v", key, len(builds), err, r.ctx.Err())
+		if err == nil && r.store != nil {
+			r.store.Builds.Put(key, builds)
+			dbg("fetchSlow: CtxBranch key=%q cached %d builds", key, len(builds))
+		}
 		if r.ctx.Err() != nil {
+			dbg("fetchSlow: CtxBranch key=%q context cancelled, returning nil", key)
 			return nil
 		}
-		return myBuildsFullMsg{builds: buildsToUserBuilds(builds, r.scope.JobPath()), err: err}
+		return myBuildsFullMsg{builds: buildsToUserBuilds(builds, key), err: err}
 	default:
 		builds, err := r.client.ScanAllBuilds(r.ctx, maxBuildsPerJob)
 		if r.ctx.Err() != nil {
@@ -172,6 +201,7 @@ func (r *buildResolver) matchesScope(b jenkins.UserBuild) bool {
 
 // bestMatch picks the most recent build matching scope and active filters.
 func (r *buildResolver) bestMatch(builds []jenkins.UserBuild) *jenkins.UserBuild {
+	dbg("bestMatch: scope=%v/%v jobPath=%q total=%d", r.scope.Level, r.scope.ProjectName, r.scope.JobPath(), len(builds))
 	var candidates []jenkins.UserBuild
 	for _, b := range builds {
 		if !r.matchesScope(b) {
@@ -186,11 +216,16 @@ func (r *buildResolver) bestMatch(builds []jenkins.UserBuild) *jenkins.UserBuild
 		candidates = append(candidates, b)
 	}
 	if len(candidates) == 0 {
+		dbg("bestMatch: no candidates (scope filtered all %d builds)", len(builds))
+		if len(builds) > 0 {
+			dbg("bestMatch: first build jobPath=%q", builds[0].JobPath)
+		}
 		return nil
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].Timestamp.After(candidates[j].Timestamp)
 	})
+	dbg("bestMatch: picked jobPath=%q #%d", candidates[0].JobPath, candidates[0].Number)
 	return &candidates[0]
 }
 

@@ -2,6 +2,7 @@ package view
 
 import (
 	"strings"
+	"time"
 
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/jenkins"
@@ -13,6 +14,14 @@ import (
 // making back-navigation deterministic regardless of how the view was reached.
 type HasParent interface {
 	ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View
+}
+
+// ScopedParentTarget is optionally implemented by views that can be assigned a
+// scoped (MyBuilds-style) parent to return to on ESC, overriding their default
+// static parent. Used when a log or stage-log view is opened from a wildcard
+// stages view so that ESC returns to the wildcard view rather than a concrete one.
+type ScopedParentTarget interface {
+	SetScopedParent(scope NavigationContext, slowInterval time.Duration)
 }
 
 // folderParentJobList returns the non-branch JobList for the folder that

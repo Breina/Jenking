@@ -35,6 +35,19 @@ type ConsoleView struct {
 	build      jenkins.Build
 	store      *cache.Store
 	trigger    triggerMixin
+	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
+	// using the stored scope. Set when this view is opened from a scoped view.
+	hasScopedParent      bool
+	scopedParentScope    NavigationContext
+	scopedParentInterval time.Duration
+}
+
+// SetScopedParent implements ScopedParentTarget. When set, ESC returns to a
+// fresh MyBuildsView for the given scope rather than the default StageView.
+func (cv *ConsoleView) SetScopedParent(scope NavigationContext, slowInterval time.Duration) {
+	cv.hasScopedParent = true
+	cv.scopedParentScope = scope
+	cv.scopedParentInterval = slowInterval
 }
 
 func NewConsoleView(t theme.Theme, client jenkins.JenkinsClient, nc NavigationContext) *ConsoleView {
@@ -291,5 +304,8 @@ func (cv *ConsoleView) Badge() string { return cv.lv.Badge() }
 func (cv *ConsoleView) ScrollInfo() ScrollInfo { return cv.lv.ScrollInfo() }
 
 func (cv *ConsoleView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View {
+	if cv.hasScopedParent {
+		return NewMyBuildsView(t, c, s, cv.scopedParentScope, cv.scopedParentInterval)
+	}
 	return NewStageView(t, c, s, cv.nc, jenkins.Build{Number: cv.nc.Build.Number})
 }

@@ -307,6 +307,11 @@ func statusIcon(t theme.Theme, s jenkins.BuildStatus) string {
 	}
 }
 
+// StatusLabel returns a human-readable, capitalized label for a build status.
+func StatusLabel(s jenkins.BuildStatus) string {
+	return statusLabel(s)
+}
+
 // statusLabel returns a human-readable, capitalized label for a build status.
 func statusLabel(s jenkins.BuildStatus) string {
 	switch s {
@@ -444,6 +449,13 @@ type ScrollInfo struct {
 // App uses this to render a scrollbar indicator on the right border of the content panel.
 type HasScrollInfo interface {
 	ScrollInfo() ScrollInfo
+}
+
+// HasPreviewScrollInfo is optionally implemented by views that support vertical
+// scrolling in their preview panel. App uses this to render a scrollbar indicator
+// on the right border of the preview panel.
+type HasPreviewScrollInfo interface {
+	PreviewScrollInfo() ScrollInfo
 }
 
 // PreviewProvider is optionally implemented by views that want a separate

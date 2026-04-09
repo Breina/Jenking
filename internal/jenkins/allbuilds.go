@@ -32,6 +32,20 @@ func BuildKey(jobPath string, number int) string {
 	return jobPath + "#" + strconv.Itoa(number)
 }
 
+// ParseBuildKey splits a build key (jobPath#number) into its components.
+// Returns number=0 when the key is malformed.
+func ParseBuildKey(key string) (jobPath string, number int) {
+	idx := strings.LastIndex(key, "#")
+	if idx < 0 {
+		return key, 0
+	}
+	n, err := strconv.Atoi(key[idx+1:])
+	if err != nil {
+		return key[:idx], 0
+	}
+	return key[:idx], n
+}
+
 // ScanAllBuilds fetches recent builds across all jobs on the Jenkins instance.
 // At most maxPerJob builds per job/branch are returned. This is a potentially
 // heavy call: use it with a slow polling interval and cache the result.

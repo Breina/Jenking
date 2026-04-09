@@ -76,7 +76,7 @@ func main() {
 		return cfg.SetTheme(t)
 	}
 
-	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, dashboard, saveFn, saveThemeFn, debug, sponsorKey)
+	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, dashboard, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications)
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
