@@ -208,7 +208,7 @@ func (lv *LogViewer) nextSearchMatch(forward bool) {
 	maxOff := max(0, len(lv.lines)-lv.contentHeight())
 	if forward {
 		for _, idx := range lv.searchMatchLines {
-			if idx > lv.offset {
+			if idx > lv.currentMatchLine {
 				lv.currentMatchLine = idx
 				lv.offset = min(idx, maxOff)
 				return
@@ -219,9 +219,9 @@ func (lv *LogViewer) nextSearchMatch(forward bool) {
 		lv.offset = min(lv.searchMatchLines[0], maxOff)
 	} else {
 		for i := len(lv.searchMatchLines) - 1; i >= 0; i-- {
-			if lv.searchMatchLines[i] < lv.offset {
+			if lv.searchMatchLines[i] < lv.currentMatchLine {
 				lv.currentMatchLine = lv.searchMatchLines[i]
-				lv.offset = lv.searchMatchLines[i]
+				lv.offset = min(lv.searchMatchLines[i], maxOff)
 				return
 			}
 		}
@@ -230,6 +230,24 @@ func (lv *LogViewer) nextSearchMatch(forward bool) {
 		lv.currentMatchLine = last
 		lv.offset = min(last, maxOff)
 	}
+}
+
+// SearchQueryWithCount returns the current search query annotated with the
+// match position, e.g. "foo [3/12]". Returns "" when no search is active.
+func (lv *LogViewer) SearchQueryWithCount() string {
+	if lv.searchQuery == "" {
+		return ""
+	}
+	total := len(lv.searchMatchLines)
+	if total == 0 || lv.currentMatchLine < 0 {
+		return lv.searchQuery
+	}
+	for i, line := range lv.searchMatchLines {
+		if line == lv.currentMatchLine {
+			return fmt.Sprintf("%s [%d/%d]", lv.searchQuery, i+1, total)
+		}
+	}
+	return lv.searchQuery
 }
 
 func (lv *LogViewer) renderLine(dl displayLine) string {

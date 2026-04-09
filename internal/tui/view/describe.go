@@ -159,7 +159,7 @@ func (dv *DescribeView) ApplySearch(pattern string) error {
 }
 
 func (dv *DescribeView) SearchQuery() string {
-	return dv.scriptLV.SearchQuery()
+	return dv.scriptLV.SearchQueryWithCount()
 }
 
 func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -190,7 +190,8 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editorDoneMsg:
 		if msg.err == nil && msg.tmpFile != "" {
 			if data, err := os.ReadFile(msg.tmpFile); err == nil {
-				dv.script = string(data)
+				script := strings.TrimSuffix(string(data), "\n// vim: set filetype=groovy:")
+				dv.script = strings.TrimRight(script, "\n")
 				dv.buildScriptLines()
 			}
 		}
@@ -278,7 +279,8 @@ func (dv *DescribeView) openEditorCmd() tea.Cmd {
 	if err != nil {
 		return func() tea.Msg { return ErrorMsg{Err: fmt.Errorf("create temp file: %w", err)} }
 	}
-	if _, err := tmpFile.WriteString(dv.script); err != nil {
+	content := dv.script + "\n// vim: set filetype=groovy:"
+	if _, err := tmpFile.WriteString(content); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
 		return func() tea.Msg { return ErrorMsg{Err: fmt.Errorf("write temp file: %w", err)} }
@@ -348,7 +350,9 @@ func (dv *DescribeView) SetPreviewSize(w, h int) {
 
 // PreviewBreadcrumb implements PreviewProvider.
 func (dv *DescribeView) PreviewBreadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("script", dv.nc)
+	seg := BreadcrumbFor("script", dv.nc)
+	seg.NoTail = true
+	return seg
 }
 
 // PreviewItemCount implements PreviewProvider.
@@ -361,7 +365,9 @@ func (dv *DescribeView) Title() string {
 }
 
 func (dv *DescribeView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("describe", dv.nc)
+	seg := BreadcrumbFor("parameters", dv.nc)
+	seg.NavTag = "describe"
+	return seg
 }
 
 func (dv *DescribeView) ItemCount() int {

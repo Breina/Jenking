@@ -833,7 +833,11 @@ func (a App) View() string {
 			Mine:          seg.Mine,
 			ResolvedParts: seg.ResolvedParts,
 		})
-		previewBC.SetTail(true)
+		if seg.NoTail {
+			previewBC.SetCount(pp.PreviewItemCount())
+		} else {
+			previewBC.SetTail(true)
+		}
 		previewBC.SetSearchAnnotation(searchQuery)
 		previewBadge := ""
 		if pbv, ok := v.(view.HasPreviewBadge); ok {
@@ -1074,7 +1078,11 @@ func (a *App) updateBreadcrumb() {
 			Mine:          seg.Mine,
 			ResolvedParts: seg.ResolvedParts,
 		})
-		a.navTags.SetViewType(seg.ViewType)
+		navTag := seg.ViewType
+		if seg.NavTag != "" {
+			navTag = seg.NavTag
+		}
+		a.navTags.SetViewType(navTag)
 		a.navTags.SetRooted(len(seg.Context) > 0 && seg.Context[0].Text == "*")
 	} else {
 		a.breadcrumb.SetSegment(nil)

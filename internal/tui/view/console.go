@@ -81,7 +81,7 @@ func (cv *ConsoleView) ApplySearch(pattern string) error {
 }
 
 func (cv *ConsoleView) SearchQuery() string {
-	return cv.lv.SearchQuery()
+	return cv.lv.SearchQueryWithCount()
 }
 
 func (cv *ConsoleView) Init() tea.Cmd {

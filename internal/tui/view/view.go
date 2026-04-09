@@ -252,6 +252,11 @@ type BreadcrumbSegment struct {
 	Running       bool                       // filter active — rendered as "running " prefix
 	Mine          bool                       // filter active — rendered as "my " prefix
 	ResolvedParts []component.BreadcrumbPart // resolved #last info, shown after " → " arrow
+	// NavTag, when non-empty, overrides ViewType for the bottom-left nav tag only.
+	// Use when the breadcrumb label and the nav position label should differ.
+	NavTag string
+	// NoTail, when set on a PreviewBreadcrumb, suppresses [tail] and shows [count] instead.
+	NoTail bool
 }
 
 // BreadcrumbProvider is optionally implemented by views that supply k9s-style breadcrumbs.

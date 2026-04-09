@@ -32,9 +32,65 @@ func renderGroovyLogLine(dl displayLine, wrap bool, hOffset, width int, searchRe
 		if isCurrent {
 			matchStyle = t.Search.CurrentMatch
 		}
-		return highlightMatches(line, searchRe, matchStyle, t.Log.Normal) + suffix
+		return renderGroovyWithSearch(line, searchRe, matchStyle, t) + suffix
 	}
 	return renderGroovyLine(line, t) + suffix
+}
+
+// renderGroovyWithSearch renders a Groovy line keeping syntax colors for
+// non-matched text while overlaying matchStyle on search match spans.
+func renderGroovyWithSearch(line string, searchRe *regexp.Regexp, matchStyle lipgloss.Style, t theme.Theme) string {
+	// Build base segments: Groovy spans + Normal-styled gaps between them.
+	type seg struct {
+		start, end int
+		style      lipgloss.Style
+	}
+	spans := groovySpans(line, t)
+	base := make([]seg, 0, len(spans)*2+1)
+	pos := 0
+	for _, sp := range spans {
+		if sp.start > pos {
+			base = append(base, seg{pos, sp.start, t.Log.Normal})
+		}
+		base = append(base, seg{sp.start, sp.end, sp.style})
+		pos = sp.end
+	}
+	if pos < len(line) {
+		base = append(base, seg{pos, len(line), t.Log.Normal})
+	}
+
+	// Overlay search match spans, splitting base segments as needed.
+	matches := searchRe.FindAllStringIndex(line, -1)
+	if len(matches) == 0 {
+		// No matches — render with plain Groovy styles.
+		var b strings.Builder
+		for _, s := range base {
+			b.WriteString(s.style.Render(line[s.start:s.end]))
+		}
+		return b.String()
+	}
+
+	var b strings.Builder
+	for _, s := range base {
+		p := s.start
+		for _, m := range matches {
+			ms, me := m[0], m[1]
+			if ms >= s.end || me <= s.start {
+				continue
+			}
+			cs := max(ms, s.start)
+			ce := min(me, s.end)
+			if cs > p {
+				b.WriteString(s.style.Render(line[p:cs]))
+			}
+			b.WriteString(matchStyle.Render(line[cs:ce]))
+			p = ce
+		}
+		if p < s.end {
+			b.WriteString(s.style.Render(line[p:s.end]))
+		}
+	}
+	return b.String()
 }
 
 var (

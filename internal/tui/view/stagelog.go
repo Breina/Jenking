@@ -85,7 +85,7 @@ func (sl *StageLogView) ApplySearch(pattern string) error {
 }
 
 func (sl *StageLogView) SearchQuery() string {
-	return sl.lv.SearchQuery()
+	return sl.lv.SearchQueryWithCount()
 }
 
 func (sl *StageLogView) Init() tea.Cmd {
