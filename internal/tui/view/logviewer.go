@@ -66,6 +66,10 @@ type LogViewer struct {
 	highlightedLines []int    // lines[] index of first chunk per error/warn raw line
 	lastVisibleKind  lineKind // kind of the last visible (non-filtered) line
 	theme            theme.Theme
+	// renderFn, when non-nil, overrides the default renderLogLine used in
+	// renderLine/renderLineAt. Set by callers that need custom line rendering
+	// (e.g. Groovy syntax highlighting in the describe script pane).
+	renderFn func(dl displayLine, wrap bool, hOffset, width int, searchRe *regexp.Regexp, t theme.Theme, isCurrent bool) string
 }
 
 // contentHeight returns the number of log lines that fit in the view.
@@ -229,6 +233,9 @@ func (lv *LogViewer) nextSearchMatch(forward bool) {
 }
 
 func (lv *LogViewer) renderLine(dl displayLine) string {
+	if lv.renderFn != nil {
+		return lv.renderFn(dl, lv.wrap, lv.hOffset, lv.width, lv.searchRe, lv.theme, false)
+	}
 	return renderLogLine(dl, lv.wrap, lv.hOffset, lv.width, lv.searchRe, lv.theme, false)
 }
 
@@ -236,7 +243,25 @@ func (lv *LogViewer) renderLine(dl displayLine) string {
 // if absIdx matches lv.currentMatchLine and a search is active.
 func (lv *LogViewer) renderLineAt(dl displayLine, absIdx int) string {
 	isCurrent := lv.searchRe != nil && absIdx == lv.currentMatchLine
+	if lv.renderFn != nil {
+		return lv.renderFn(dl, lv.wrap, lv.hOffset, lv.width, lv.searchRe, lv.theme, isCurrent)
+	}
 	return renderLogLine(dl, lv.wrap, lv.hOffset, lv.width, lv.searchRe, lv.theme, isCurrent)
+}
+
+// renderRows returns the visible lines rendered and padded to lv.height rows.
+func (lv *LogViewer) renderRows() []string {
+	ch := lv.contentHeight()
+	end := min(lv.offset+ch, len(lv.lines))
+	visible := lv.lines[lv.offset:end]
+	rows := make([]string, 0, lv.height)
+	for i, dl := range visible {
+		rows = append(rows, lv.renderLineAt(dl, lv.offset+i))
+	}
+	for len(rows) < lv.height {
+		rows = append(rows, "")
+	}
+	return rows
 }
 
 // SetSize updates the viewport dimensions, recomputing display lines when

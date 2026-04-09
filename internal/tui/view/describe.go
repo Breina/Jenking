@@ -52,11 +52,8 @@ type DescribeView struct {
 	width       int
 	height      int
 
-	// Script pane (preview / bottom).
-	scriptLines   []string
-	scriptOffset  int
-	previewWidth  int
-	previewHeight int
+	// Script pane (preview / bottom): scrolling, wrapping, and search via LogViewer.
+	scriptLV LogViewer
 
 	trigger triggerMixin
 	ctx     context.Context
@@ -74,6 +71,7 @@ func NewDescribeView(t theme.Theme, client jenkins.JenkinsClient, store *cache.S
 		nc:          nc,
 		build:       build,
 		dataLoading: true,
+		scriptLV:    LogViewer{theme: t, renderFn: renderGroovyLogLine},
 		trigger:     newTriggerMixin(t, client, nc),
 		ctx:         ctx,
 		cancel:      cancel,
@@ -135,21 +133,14 @@ func (dv *DescribeView) buildParamLines() {
 	}
 }
 
-// buildScriptLines regenerates the script pane display lines.
+// buildScriptLines populates the script LogViewer from the current script text.
 func (dv *DescribeView) buildScriptLines() {
-	t := dv.theme
-	var lines []string
-	if dv.script == "" {
-		lines = append(lines, "  "+t.Log.Dim.Render("Loading…"))
-	} else {
-		for _, raw := range strings.Split(dv.script, "\n") {
-			lines = append(lines, renderGroovyLine(raw, t))
-		}
+	var rawLines []string
+	if dv.script != "" {
+		rawLines = strings.Split(dv.script, "\n")
 	}
-	dv.scriptLines = lines
-	if maxOff := max(0, len(dv.scriptLines)-dv.scriptViewHeight()); dv.scriptOffset > maxOff {
-		dv.scriptOffset = maxOff
-	}
+	dv.scriptLV.rawLines = rawLines
+	dv.scriptLV.recomputeLines()
 }
 
 // hasActivePreview reports whether the params panel should be shown.
@@ -163,12 +154,12 @@ func (dv *DescribeView) HasActivePreview() bool {
 	return dv.hasActivePreview()
 }
 
-// scriptViewHeight returns the effective viewport height for the script pane.
-func (dv *DescribeView) scriptViewHeight() int {
-	if dv.hasActivePreview() {
-		return dv.previewHeight
-	}
-	return dv.height
+func (dv *DescribeView) ApplySearch(pattern string) error {
+	return dv.scriptLV.ApplySearch(pattern)
+}
+
+func (dv *DescribeView) SearchQuery() string {
+	return dv.scriptLV.SearchQuery()
 }
 
 func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -180,6 +171,7 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ThemeChangedMsg:
 		dv.theme = msg.Theme
 		dv.trigger.setTheme(msg.Theme)
+		dv.scriptLV.theme = msg.Theme
 		dv.buildParamLines()
 		dv.buildScriptLines()
 		return dv, nil
@@ -217,22 +209,39 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if handled, cmd := dv.trigger.handleKey(msg); handled {
 			return dv, cmd
 		}
-		vh := dv.scriptViewHeight()
-		maxOffset := max(0, len(dv.scriptLines)-vh)
-		pageSize := max(1, vh-1)
+		maxOffset := max(0, len(dv.scriptLV.lines)-dv.scriptLV.contentHeight())
+		pageSize := max(1, dv.scriptLV.height-1)
 		switch msg.String() {
 		case "up", "k":
-			dv.scriptOffset = max(0, dv.scriptOffset-1)
+			dv.scriptLV.offset = max(0, dv.scriptLV.offset-1)
 		case "down", "j":
-			dv.scriptOffset = min(maxOffset, dv.scriptOffset+1)
+			dv.scriptLV.offset = min(maxOffset, dv.scriptLV.offset+1)
 		case "pgup":
-			dv.scriptOffset = max(0, dv.scriptOffset-pageSize)
+			dv.scriptLV.offset = max(0, dv.scriptLV.offset-pageSize)
 		case "pgdown":
-			dv.scriptOffset = min(maxOffset, dv.scriptOffset+pageSize)
+			dv.scriptLV.offset = min(maxOffset, dv.scriptLV.offset+pageSize)
 		case "g", "home":
-			dv.scriptOffset = 0
+			dv.scriptLV.offset = 0
 		case "G", "end":
-			dv.scriptOffset = maxOffset
+			dv.scriptLV.offset = maxOffset
+		case "left", "h":
+			if !dv.scriptLV.wrap {
+				dv.scriptLV.hOffset = max(0, dv.scriptLV.hOffset-8)
+			}
+		case "right", "l":
+			if !dv.scriptLV.wrap {
+				dv.scriptLV.hOffset += 8
+			}
+		case "w", "W":
+			dv.scriptLV.wrap = !dv.scriptLV.wrap
+			if dv.scriptLV.wrap {
+				dv.scriptLV.hOffset = 0
+			}
+			dv.scriptLV.recomputeLines()
+		case "f2", "n":
+			dv.scriptLV.nextHighlight(true)
+		case "N":
+			dv.scriptLV.nextHighlight(false)
 		case "t":
 			return dv, dv.startTriggerCmd()
 		case "e":
@@ -287,11 +296,13 @@ func (dv *DescribeView) View() string {
 		return ""
 	}
 	if !dv.hasActivePreview() {
-		// No params panel: render the script as the main content.
-		end := min(dv.scriptOffset+dv.height, len(dv.scriptLines))
-		visible := dv.scriptLines[dv.scriptOffset:end]
-		rows := make([]string, dv.height)
-		copy(rows, visible)
+		// No params panel: script fills the full main panel.
+		if dv.script == "" {
+			rows := make([]string, dv.height)
+			rows[0] = "  " + dv.theme.Log.Dim.Render("Loading…")
+			return strings.Join(rows, "\n")
+		}
+		rows := dv.scriptLV.renderRows()
 		content := strings.Join(rows, "\n")
 		return dv.trigger.overlay(content, dv.width, dv.height)
 	}
@@ -307,34 +318,32 @@ func (dv *DescribeView) ScrollInfo() ScrollInfo {
 	if dv.hasActivePreview() {
 		return ScrollInfo{}
 	}
-	return ScrollInfo{Offset: dv.scriptOffset, TotalLines: len(dv.scriptLines), ViewHeight: dv.height}
+	return dv.scriptLV.ScrollInfo()
 }
 
 // PreviewScrollInfo implements HasPreviewScrollInfo for the script preview panel.
 func (dv *DescribeView) PreviewScrollInfo() ScrollInfo {
-	return ScrollInfo{Offset: dv.scriptOffset, TotalLines: len(dv.scriptLines), ViewHeight: dv.previewHeight}
+	return dv.scriptLV.ScrollInfo()
 }
 
 // PreviewView implements PreviewProvider — renders the script pane.
 func (dv *DescribeView) PreviewView() string {
-	if dv.previewHeight <= 0 {
+	if dv.scriptLV.height <= 0 {
 		return ""
 	}
-	end := min(dv.scriptOffset+dv.previewHeight, len(dv.scriptLines))
-	visible := dv.scriptLines[dv.scriptOffset:end]
-	rows := make([]string, dv.previewHeight)
-	copy(rows, visible)
+	if dv.script == "" {
+		rows := make([]string, dv.scriptLV.height)
+		rows[0] = "  " + dv.theme.Log.Dim.Render("Loading…")
+		return strings.Join(rows, "\n")
+	}
+	rows := dv.scriptLV.renderRows()
 	content := strings.Join(rows, "\n")
-	return dv.trigger.overlay(content, dv.previewWidth, dv.previewHeight)
+	return dv.trigger.overlay(content, dv.scriptLV.width, dv.scriptLV.height)
 }
 
 // SetPreviewSize implements PreviewProvider.
 func (dv *DescribeView) SetPreviewSize(w, h int) {
-	dv.previewWidth = w
-	dv.previewHeight = h
-	if maxOff := max(0, len(dv.scriptLines)-dv.previewHeight); dv.scriptOffset > maxOff {
-		dv.scriptOffset = maxOff
-	}
+	dv.scriptLV.SetSize(w, h)
 }
 
 // PreviewBreadcrumb implements PreviewProvider.
@@ -344,7 +353,7 @@ func (dv *DescribeView) PreviewBreadcrumb() BreadcrumbSegment {
 
 // PreviewItemCount implements PreviewProvider.
 func (dv *DescribeView) PreviewItemCount() int {
-	return len(dv.scriptLines)
+	return dv.scriptLV.ItemCount()
 }
 
 func (dv *DescribeView) Title() string {
@@ -352,12 +361,12 @@ func (dv *DescribeView) Title() string {
 }
 
 func (dv *DescribeView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("parameters", dv.nc)
+	return BreadcrumbFor("describe", dv.nc)
 }
 
 func (dv *DescribeView) ItemCount() int {
 	if !dv.hasActivePreview() {
-		return len(dv.scriptLines)
+		return dv.scriptLV.ItemCount()
 	}
 	return len(dv.paramLines)
 }
@@ -371,12 +380,25 @@ func (dv *DescribeView) Commands() []command.Command {
 }
 
 func (dv *DescribeView) Shortcuts() []component.Shortcut {
-	return []component.Shortcut{
+	wrapLabel := "wrap"
+	if dv.scriptLV.wrap {
+		wrapLabel = "no wrap"
+	}
+	shortcuts := []component.Shortcut{
 		{Key: "esc", Action: "back"},
+		{Key: "/", Action: "search"},
+		{Key: "w", Action: wrapLabel},
 		{Key: "e", Action: "edit"},
 		{Key: "t", Action: "trigger"},
 		{Key: "g/G", Action: "top/bottom"},
 	}
+	if !dv.scriptLV.wrap {
+		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})
+	}
+	if dv.scriptLV.searchRe != nil {
+		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
+	}
+	return shortcuts
 }
 
 func (dv *DescribeView) SetSize(w, h int) {
@@ -385,6 +407,9 @@ func (dv *DescribeView) SetSize(w, h int) {
 	dv.trigger.setMaxHeight(h - 6)
 	if maxOff := max(0, len(dv.paramLines)-dv.height); dv.paramOffset > maxOff {
 		dv.paramOffset = maxOff
+	}
+	if !dv.hasActivePreview() {
+		dv.scriptLV.SetSize(w, h)
 	}
 }
 

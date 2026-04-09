@@ -10,6 +10,33 @@ import (
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
 
+// renderGroovyLogLine renders one display line of a Groovy script with
+// horizontal scroll, truncation, and optional search highlighting applied.
+// It is used as LogViewer.renderFn for the script pane in DescribeView.
+func renderGroovyLogLine(dl displayLine, wrap bool, hOffset, width int, searchRe *regexp.Regexp, t theme.Theme, isCurrent bool) string {
+	line := dl.text
+	truncated := false
+	if !wrap && width > 0 {
+		line = skipColumns(line, hOffset)
+		if lipgloss.Width(line) > width {
+			line, _ = truncateToColumns(line, width-1)
+			truncated = true
+		}
+	}
+	suffix := ""
+	if truncated {
+		suffix = t.Log.Trunc.Render("»")
+	}
+	if searchRe != nil {
+		matchStyle := t.Search.Match
+		if isCurrent {
+			matchStyle = t.Search.CurrentMatch
+		}
+		return highlightMatches(line, searchRe, matchStyle, t.Log.Normal) + suffix
+	}
+	return renderGroovyLine(line, t) + suffix
+}
+
 var (
 	// Comments take highest priority.
 	groovyLineCommentRe  = regexp.MustCompile(`//.*$`)
