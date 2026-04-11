@@ -365,7 +365,11 @@ func (dv *DescribeView) Title() string {
 }
 
 func (dv *DescribeView) Breadcrumb() BreadcrumbSegment {
-	seg := BreadcrumbFor("parameters", dv.nc)
+	label := "parameters"
+	if !dv.hasActivePreview() {
+		label = "script"
+	}
+	seg := BreadcrumbFor(label, dv.nc)
 	seg.NavTag = "describe"
 	return seg
 }
