@@ -47,7 +47,19 @@ type Client struct {
 
 // NewClient creates a new Jenkins API client.
 func NewClient(baseURL, username, token string, insecure bool) *Client {
-	httpClient := &http.Client{}
+	// Re-attach Basic Auth on every redirect. Go strips the Authorization header
+	// by default, which causes an infinite redirect loop when Jenkins responds
+	// with a relative redirect to securityRealm/commenceLogin.
+	reattachAuth := func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if u, p, ok := via[0].BasicAuth(); ok {
+			req.SetBasicAuth(u, p)
+		}
+		return nil
+	}
+	httpClient := &http.Client{CheckRedirect: reattachAuth}
 	if insecure {
 		httpClient.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
@@ -78,7 +90,16 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		resp.Body.Close()
-		return nil, fmt.Errorf("jenkins API error: %s %s returned %d", method, path, resp.StatusCode)
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			return nil, fmt.Errorf("authentication failed (check username and token): %s %s", method, path)
+		case http.StatusForbidden:
+			return nil, fmt.Errorf("access denied (insufficient permissions): %s %s", method, path)
+		case http.StatusFound, http.StatusMovedPermanently:
+			return nil, fmt.Errorf("unexpected redirect to %s — check server URL and credentials: %s %s", resp.Header.Get("Location"), method, path)
+		default:
+			return nil, fmt.Errorf("HTTP %d: %s %s", resp.StatusCode, method, path)
+		}
 	}
 
 	return resp, nil

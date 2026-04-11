@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/config"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/monitor"
 	"github.com/Breina/Jenking/internal/notify"
@@ -30,6 +32,17 @@ type debugStats struct {
 
 type openColorblindMenuMsg struct{}
 type openThemeMenuMsg struct{}
+type openContextMenuMsg struct{}
+type switchContextMsg struct{ name string }
+type contextConnStatusMsg struct {
+	name string
+	ok   bool
+}
+type addContextProbeResultMsg struct {
+	ok  bool
+	msg string
+}
+type openPrefsMsg struct{}
 type openBuildsForContextMsg struct{}
 type openStagesForContextMsg struct{}
 type openJobsForContextMsg struct{}
@@ -37,6 +50,9 @@ type openLogForContextMsg struct{}
 type openMatrixForContextMsg struct{}
 type openRunningBuildsMsg struct{}
 type openHelpMsg struct{}
+type connCheckMsg struct{}
+type connProbeResultMsg struct{ ok bool }
+type userInfoMsg struct{ fullName string }
 
 // App is the root bubbletea model.
 type App struct {
@@ -47,7 +63,20 @@ type App struct {
 	previewDegraded       bool // degraded state of the theme before the menu was opened
 	showThemeMenu         bool
 	themeMenu             view.ThemeMenu
+	showContextMenu       bool
+	contextMenu           view.ContextMenu
+	showAddContextDialog  bool
+	addContextDialog      view.AddContextDialog
+	addCtxFn              func(config.ContextConfig) error
+	delCtxFn              func(string) error
+	setCtxFn              func(string) error
 	saveThemeFn           func(string) error
+	showPrefsDialog       bool
+	prefsDialog           view.PrefsDialog
+	savePrefsFn           func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error
+	refreshInterval       time.Duration
+	maxLogLines           int
+	logLevel              string
 	showHelp              bool
 	showRoyalPaywall      bool
 	royalPaywall          view.RoyalPaywall
@@ -64,6 +93,9 @@ type App struct {
 	username              string
 	friendlyName          string
 	gitUsernames          []string
+	contexts              []config.ContextConfig
+	currentContextName    string
+	diskStoreFn           func(serverURL string) *cache.DiskStore
 	slowInterval          time.Duration
 	registry              *command.Registry
 	header                component.Header
@@ -78,11 +110,12 @@ type App struct {
 	searchInput           string
 	notifications         bool
 	termFocused           bool // true while the terminal window has focus
+	connected             bool // tracks live connection status shown in header
 	dbg                   *debugStats // non-nil when log_level=debug
 }
 
 // NewApp creates the root application model.
-func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType theme.ColorblindnessType, keys KeyMap, client jenkins.JenkinsClient, store *cache.Store, username string, friendlyName string, gitUsernames []string, slowInterval time.Duration, header component.Header, breadcrumb component.Breadcrumb, statusBar component.StatusBar, initialView view.View, saveFn func(theme.ColorblindnessType) error, saveThemeFn func(string) error, debug bool, sponsorKey string, notifications bool) App {
+func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType theme.ColorblindnessType, keys KeyMap, client jenkins.JenkinsClient, store *cache.Store, username string, friendlyName string, gitUsernames []string, refreshInterval, slowInterval time.Duration, header component.Header, breadcrumb component.Breadcrumb, statusBar component.StatusBar, initialView view.View, saveFn func(theme.ColorblindnessType) error, saveThemeFn func(string) error, debug bool, sponsorKey string, notifications bool, maxLogLines int, logLevel string, contexts []config.ContextConfig, currentContextName string, diskStoreFn func(string) *cache.DiskStore, addCtxFn func(config.ContextConfig) error, delCtxFn func(string) error, setCtxFn func(string) error, savePrefsFn func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error) App {
 	registry := command.NewRegistry()
 
 	registry.Register(command.Command{
@@ -174,6 +207,27 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		},
 	})
 
+	registry.Register(command.Command{
+		Name:    "config",
+		Aliases: []string{"preferences", "prefs"},
+		Help:    "Edit preferences (notifications, git usernames, refresh interval)",
+		Execute: func(args []string) tea.Cmd {
+			return func() tea.Msg { return openPrefsMsg{} }
+		},
+	})
+
+	registry.Register(command.Command{
+		Name:    "context",
+		Aliases: []string{"ctx"},
+		Help:    "Manage Jenkins contexts (switch, add, delete)",
+		Execute: func(args []string) tea.Cmd {
+			if len(args) == 0 {
+				return func() tea.Msg { return openContextMenuMsg{} }
+			}
+			return func() tea.Msg { return switchContextMsg{name: args[0]} }
+		},
+	})
+
 	var dbg *debugStats
 	if debug {
 		dbg = &debugStats{}
@@ -194,7 +248,17 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		username:           username,
 		friendlyName:       friendlyName,
 		gitUsernames:       gitUsernames,
-		slowInterval:       slowInterval,
+		contexts:           contexts,
+		currentContextName: currentContextName,
+		diskStoreFn:        diskStoreFn,
+		addCtxFn:        addCtxFn,
+		delCtxFn:        delCtxFn,
+		setCtxFn:        setCtxFn,
+		savePrefsFn:     savePrefsFn,
+		refreshInterval: refreshInterval,
+		slowInterval:    slowInterval,
+		maxLogLines:     maxLogLines,
+		logLevel:        logLevel,
 		registry:           registry,
 		header:             header,
 		breadcrumb:         breadcrumb,
@@ -204,6 +268,7 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		initialView:        initialView,
 		notifications:      notifications,
 		termFocused:        true, // assume focused until a BlurMsg says otherwise
+		connected:          true,
 		dbg:                dbg,
 	}
 }
@@ -231,6 +296,105 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Monitor consumes its own internal messages (poll result, tick).
 	if handled, cmds := a.monitor.HandleMsg(msg); handled {
 		return a, tea.Batch(cmds...)
+	}
+
+	// Add-context dialog intercepts all key events while open.
+	if a.showAddContextDialog {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			updated, result := a.addContextDialog.Update(keyMsg)
+			a.addContextDialog = updated
+			switch result.Status {
+			case view.AddContextCancelled:
+				a.showAddContextDialog = false
+				return a, nil
+			case view.AddContextConfirmed:
+				a.showAddContextDialog = false
+				cfg := result.Config
+				if a.addCtxFn != nil {
+					if err := a.addCtxFn(cfg); err != nil {
+						a.statusBar.SetError(fmt.Sprintf("save context: %v", err))
+						return a, nil
+					}
+				}
+				a.contexts = append(a.contexts, cfg)
+				return a, probeContext(cfg)
+			}
+			if result.TestConn {
+				return a, probeAddContext(updated.CurrentConfig())
+			}
+			return a, nil
+		}
+	}
+
+	// Preferences dialog intercepts all key events while open.
+	if a.showPrefsDialog {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			updated, result := a.prefsDialog.Update(keyMsg)
+			a.prefsDialog = updated
+			switch result.Status {
+			case view.PrefsCancelled:
+				a.showPrefsDialog = false
+			case view.PrefsConfirmed:
+				a.showPrefsDialog = false
+				p := result.Prefs
+				a.notifications = p.Notifications
+				a.gitUsernames = p.GitUsernames
+				a.refreshInterval = p.RefreshInterval
+				a.slowInterval = p.SlowRefreshInterval
+				a.maxLogLines = p.MaxLogLines
+				a.logLevel = p.LogLevel
+				if a.savePrefsFn != nil {
+					if err := a.savePrefsFn(p.Notifications, p.GitUsernames, p.RefreshInterval, p.SlowRefreshInterval, p.MaxLogLines, p.LogLevel); err != nil {
+						a.statusBar.SetError(fmt.Sprintf("save preferences: %v", err))
+					}
+				}
+			}
+			return a, nil
+		}
+	}
+
+	// Context menu intercepts all key events while open.
+	if a.showContextMenu {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			updated, result := a.contextMenu.Update(keyMsg)
+			a.contextMenu = updated
+			switch result.Event {
+			case view.ContextMenuClose:
+				a.showContextMenu = false
+			case view.ContextMenuSwitch:
+				a.showContextMenu = false
+				return a.Update(switchContextMsg{name: result.Name})
+			case view.ContextMenuDelete:
+				// Delete the named context
+				name := result.Name
+				if a.delCtxFn != nil {
+					if err := a.delCtxFn(name); err != nil {
+						a.statusBar.SetError(fmt.Sprintf("delete context: %v", err))
+						return a, nil
+					}
+				}
+				newContexts := make([]config.ContextConfig, 0, len(a.contexts))
+				for _, c := range a.contexts {
+					if c.Name != name {
+						newContexts = append(newContexts, c)
+					}
+				}
+				a.contexts = newContexts
+				a.contextMenu.SetContexts(newContexts, a.currentContextName)
+				// If the active context was deleted, switch to first available
+				if name == a.currentContextName && len(newContexts) > 0 {
+					a.showContextMenu = false
+					return a.Update(switchContextMsg{name: newContexts[0].Name})
+				}
+				return a, nil
+			case view.ContextMenuOpenAdd:
+				a.showContextMenu = false
+				a.showAddContextDialog = true
+				a.addContextDialog = view.NewAddContextDialog(a.theme)
+				return a, nil
+			}
+			return a, nil
+		}
 	}
 
 	// Colorblind menu intercepts all key events while open.
@@ -514,9 +678,89 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, av.Init()
 	}
 
+	// Connection probe results for the context switcher popup.
+	if csm, ok := msg.(contextConnStatusMsg); ok {
+		a.contextMenu.SetConnStatus(csm.name, csm.ok)
+		return a, nil
+	}
+
+	// Connection probe result for the add-context dialog.
+	if apr, ok := msg.(addContextProbeResultMsg); ok {
+		if a.showAddContextDialog {
+			a.addContextDialog.SetConnStatus(apr.ok, apr.msg)
+		}
+		return a, nil
+	}
+
+	// :context/:ctx command — switch Jenkins environment.
+	if sc, ok := msg.(switchContextMsg); ok {
+		var target *config.ContextConfig
+		for i := range a.contexts {
+			if a.contexts[i].Name == sc.name {
+				target = &a.contexts[i]
+				break
+			}
+		}
+		if target == nil {
+			a.statusBar.SetError(fmt.Sprintf("unknown context: %s", sc.name))
+			return a, nil
+		}
+		if target.Name == a.currentContextName {
+			return a, nil
+		}
+		newClient := jenkins.NewClient(target.URL, target.Username, target.Token, target.Insecure)
+		var newDisk *cache.DiskStore
+		if a.diskStoreFn != nil {
+			newDisk = a.diskStoreFn(target.URL)
+		}
+		newStore := cache.NewStore(newDisk)
+		a.activeView().Close()
+		a.client = newClient
+		a.store = newStore
+		a.monitor = monitor.NewRunningBuildsMonitor(newClient, newStore)
+		a.username = target.Username
+		a.friendlyName = ""
+		a.currentContextName = target.Name
+		if a.setCtxFn != nil {
+			_ = a.setCtxFn(target.Name)
+		}
+		a.header.SetURL(target.URL)
+		a.header.SetUser("")
+		dashboard := view.NewJobList(a.theme, newClient, newStore, "", "Dashboard", false, target.Username)
+		a.currentView = dashboard
+		a.initialView = dashboard
+		a.updateBreadcrumb()
+		return a, tea.Batch(dashboard.Init(), a.monitor.Init(), fetchUserInfo(newClient, target.Username))
+	}
+
 	// :help command — show command list overlay.
 	if _, ok := msg.(openHelpMsg); ok {
 		a.showHelp = true
+		return a, nil
+	}
+
+	// Open context menu — probe all contexts concurrently.
+	if _, ok := msg.(openContextMenuMsg); ok {
+		a.contextMenu = view.NewContextMenu(a.theme, a.contexts, a.currentContextName)
+		a.showContextMenu = true
+		var cmds []tea.Cmd
+		for _, ctx := range a.contexts {
+			cmds = append(cmds, probeContext(ctx))
+		}
+		return a, tea.Batch(cmds...)
+	}
+
+	// Open preferences dialog
+	if _, ok := msg.(openPrefsMsg); ok {
+		a.prefsDialog = view.NewPrefsDialog(a.theme, view.PrefsValues{
+			Notifications:       a.notifications,
+			GitUsernames:        a.gitUsernames,
+			RefreshInterval:     a.refreshInterval,
+			SlowRefreshInterval: a.slowInterval,
+			MaxLogLines:         a.maxLogLines,
+			LogLevel:            a.logLevel,
+		})
+		a.showPrefsDialog = true
 		return a, nil
 	}
 
@@ -574,8 +818,46 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if errMsg, ok := msg.(view.ErrorMsg); ok {
 		a.statusBar.SetError(errMsg.Err.Error())
+		if a.connected && isConnError(errMsg.Err) {
+			a.connected = false
+			a.header.SetConnected(false)
+			return a, scheduleConnCheck()
+		}
 		return a, nil
 	}
+
+	// Connection probe tick — fire a WhoAmI probe against the current context.
+	if _, ok := msg.(connCheckMsg); ok {
+		if !a.connected {
+			return a, probeCurrentConn(a.client)
+		}
+		return a, nil
+	}
+
+	// Connection probe result.
+	if pr, ok := msg.(connProbeResultMsg); ok {
+		if pr.ok && !a.connected {
+			a.connected = true
+			a.header.SetConnected(true)
+			// Resume any streaming view that stopped while disconnected.
+			if v := a.activeView(); v != nil {
+				model, cmd := v.Update(view.ConnectionRestoredMsg{})
+				a.currentView = model.(view.View)
+				return a, cmd
+			}
+		} else if !pr.ok {
+			// Still down — schedule next probe in 1s.
+			return a, scheduleConnCheck()
+		}
+		return a, nil
+	}
+	// User info fetched after context switch — update header with friendly name.
+	if ui, ok := msg.(userInfoMsg); ok {
+		a.friendlyName = ui.fullName
+		a.header.SetUser(ui.fullName)
+		return a, nil
+	}
+
 	if fsm, ok := msg.(view.FailedStageMsg); ok {
 		if fsm.Err != nil {
 			a.statusBar.SetError(fsm.Err.Error())
@@ -856,6 +1138,15 @@ func (a App) View() string {
 
 	rendered := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
+	if a.showContextMenu {
+		rendered = a.contextMenu.Render(rendered, a.width, a.height)
+	}
+	if a.showPrefsDialog {
+		rendered = a.prefsDialog.Render(rendered, a.width, a.height)
+	}
+	if a.showAddContextDialog {
+		rendered = a.addContextDialog.Render(rendered, a.width, a.height)
+	}
 	if a.showColorblindMenu {
 		rendered = a.colorblindMenu.Render(rendered, a.width, a.height)
 	}
@@ -1178,4 +1469,78 @@ func injectScrollbar(rendered string, scroll view.ScrollInfo, thumbColor lipglos
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// probeContext fires a background connection test for a named context.
+// The result arrives as contextConnStatusMsg.
+func probeContext(ctx config.ContextConfig) tea.Cmd {
+	return func() tea.Msg {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		client := jenkins.NewClient(ctx.URL, ctx.Username, ctx.Token, ctx.Insecure)
+		_, err := client.WhoAmI(c)
+		return contextConnStatusMsg{name: ctx.Name, ok: err == nil}
+	}
+}
+
+// probeAddContext fires a connection test for the add-context dialog.
+// The result arrives as addContextProbeResultMsg.
+func probeAddContext(ctx config.ContextConfig) tea.Cmd {
+	return func() tea.Msg {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		client := jenkins.NewClient(ctx.URL, ctx.Username, ctx.Token, ctx.Insecure)
+		_, err := client.WhoAmI(c)
+		if err != nil {
+			return addContextProbeResultMsg{ok: false, msg: err.Error()}
+		}
+		return addContextProbeResultMsg{ok: true}
+	}
+}
+
+// scheduleConnCheck returns a command that delivers connCheckMsg after 1 second.
+func scheduleConnCheck() tea.Cmd {
+	return tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+		return connCheckMsg{}
+	})
+}
+
+// probeCurrentConn fires a WhoAmI against the live client and returns connProbeResultMsg.
+func probeCurrentConn(client jenkins.JenkinsClient) tea.Cmd {
+	return func() tea.Msg {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := client.WhoAmI(c)
+		return connProbeResultMsg{ok: err == nil}
+	}
+}
+
+// fetchUserInfo calls WhoAmI and returns userInfoMsg with the full name.
+// Falls back to fallback if the request fails or returns an empty name.
+func fetchUserInfo(client jenkins.JenkinsClient, fallback string) tea.Cmd {
+	return func() tea.Msg {
+		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		user, err := client.WhoAmI(c)
+		if err != nil || user.FullName == "" {
+			return userInfoMsg{fullName: fallback}
+		}
+		return userInfoMsg{fullName: user.FullName}
+	}
+}
+
+// isConnError returns true when err indicates a network or server connectivity
+// problem (as opposed to an app-level error like a missing resource).
+func isConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "executing request") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "authentication failed") ||
+		strings.Contains(msg, "HTTP 5")
 }

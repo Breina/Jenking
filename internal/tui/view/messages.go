@@ -104,6 +104,10 @@ type OpenScopedStagesMsg struct {
 	NC NavigationContext
 }
 
+// ConnectionRestoredMsg is broadcast by the app when the Jenkins connection
+// recovers after a failure. Streaming views use it to resume where they stopped.
+type ConnectionRestoredMsg struct{}
+
 // BuildCompletedMsg carries the final status of a build that just left the running set.
 // The monitor fetches this after detecting a departure.
 type BuildCompletedMsg struct {

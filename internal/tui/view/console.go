@@ -134,6 +134,7 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return cv, nil
 
 	case consoleChunkMsg:
+		cv.fetchStart = msg.nextStart
 		maxOffset := max(0, len(cv.lv.lines)-cv.lv.contentHeight())
 		pinned := cv.lv.offset >= maxOffset
 		cv.appendRawLines(msg.lines)
@@ -144,6 +145,12 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return cv, consoleFetch(cv.ctx, cv.client, cv.nc.JobPath(), cv.nc.Build.Number, msg.nextStart, time.Second)
 		}
 		cv.done = true
+		return cv, nil
+
+	case ConnectionRestoredMsg:
+		if !cv.done {
+			return cv, consoleFetch(cv.ctx, cv.client, cv.nc.JobPath(), cv.nc.Build.Number, cv.fetchStart, 0)
+		}
 		return cv, nil
 
 	case consoleAbortMsg:

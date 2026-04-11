@@ -160,6 +160,14 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sl.trigger.setTheme(msg.Theme)
 		return sl, nil
 
+	case ConnectionRestoredMsg:
+		// The poll loop self-heals during transient errors once nodes are loaded.
+		// Only re-run the initial fetch if it never completed (nodes still empty).
+		if !sl.done && len(sl.nodes) == 0 {
+			return sl, sl.fetchAllLogs
+		}
+		return sl, nil
+
 	case StageLogMsg:
 		if msg.Err != nil {
 			return sl, func() tea.Msg { return ErrorMsg{Err: msg.Err} }

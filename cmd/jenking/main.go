@@ -34,14 +34,15 @@ func main() {
 	}
 	defer logCleanup()
 
-	client := jenkins.NewClient(cfg.Server.URL, cfg.Server.Username, cfg.Server.Token, cfg.Server.Insecure)
+	active := cfg.ActiveContext()
+	client := jenkins.NewClient(active.URL, active.Username, active.Token, active.Insecure)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	user, err := client.WhoAmI(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to Jenkins: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error connecting to Jenkins at %s (user: %s): %v\n", active.URL, active.Username, err)
 		os.Exit(1)
 	}
 
@@ -60,11 +61,11 @@ func main() {
 	}
 	activeTheme := theme.ApplyColorblindFilter(baseTheme, cbType)
 
-	disk := newDiskStore(cfg.Server.URL)
+	disk := newDiskStore(active.URL)
 	store := cache.NewStore(disk)
 	keys := tui.DefaultKeyMap()
 	debug := logging.ParseLevel(cfg.Preferences.LogLevel) == logging.LevelDebug
-	header := component.NewHeader(activeTheme, cfg.Server.URL, user.FullName, user.JenkinsVersion, debug)
+	header := component.NewHeader(activeTheme, active.URL, user.FullName, user.JenkinsVersion, debug)
 	breadcrumb := component.NewBreadcrumb(activeTheme)
 	statusBar := component.NewStatusBar(activeTheme)
 	dashboard := view.NewJobList(activeTheme, client, store, "", "Dashboard", false, user.ID)
@@ -75,8 +76,11 @@ func main() {
 	saveThemeFn := func(t string) error {
 		return cfg.SetTheme(t)
 	}
+	savePrefsFn := func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error {
+		return cfg.SetPreferences(notifications, gitUsernames, refreshInterval, slowInterval, maxLogLines, logLevel)
+	}
 
-	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, dashboard, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications)
+	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.RefreshInterval, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, dashboard, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications, cfg.Preferences.MaxLogLines, cfg.Preferences.LogLevel, cfg.Contexts, active.Name, newDiskStore, cfg.AddContext, cfg.DeleteContext, cfg.SetCurrentContext, savePrefsFn)
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

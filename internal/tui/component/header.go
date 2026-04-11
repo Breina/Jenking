@@ -104,6 +104,16 @@ func (h *Header) SetRunningBuilds(count int, key string) {
 	h.runningKey = key
 }
 
+// SetURL updates the server URL shown in the header.
+func (h *Header) SetURL(url string) {
+	h.url = url
+}
+
+// SetUser updates the user shown in the header.
+func (h *Header) SetUser(user string) {
+	h.user = user
+}
+
 // SetMineFilter updates whether the mine filter is active (shown inline with username).
 func (h *Header) SetMineFilter(mine bool) {
 	h.filterMine = mine
