@@ -1,6 +1,7 @@
 package jenkins
 
 import (
+	"encoding/json"
 	"net/url"
 	"strings"
 	"time"
@@ -263,9 +264,29 @@ func extractCause(actions []jsonAction) string {
 	return fallback
 }
 
+// jsonParameter holds a build-time parameter value. Value is RawMessage
+// because Jenkins serialises parameters using their native JSON type — bool
+// for BooleanParameterValue, number for NumberParameterValue, etc. Decoding
+// into a `string` field crashes the entire build-detail unmarshal and was
+// the root cause of GetBuild silently failing for any pipeline with a
+// non-string parameter.
 type jsonParameter struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name  string          `json:"name"`
+	Value json.RawMessage `json:"value"`
+}
+
+// stringValue returns the parameter value as a string regardless of its
+// underlying JSON type. Strings are unquoted; bool/number/null fall back to
+// their literal JSON form (e.g. "true", "42", "null").
+func (p *jsonParameter) stringValue() string {
+	if len(p.Value) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(p.Value, &s); err == nil {
+		return s
+	}
+	return strings.Trim(string(p.Value), `"`)
 }
 
 type jsonDefaultValue struct {
@@ -379,8 +400,9 @@ func (j *jsonBuildDetail) toDomain() BuildDetail {
 	for _, action := range j.Actions {
 		if len(action.Parameters) > 0 && bd.Params == nil {
 			bd.Params = make(map[string]string, len(action.Parameters))
-			for _, p := range action.Parameters {
-				bd.Params[p.Name] = p.Value
+			for i := range action.Parameters {
+				p := &action.Parameters[i]
+				bd.Params[p.Name] = p.stringValue()
 			}
 		}
 	}

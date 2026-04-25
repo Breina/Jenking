@@ -1,0 +1,90 @@
+// jenking-e2e: Controlled test pipeline for jenking integration tests.
+// Deploy this as a Pipeline job named "jenking-e2e" on the target Jenkins.
+// See test/e2e/fixtures/README.md for setup instructions.
+pipeline {
+    agent any
+
+    parameters {
+        booleanParam(
+            name: 'FAIL',
+            defaultValue: false,
+            description: 'Set to true to trigger a deliberate stage failure (tests the failure state rendering)'
+        )
+        string(
+            name: 'MESSAGE',
+            defaultValue: 'hello from jenking-e2e',
+            description: 'A string parameter to test the parameter input dialog'
+        )
+        choice(
+            name: 'SPEED',
+            choices: ['normal', 'fast', 'slow'],
+            description: 'Controls sleep durations for timing tests'
+        )
+    }
+
+    stages {
+        stage('Prepare') {
+            steps {
+                echo "Starting jenking-e2e test pipeline"
+                echo "MESSAGE: ${params.MESSAGE}"
+                echo "SPEED: ${params.SPEED}"
+                sh 'echo "Build node: $(hostname)"'
+            }
+        }
+
+        stage('Work') {
+            steps {
+                script {
+                    def sleepTime = params.SPEED == 'fast' ? 2 : (params.SPEED == 'slow' ? 15 : 5)
+                    echo "Sleeping ${sleepTime}s to allow stage auto-follow tests..."
+                    sleep sleepTime
+                }
+                echo "Work stage complete"
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo "Running tests..."
+                sh '''
+                    echo "Test 1: pass"
+                    echo "Test 2: pass"
+                    echo "Test 3: pass"
+                '''
+                // Emit JUnit XML for test report rendering tests
+                writeFile file: 'results.xml', text: '''<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="jenking-e2e" tests="3" failures="0" errors="0" time="1.0">
+  <testcase name="test1" classname="e2e" time="0.3"/>
+  <testcase name="test2" classname="e2e" time="0.4"/>
+  <testcase name="test3" classname="e2e" time="0.3"/>
+</testsuite>'''
+                junit 'results.xml'
+            }
+        }
+
+        stage('Deliberate Failure') {
+            when {
+                expression { return params.FAIL == true }
+            }
+            steps {
+                echo "FAIL=true: about to fail intentionally"
+                error('Deliberate failure triggered by FAIL parameter')
+            }
+        }
+
+        stage('Publish') {
+            steps {
+                echo "Publishing artifacts..."
+                sh 'echo "artifact content" > artifact.txt'
+                archiveArtifacts artifacts: 'artifact.txt', fingerprint: true
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Pipeline finished. Result: ${currentBuild.currentResult}"
+            cleanWs()
+        }
+    }
+}

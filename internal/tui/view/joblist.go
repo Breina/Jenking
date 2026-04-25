@@ -59,9 +59,10 @@ type JobList struct {
 	jobs              []jenkins.Job
 	width             int
 	height            int
-	username          string // authenticated user ID (propagated to child NavigationContexts)
-	branchContext     bool   // true when listing branches/MRs inside a MultiBranch project
-	confirmTrigger    bool   // show confirm dialog for non-parameterized jobs
+	username          string   // authenticated user ID (propagated to child NavigationContexts)
+	gitUsernames      []string // git display names for mine-filter matching (propagated to child NavigationContexts)
+	branchContext     bool     // true when listing branches/MRs inside a MultiBranch project
+	confirmTrigger    bool     // show confirm dialog for non-parameterized jobs
 	triggerYes        bool
 	triggerNC         NavigationContext
 	paramForm         *component.ParamForm // non-nil when showing parameter form
@@ -94,7 +95,8 @@ const (
 // NewJobList creates a job list view. folderPath="" means root. title is the breadcrumb label.
 // branchContext=true renders branch/MR icons instead of type icons (used inside MultiBranch projects).
 // username is the authenticated user ID (for mine filter propagation); pass "" if unknown.
-func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, folderPath, title string, branchContext bool, username string) *JobList {
+// gitUsernames are the git display names used for mine-filter matching in child builds views.
+func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, folderPath, title string, branchContext bool, username string, gitUsernames []string) *JobList {
 	ctx, cancel := context.WithCancel(context.Background())
 	var columns []component.Column
 	if branchContext {
@@ -122,6 +124,7 @@ func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store,
 		folderPath:    folderPath,
 		title:         title,
 		username:      username,
+		gitUsernames:  gitUsernames,
 		branchContext: branchContext,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -525,10 +528,10 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := jl.jobs[di]
 				switch selected.Type {
 				case jenkins.JobTypeFolder:
-					child := NewJobList(jl.theme, jl.client, jl.store, selected.FullPath, selected.Name, false, jl.username)
+					child := NewJobList(jl.theme, jl.client, jl.store, selected.FullPath, selected.Name, false, jl.username, jl.gitUsernames)
 					return jl, func() tea.Msg { return PushViewMsg{View: child} }
 				case jenkins.JobTypeMultiBranch:
-					child := NewJobList(jl.theme, jl.client, jl.store, selected.FullPath, selected.Name, true, jl.username)
+					child := NewJobList(jl.theme, jl.client, jl.store, selected.FullPath, selected.Name, true, jl.username, jl.gitUsernames)
 					return jl, func() tea.Msg { return PushViewMsg{View: child} }
 				default:
 					nc := jl.jobNC(selected)
@@ -693,7 +696,7 @@ func (jl *JobList) Close() error {
 }
 
 func (jl *JobList) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View {
-	return folderParentJobList(t, c, s, jl.folderPath, jl.username)
+	return folderParentJobList(t, c, s, jl.folderPath, jl.username, jl.gitUsernames)
 }
 
 func (jl *JobList) ScrollInfo() ScrollInfo {
@@ -752,18 +755,20 @@ func (jl *JobList) jobNC(selected jenkins.Job) NavigationContext {
 			folderPath = jl.folderPath[:idx]
 		}
 		return NavigationContext{
-			Level:       CtxBranch,
-			FolderPath:  folderPath,
-			ProjectName: jl.title,
-			BranchName:  selected.Name,
-			Username:    jl.username,
+			Level:        CtxBranch,
+			FolderPath:   folderPath,
+			ProjectName:  jl.title,
+			BranchName:   selected.Name,
+			Username:     jl.username,
+			GitUsernames: jl.gitUsernames,
 		}
 	}
 	return NavigationContext{
-		Level:       CtxProject,
-		FolderPath:  jl.folderPath,
-		ProjectName: selected.Name,
-		Username:    jl.username,
+		Level:        CtxProject,
+		FolderPath:   jl.folderPath,
+		ProjectName:  selected.Name,
+		Username:     jl.username,
+		GitUsernames: jl.gitUsernames,
 	}
 }
 

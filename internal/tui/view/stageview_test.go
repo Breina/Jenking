@@ -751,3 +751,245 @@ func TestWhenSkipDetected_AppliesNonEmpty(t *testing.T) {
 		t.Errorf("expected DeployProd marked as skipped, got %v", sv.stages[0].Status)
 	}
 }
+
+// ----------------------------------------------------------------------
+// isRunning() — single authority for "render the running bar".
+// These tests lock down the rule the user explicitly asked for: the build
+// API status is authoritative. anyStageRunning() is consulted only when the
+// status is empty/Unknown (initial-load races). A stage stuck in "Running"
+// after the build is terminal must NOT keep the bar animating.
+// ----------------------------------------------------------------------
+
+// TestIsRunning_BuildTerminalDespiteRunningStage is the headline regression
+// test for the user's bug. Before the fix, View() rendered the running bar
+// as long as anyStageRunning() returned true, even when the build API had
+// already reported a terminal status. After the fix, isRunning() must
+// return false the moment build.Status is terminal, regardless of stage
+// staleness in the flowGraph response.
+func TestIsRunning_BuildTerminalDespiteRunningStage(t *testing.T) {
+	cases := []jenkins.BuildStatus{
+		jenkins.BuildStatusSuccess,
+		jenkins.BuildStatusFailed,
+		jenkins.BuildStatusAborted,
+		jenkins.BuildStatusUnstable,
+		jenkins.BuildStatusNotBuilt,
+		jenkins.BuildStatusSkipped,
+	}
+	for _, status := range cases {
+		t.Run(string(status), func(t *testing.T) {
+			sv := makeStageView(jenkins.Build{Status: status, Timestamp: time.Now()},
+				[]jenkins.Stage{
+					{Name: "Build", Status: jenkins.BuildStatusSuccess},
+					{Name: "PostActions", Status: jenkins.BuildStatusRunning}, // stale
+				})
+			if sv.isRunning() {
+				t.Errorf("isRunning() = true with terminal build %v but stale running stage; want false", status)
+			}
+		})
+	}
+}
+
+// TestIsRunning_BuildRunning verifies the running bar shows whenever the
+// build API says running, even if every stage looks terminal in the
+// flowGraph response (early-snapshot finalisation race).
+func TestIsRunning_BuildRunning(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusRunning, Timestamp: time.Now()},
+		[]jenkins.Stage{
+			{Name: "Build", Status: jenkins.BuildStatusSuccess},
+			{Name: "Test", Status: jenkins.BuildStatusSuccess},
+		})
+	if !sv.isRunning() {
+		t.Error("isRunning() = false with build status Running; want true")
+	}
+}
+
+// TestIsRunning_FallbackWhenStatusEmpty exercises the fallback path: when
+// the build API hasn't reported a status yet (initial Init() before
+// fetchBuildDetail returns), trust the stage data.
+func TestIsRunning_FallbackWhenStatusEmpty(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: "", Timestamp: time.Now()},
+		[]jenkins.Stage{{Name: "Build", Status: jenkins.BuildStatusRunning}})
+	if !sv.isRunning() {
+		t.Error("isRunning() = false with empty status + running stage; want true (fallback)")
+	}
+
+	sv2 := makeStageView(jenkins.Build{Status: "", Timestamp: time.Now()},
+		[]jenkins.Stage{{Name: "Build", Status: jenkins.BuildStatusSuccess}})
+	if sv2.isRunning() {
+		t.Error("isRunning() = true with empty status + non-running stage; want false")
+	}
+}
+
+// TestIsRunning_FallbackWhenStatusUnknown — same fallback rule for
+// BuildStatusUnknown, which is what ParseBuildStatus returns for unfamiliar
+// result values.
+func TestIsRunning_FallbackWhenStatusUnknown(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusUnknown, Timestamp: time.Now()},
+		[]jenkins.Stage{{Name: "Build", Status: jenkins.BuildStatusRunning}})
+	if !sv.isRunning() {
+		t.Error("isRunning() = false with Unknown status + running stage; want true (fallback)")
+	}
+
+	sv2 := makeStageView(jenkins.Build{Status: jenkins.BuildStatusUnknown, Timestamp: time.Now()},
+		[]jenkins.Stage{{Name: "Build", Status: jenkins.BuildStatusSuccess}})
+	if sv2.isRunning() {
+		t.Error("isRunning() = true with Unknown status + non-running stage; want false")
+	}
+}
+
+// TestView_RendersFinishedBarWhenBuildTerminal is the integration check
+// that the View() output actually picks the finished branch. We don't
+// assert on exact ANSI bytes (theme-dependent); instead we compare against
+// a reference render where everything is unambiguously terminal. Both
+// branches go through different code paths (RenderWithTextTall vs
+// RenderCompleteTall) so the outputs differ.
+func TestView_RendersFinishedBarWhenBuildTerminal(t *testing.T) {
+	stale := []jenkins.Stage{
+		{Name: "Build", Status: jenkins.BuildStatusSuccess},
+		{Name: "PostActions", Status: jenkins.BuildStatusRunning}, // stale running stage
+	}
+	clean := []jenkins.Stage{
+		{Name: "Build", Status: jenkins.BuildStatusSuccess},
+		{Name: "PostActions", Status: jenkins.BuildStatusSuccess},
+	}
+	build := jenkins.Build{
+		Status:    jenkins.BuildStatusSuccess,
+		Duration:  10 * time.Second,
+		Timestamp: time.Now().Add(-10 * time.Second),
+	}
+	svStale := makeStageView(build, stale)
+	svStale.SetSize(80, 20)
+	svClean := makeStageView(build, clean)
+	svClean.SetSize(80, 20)
+
+	staleView := svStale.View()
+	cleanView := svClean.View()
+
+	// Both should render the finished bar: outputs identical at the bar
+	// region. (Stage rows differ because PostActions has a different
+	// status icon, but the bar prefix should match.)
+	staleBar := firstNLines(staleView, stageBarHeight)
+	cleanBar := firstNLines(cleanView, stageBarHeight)
+	if staleBar != cleanBar {
+		t.Errorf("stale-stages and clean-stages renders should produce the same finished bar.\nstale:\n%q\nclean:\n%q",
+			staleBar, cleanBar)
+	}
+}
+
+// TestView_RendersRunningBarWhenBuildRunning is the converse: while the
+// build is running, the bar must use the animated form even if all stages
+// look terminal momentarily.
+func TestView_RendersRunningBarWhenBuildRunning(t *testing.T) {
+	build := jenkins.Build{
+		Status:            jenkins.BuildStatusRunning,
+		EstimatedDuration: 60 * time.Second,
+		Timestamp:         time.Now().Add(-5 * time.Second),
+	}
+	allDone := []jenkins.Stage{
+		{Name: "Build", Status: jenkins.BuildStatusSuccess},
+		{Name: "Test", Status: jenkins.BuildStatusSuccess},
+	}
+	svRunning := makeStageView(build, allDone)
+	svRunning.SetSize(80, 20)
+
+	finishedBuild := build
+	finishedBuild.Status = jenkins.BuildStatusSuccess
+	finishedBuild.Duration = 5 * time.Second
+	svFinished := makeStageView(finishedBuild, allDone)
+	svFinished.SetSize(80, 20)
+
+	runningBar := firstNLines(svRunning.View(), stageBarHeight)
+	finishedBar := firstNLines(svFinished.View(), stageBarHeight)
+	if runningBar == finishedBar {
+		t.Errorf("running-build and finished-build should render different bars but produced identical output:\n%q",
+			runningBar)
+	}
+}
+
+// firstNLines returns the first n lines of s (bar region) for substring
+// comparison without depending on terminal width.
+func firstNLines(s string, n int) string {
+	count := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			count++
+			if count == n {
+				return s[:i]
+			}
+		}
+	}
+	return s
+}
+
+// ----------------------------------------------------------------------
+// BuildCompletedMsg handler — defence-in-depth path so the StageView
+// learns about terminal status from the RunningBuildsMonitor (within ~1s)
+// even if its own 2s refresh chain misses a tick.
+// ----------------------------------------------------------------------
+
+// TestBuildCompletedMsg_UpdatesStatusOnMatch verifies the happy path: a
+// completion broadcast for the current build flips sv.build.Status to the
+// final value supplied by the monitor.
+func TestBuildCompletedMsg_UpdatesStatusOnMatch(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Number: 42, Status: jenkins.BuildStatusRunning, Timestamp: time.Now()},
+		[]jenkins.Stage{{Name: "Build", Status: jenkins.BuildStatusRunning}})
+	final := jenkins.Build{Number: 42, Status: jenkins.BuildStatusSuccess, Duration: 8 * time.Second}
+	_, _ = sv.Update(BuildCompletedMsg{
+		JobPath: sv.nc.JobPath(),
+		Number:  42,
+		Build:   final,
+	})
+	if sv.build.Status != jenkins.BuildStatusSuccess {
+		t.Errorf("expected sv.build.Status=Success after BuildCompletedMsg, got %v", sv.build.Status)
+	}
+	if sv.build.Duration != 8*time.Second {
+		t.Errorf("expected duration to be applied, got %v", sv.build.Duration)
+	}
+}
+
+// TestBuildCompletedMsg_IgnoresWrongJob — completion for a different job
+// must not mutate state. (App routes broadcasts to the active view; the
+// view itself filters.)
+func TestBuildCompletedMsg_IgnoresWrongJob(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Number: 42, Status: jenkins.BuildStatusRunning, Timestamp: time.Now()}, nil)
+	before := sv.build.Status
+	_, _ = sv.Update(BuildCompletedMsg{
+		JobPath: "some/other/job",
+		Number:  42,
+		Build:   jenkins.Build{Status: jenkins.BuildStatusFailed},
+	})
+	if sv.build.Status != before {
+		t.Errorf("expected status unchanged for wrong job, was %v now %v", before, sv.build.Status)
+	}
+}
+
+// TestBuildCompletedMsg_IgnoresWrongNumber — completion for a different
+// build number on the same job (e.g. an older build finishing while we
+// view a newer one) must not mutate state.
+func TestBuildCompletedMsg_IgnoresWrongNumber(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Number: 42, Status: jenkins.BuildStatusRunning, Timestamp: time.Now()}, nil)
+	before := sv.build.Status
+	_, _ = sv.Update(BuildCompletedMsg{
+		JobPath: sv.nc.JobPath(),
+		Number:  41, // not the one we're viewing
+		Build:   jenkins.Build{Status: jenkins.BuildStatusFailed},
+	})
+	if sv.build.Status != before {
+		t.Errorf("expected status unchanged for wrong build number, was %v now %v", before, sv.build.Status)
+	}
+}
+
+// TestBuildCompletedMsg_IgnoresErrors — when the monitor reports an error
+// fetching the final detail, we keep our own polling-derived status rather
+// than overwriting it with a zero-value Build.
+func TestBuildCompletedMsg_IgnoresErrors(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Number: 42, Status: jenkins.BuildStatusRunning, Timestamp: time.Now()}, nil)
+	_, _ = sv.Update(BuildCompletedMsg{
+		JobPath: sv.nc.JobPath(),
+		Number:  42,
+		Err:     &mockError{"fetch failed"},
+	})
+	if sv.build.Status != jenkins.BuildStatusRunning {
+		t.Errorf("expected status preserved on error, got %v", sv.build.Status)
+	}
+}

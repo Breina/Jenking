@@ -428,13 +428,13 @@ func (bv *BuildsView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cach
 		if bv.nc.FolderPath != "" {
 			pp = bv.nc.FolderPath + "/" + bv.nc.ProjectName
 		}
-		return NewJobList(t, c, s, pp, bv.nc.ProjectName, true, bv.nc.Username)
+		return NewJobList(t, c, s, pp, bv.nc.ProjectName, true, bv.nc.Username, bv.nc.GitUsernames)
 	}
 	childPath := bv.nc.ProjectName
 	if bv.nc.FolderPath != "" {
 		childPath = bv.nc.FolderPath + "/" + bv.nc.ProjectName
 	}
-	return folderParentJobList(t, c, s, childPath, bv.nc.Username)
+	return folderParentJobList(t, c, s, childPath, bv.nc.Username, bv.nc.GitUsernames)
 }
 
 func (bv *BuildsView) SetSize(width, height int) {

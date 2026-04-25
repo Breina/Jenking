@@ -429,3 +429,25 @@ func TestAllBuildsProvider_Builds_MergesOverlay(t *testing.T) {
 type mockError struct{ msg string }
 
 func (e *mockError) Error() string { return e.msg }
+
+// TestBranchBuildsProvider_InitReFetches verifies that calling Init() a
+// second time (the pop-back path: app.go re-Inits the popped-to view to
+// revive its polling chain after messages were dropped while a child was
+// active) returns a non-nil fetch command. Without this, popping back to
+// a BuildsView whose tick chain died would leave it showing stale data
+// indefinitely.
+func TestBranchBuildsProvider_InitReFetches(t *testing.T) {
+	provider := NewBranchBuildsProvider(nil, nil, NavigationContext{
+		Level: CtxBranch, ProjectName: "p", BranchName: "b",
+	})
+
+	first := provider.Init()
+	if first == nil {
+		t.Fatal("first Init() returned nil cmd; expected fetchBuilds")
+	}
+
+	second := provider.Init()
+	if second == nil {
+		t.Fatal("second Init() returned nil cmd; expected re-fetch on re-entry (pop-back path)")
+	}
+}

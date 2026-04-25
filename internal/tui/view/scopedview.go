@@ -287,9 +287,9 @@ func (sv *ScopedView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cach
 	username := sv.resolver.username
 	switch scope.Level {
 	case CtxFolder:
-		return NewJobList(t, c, s, scope.FolderPath, shortName(decodeName(scope.FolderPath)), false, username)
+		return NewJobList(t, c, s, scope.FolderPath, shortName(decodeName(scope.FolderPath)), false, username, scope.GitUsernames)
 	case CtxProject:
-		return NewJobList(t, c, s, scope.JobPath(), scope.ProjectName, true, username)
+		return NewJobList(t, c, s, scope.JobPath(), scope.ProjectName, true, username, scope.GitUsernames)
 	case CtxBranch:
 		return NewBuildsView(t, c, s, scope, NewBranchBuildsProvider(c, s, scope))
 	}

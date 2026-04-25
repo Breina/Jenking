@@ -68,7 +68,7 @@ func main() {
 	header := component.NewHeader(activeTheme, active.URL, user.FullName, user.JenkinsVersion, debug)
 	breadcrumb := component.NewBreadcrumb(activeTheme)
 	statusBar := component.NewStatusBar(activeTheme)
-	dashboard := view.NewJobList(activeTheme, client, store, "", "Dashboard", false, user.ID)
+	dashboard := view.NewJobList(activeTheme, client, store, "", "Dashboard", false, user.ID, cfg.Preferences.GitUsernames)
 
 	saveFn := func(t theme.ColorblindnessType) error {
 		return cfg.SetColorblindnessType(string(t))

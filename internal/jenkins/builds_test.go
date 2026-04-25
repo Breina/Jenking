@@ -78,6 +78,84 @@ func TestJsonBuildToDomain_TriggeredBy(t *testing.T) {
 	})
 }
 
+// TestJsonBuildDetailToDomain_NonStringParameters is the regression test for
+// the GetBuild-silently-failing bug. Jenkins serialises parameter values
+// using the parameter's native JSON type (BooleanParameterValue → bool,
+// StringParameterValue → string, etc.). Decoding the entire build response
+// failed when ANY parameter was non-string, leaving every downstream view
+// without a build status. Fixed by typing jsonParameter.Value as
+// json.RawMessage and converting per-value in stringValue().
+func TestJsonBuildDetailToDomain_NonStringParameters(t *testing.T) {
+	raw := `{
+		"number": 9,
+		"result": "SUCCESS",
+		"building": false,
+		"duration": 12000,
+		"estimatedDuration": 15000,
+		"timestamp": 0,
+		"_class": "org.jenkinsci.plugins.workflow.job.WorkflowRun",
+		"actions": [
+			{"_class": "hudson.model.ParametersAction", "parameters": [
+				{"_class": "hudson.model.BooleanParameterValue", "name": "FAIL", "value": false},
+				{"_class": "hudson.model.StringParameterValue", "name": "MESSAGE", "value": "hello from jenking-e2e"},
+				{"_class": "hudson.model.StringParameterValue", "name": "SPEED", "value": "fast"}
+			]}
+		]
+	}`
+	var bd jsonBuildDetail
+	if err := json.Unmarshal([]byte(raw), &bd); err != nil {
+		t.Fatalf("decode failed (the bug): %v", err)
+	}
+	d := bd.toDomain()
+	if d.Status != BuildStatusSuccess {
+		t.Errorf("Status = %v, want Success — parameter parsing must not block status decode", d.Status)
+	}
+	if d.Params["FAIL"] != "false" {
+		t.Errorf("Params[FAIL] = %q, want %q (bool→string conversion)", d.Params["FAIL"], "false")
+	}
+	if d.Params["MESSAGE"] != "hello from jenking-e2e" {
+		t.Errorf("Params[MESSAGE] = %q, want plain string (no surrounding quotes)", d.Params["MESSAGE"])
+	}
+	if d.Params["SPEED"] != "fast" {
+		t.Errorf("Params[SPEED] = %q, want %q", d.Params["SPEED"], "fast")
+	}
+}
+
+// TestJsonBuildDetailToDomain_ParameterTypes covers the full matrix of
+// JSON value shapes Jenkins emits for ParametersAction.
+func TestJsonBuildDetailToDomain_ParameterTypes(t *testing.T) {
+	raw := `{
+		"number": 1, "result": "SUCCESS", "building": false,
+		"duration": 0, "estimatedDuration": 0, "timestamp": 0,
+		"actions": [{"_class": "hudson.model.ParametersAction", "parameters": [
+			{"name": "S", "value": "text"},
+			{"name": "B_TRUE",  "value": true},
+			{"name": "B_FALSE", "value": false},
+			{"name": "N_INT",   "value": 42},
+			{"name": "N_FLOAT", "value": 3.14},
+			{"name": "NIL",     "value": null},
+			{"name": "EMPTY",   "value": ""}
+		]}]
+	}`
+	var bd jsonBuildDetail
+	if err := json.Unmarshal([]byte(raw), &bd); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	d := bd.toDomain()
+	want := map[string]string{
+		"S": "text", "B_TRUE": "true", "B_FALSE": "false",
+		"N_INT": "42", "N_FLOAT": "3.14",
+		// JSON null unmarshals into a Go string as the empty string —
+		// fine for our display use case (no separate "null" sentinel).
+		"NIL": "", "EMPTY": "",
+	}
+	for k, v := range want {
+		if got := d.Params[k]; got != v {
+			t.Errorf("Params[%q] = %q, want %q", k, got, v)
+		}
+	}
+}
+
 func TestParseFlowGraphTable_FailurePropagation(t *testing.T) {
 	// Stage "Build Maven" has a child "sh" that failed.
 	// All stages at same depth (padding * 9).

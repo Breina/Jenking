@@ -27,7 +27,7 @@ type ScopedParentTarget interface {
 // folderParentJobList returns the non-branch JobList for the folder that
 // CONTAINS the item at childPath (a slash-joined path like "Code/webidm").
 // Returns nil when childPath has no "/" — the parent is the root Dashboard.
-func folderParentJobList(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store, childPath, username string) View {
+func folderParentJobList(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store, childPath, username string, gitUsernames []string) View {
 	idx := strings.LastIndex(childPath, "/")
 	if idx < 0 {
 		return nil // parent is root/Dashboard
@@ -38,5 +38,5 @@ func folderParentJobList(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store,
 	if i := strings.LastIndex(parentPath, "/"); i >= 0 {
 		title = parentPath[i+1:]
 	}
-	return NewJobList(t, c, s, parentPath, title, false, username)
+	return NewJobList(t, c, s, parentPath, title, false, username, gitUsernames)
 }

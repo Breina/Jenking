@@ -250,7 +250,7 @@ func (sv *StageView) Init() tea.Cmd {
 		sv.preview.SetContext(sv.ctx)
 
 		cmds := []tea.Cmd{sv.preview.Restart(sv.previewIdxForCursor(sv.table.Cursor()), sv.stages)}
-		if sv.build.Status == jenkins.BuildStatusRunning || sv.anyStageRunning() {
+		if sv.isRunning() {
 			cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick(), sv.fetchPrevStages)
 		}
 		return tea.Batch(cmds...)
@@ -278,7 +278,7 @@ func (sv *StageView) Init() tea.Cmd {
 			if sv.build.Status == "" {
 				cmds = append(cmds, sv.fetchBuildDetail())
 			}
-			if sv.build.Status == jenkins.BuildStatusRunning || sv.anyStageRunning() {
+			if sv.isRunning() {
 				cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick(), sv.fetchPrevStages)
 			}
 			return tea.Batch(cmds...)
@@ -402,10 +402,15 @@ func (sv *StageView) scheduleRefresh() tea.Cmd {
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Fetch the official build status from Jenkins.
+		// Fetch the official build status from Jenkins. If GetBuild fails
+		// we still ship stageRefreshMsg with build=nil — better to keep
+		// stage data flowing than to abort the whole tick on a transient
+		// build-detail error.
 		var build *jenkins.Build
 		if detail, berr := client.GetBuild(ctx, jobPath, buildNumber); berr == nil {
 			build = &detail.Build
+		} else {
+			slog.Warn("stageview.refresh: GetBuild failed", "job", jobPath, "build", buildNumber, "err", berr)
 		}
 		// Fetch incremental console log for when-skip detection.
 		var logChunk string
@@ -515,7 +520,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds := []tea.Cmd{sv.preview.UpdateForCursor(sv.previewIdxForCursor(sv.table.Cursor()), sv.stages)}
-		if sv.build.Status == jenkins.BuildStatusRunning || sv.anyStageRunning() {
+		if sv.isRunning() {
 			cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick())
 		} else {
 			// Build is finished — persist stages and apply when-skip detection.
@@ -533,7 +538,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return sv, tea.Batch(cmds...)
 
 	case stageProgressTickMsg:
-		if sv.build.Status == jenkins.BuildStatusRunning || sv.anyStageRunning() {
+		if sv.isRunning() {
 			sv.populateTable()
 		}
 		return sv, sv.scheduleProgressTick()
@@ -697,6 +702,21 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return OpenTriggeredBuildMsg{NC: nc, LastKnownBuild: lastKnown}
 		}
 
+	case BuildCompletedMsg:
+		// The RunningBuildsMonitor delivers this within ~1s of the build
+		// leaving the running set. It's a defence-in-depth signal so the
+		// view still updates if the 2s refresh chain misses a tick (e.g.
+		// during a transient network blip at the moment of completion).
+		if msg.Err != nil {
+			return sv, nil
+		}
+		if msg.JobPath != sv.nc.JobPath() || msg.Number != sv.build.Number {
+			return sv, nil
+		}
+		sv.setBuild(msg.Build)
+		sv.populateTable()
+		return sv, nil
+
 	case tea.KeyMsg:
 		if sv.paramForm != nil {
 			result := sv.paramForm.Update(msg)
@@ -835,6 +855,22 @@ func (sv *StageView) anyStageRunning() bool {
 		if s.Status == jenkins.BuildStatusRunning {
 			return true
 		}
+	}
+	return false
+}
+
+// isRunning is the single authority for "render the running bar / keep
+// polling because the build is in progress." The build API status is the
+// authoritative signal — if Jenkins says terminal, we trust it, even if
+// flowGraph HTML still shows a stage as "in progress" during the
+// finalisation window. anyStageRunning is consulted only as a fallback for
+// the initial-load races where the build status hasn't been fetched yet.
+func (sv *StageView) isRunning() bool {
+	if sv.build.Status == jenkins.BuildStatusRunning {
+		return true
+	}
+	if sv.build.Status == "" || sv.build.Status == jenkins.BuildStatusUnknown {
+		return sv.anyStageRunning()
 	}
 	return false
 }
@@ -1221,7 +1257,7 @@ func (sv *StageView) View() string {
 		return bar + "\n" + sv.table.View()
 	}
 	var content string
-	if sv.build.Status == jenkins.BuildStatusRunning || sv.anyStageRunning() {
+	if sv.isRunning() {
 		elapsed := time.Since(sv.build.Timestamp)
 		barWidth := sv.width
 		if barWidth < 1 {

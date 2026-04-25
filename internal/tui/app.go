@@ -445,7 +445,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if a.popView() {
 				a.updateBreadcrumb()
-				return a, closeCmd
+				// Restart the popped-to view's data flow. Its tea.Cmd
+				// messages were dropped by the child while pushed, so
+				// its polling chain has died. Calling Init() re-fetches
+				// and reschedules. Each view's Init() is required to be
+				// idempotent w.r.t. re-entry.
+				return a, tea.Batch(closeCmd, a.currentView.Init())
 			}
 			if hp, ok := a.activeView().(view.HasParent); ok {
 				parent := hp.ParentView(a.theme, a.client, a.store)
@@ -626,7 +631,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.header.SetURL(target.URL)
 		a.header.SetUser("")
-		dashboard := view.NewJobList(a.theme, newClient, newStore, "", "Dashboard", false, target.Username)
+		dashboard := view.NewJobList(a.theme, newClient, newStore, "", "Dashboard", false, target.Username, a.gitUsernames)
 		a.currentView = dashboard
 		a.initialView = dashboard
 		a.updateBreadcrumb()
@@ -741,6 +746,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if a.popView() {
 			a.updateBreadcrumb()
+			// See pop-on-Esc above: re-Init the restored view to wake up
+			// its polling chain (messages were dropped while child active).
+			return a, tea.Batch(closeCmd, a.currentView.Init())
 		}
 		return a, closeCmd
 	}
@@ -1264,7 +1272,7 @@ func (a *App) jobListForCurrentContext() view.View {
 		if nc.FolderPath != "" {
 			pp = nc.FolderPath + "/" + nc.ProjectName
 		}
-		return view.NewJobList(a.theme, a.client, a.store, pp, nc.ProjectName, true, a.username)
+		return view.NewJobList(a.theme, a.client, a.store, pp, nc.ProjectName, true, a.username, a.gitUsernames)
 	case view.CtxProject:
 		// Navigate up to the parent folder's job list.
 		if nc.FolderPath != "" {
@@ -1272,7 +1280,7 @@ func (a *App) jobListForCurrentContext() view.View {
 			if idx := strings.LastIndex(nc.FolderPath, "/"); idx >= 0 {
 				title = nc.FolderPath[idx+1:]
 			}
-			return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username)
+			return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username, a.gitUsernames)
 		}
 		return a.initialView
 	case view.CtxFolder:
@@ -1280,7 +1288,7 @@ func (a *App) jobListForCurrentContext() view.View {
 		if idx := strings.LastIndex(nc.FolderPath, "/"); idx >= 0 {
 			title = nc.FolderPath[idx+1:]
 		}
-		return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username)
+		return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username, a.gitUsernames)
 	default:
 		// CtxRoot: if already on a JobList, go to parent; otherwise go to root.
 		if jl, ok := a.currentView.(*view.JobList); ok {
