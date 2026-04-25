@@ -34,10 +34,6 @@ type openColorblindMenuMsg struct{}
 type openThemeMenuMsg struct{}
 type openContextMenuMsg struct{}
 type switchContextMsg struct{ name string }
-type contextConnStatusMsg struct {
-	name string
-	ok   bool
-}
 type addContextProbeResultMsg struct {
 	ok  bool
 	msg string
@@ -56,62 +52,56 @@ type userInfoMsg struct{ fullName string }
 
 // App is the root bubbletea model.
 type App struct {
-	theme                 theme.Theme
-	baseTheme             theme.Theme
-	themeID               theme.ThemeID
-	previewThemeID        theme.ThemeID
-	previewDegraded       bool // degraded state of the theme before the menu was opened
-	showThemeMenu         bool
-	themeMenu             view.ThemeMenu
-	showContextMenu       bool
-	contextMenu           view.ContextMenu
-	showAddContextDialog  bool
-	addContextDialog      view.AddContextDialog
-	addCtxFn              func(config.ContextConfig) error
-	delCtxFn              func(string) error
-	setCtxFn              func(string) error
-	saveThemeFn           func(string) error
-	showPrefsDialog       bool
-	prefsDialog           view.PrefsDialog
-	savePrefsFn           func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error
-	refreshInterval       time.Duration
-	maxLogLines           int
-	logLevel              string
-	showHelp              bool
-	showRoyalPaywall      bool
-	royalPaywall          view.RoyalPaywall
-	sponsorKey            string
-	colorblindnessType    theme.ColorblindnessType
-	previewColorblindType theme.ColorblindnessType
-	showColorblindMenu    bool
-	colorblindMenu        view.ColorblindMenu
-	saveFn                func(theme.ColorblindnessType) error
-	keys                  KeyMap
-	client                jenkins.JenkinsClient
-	store                 *cache.Store
-	monitor               *monitor.RunningBuildsMonitor
-	username              string
-	friendlyName          string
-	gitUsernames          []string
-	contexts              []config.ContextConfig
-	currentContextName    string
-	diskStoreFn           func(serverURL string) *cache.DiskStore
-	slowInterval          time.Duration
-	registry              *command.Registry
-	header                component.Header
-	breadcrumb            component.Breadcrumb
-	statusBar             component.StatusBar
-	navTags               component.NavTags
-	currentView           view.View
-	initialView           view.View
-	width                 int
-	height                int
-	cmdInput              string
-	searchInput           string
-	notifications         bool
-	termFocused           bool // true while the terminal window has focus
-	connected             bool // tracks live connection status shown in header
-	dbg                   *debugStats // non-nil when log_level=debug
+	theme                theme.Theme
+	baseTheme            theme.Theme
+	themeID              theme.ThemeID
+	paywallRestoreID     theme.ThemeID // theme to restore to if Royal paywall is cancelled
+	paywallRestoreDeg    bool          // degraded state of the pre-paywall theme
+	showAddContextDialog bool
+	addContextDialog     view.AddContextDialog
+	addCtxFn             func(config.ContextConfig) error
+	delCtxFn             func(string) error
+	setCtxFn             func(string) error
+	saveThemeFn          func(string) error
+	showPrefsDialog      bool
+	prefsDialog          view.PrefsDialog
+	savePrefsFn          func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error
+	refreshInterval      time.Duration
+	maxLogLines          int
+	logLevel             string
+	showHelp             bool
+	showRoyalPaywall     bool
+	royalPaywall         view.RoyalPaywall
+	sponsorKey           string
+	colorblindnessType   theme.ColorblindnessType
+	saveFn               func(theme.ColorblindnessType) error
+	keys                 KeyMap
+	client               jenkins.JenkinsClient
+	store                *cache.Store
+	monitor              *monitor.RunningBuildsMonitor
+	username             string
+	friendlyName         string
+	gitUsernames         []string
+	contexts             []config.ContextConfig
+	currentContextName   string
+	diskStoreFn          func(serverURL string) *cache.DiskStore
+	slowInterval         time.Duration
+	registry             *command.Registry
+	header               component.Header
+	breadcrumb           component.Breadcrumb
+	statusBar            component.StatusBar
+	navTags              component.NavTags
+	currentView          view.View
+	initialView          view.View
+	navStack             []view.View // back-stack populated on PushViewMsg
+	width                int
+	height               int
+	cmdInput             string
+	searchInput          string
+	notifications        bool
+	termFocused          bool        // true while the terminal window has focus
+	connected            bool        // tracks live connection status shown in header
+	dbg                  *debugStats // non-nil when log_level=debug
 }
 
 // NewApp creates the root application model.
@@ -251,14 +241,14 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		contexts:           contexts,
 		currentContextName: currentContextName,
 		diskStoreFn:        diskStoreFn,
-		addCtxFn:        addCtxFn,
-		delCtxFn:        delCtxFn,
-		setCtxFn:        setCtxFn,
-		savePrefsFn:     savePrefsFn,
-		refreshInterval: refreshInterval,
-		slowInterval:    slowInterval,
-		maxLogLines:     maxLogLines,
-		logLevel:        logLevel,
+		addCtxFn:           addCtxFn,
+		delCtxFn:           delCtxFn,
+		setCtxFn:           setCtxFn,
+		savePrefsFn:        savePrefsFn,
+		refreshInterval:    refreshInterval,
+		slowInterval:       slowInterval,
+		maxLogLines:        maxLogLines,
+		logLevel:           logLevel,
 		registry:           registry,
 		header:             header,
 		breadcrumb:         breadcrumb,
@@ -317,7 +307,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				a.contexts = append(a.contexts, cfg)
-				return a, probeContext(cfg)
+				return a, tea.Batch(
+					view.ProbeContextCmd(cfg),
+					func() tea.Msg {
+						return view.ContextListUpdatedMsg{Contexts: a.contexts, Current: a.currentContextName}
+					},
+				)
 			}
 			if result.TestConn {
 				return a, probeAddContext(updated.CurrentConfig())
@@ -353,72 +348,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Context menu intercepts all key events while open.
-	if a.showContextMenu {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			updated, result := a.contextMenu.Update(keyMsg)
-			a.contextMenu = updated
-			switch result.Event {
-			case view.ContextMenuClose:
-				a.showContextMenu = false
-			case view.ContextMenuSwitch:
-				a.showContextMenu = false
-				return a.Update(switchContextMsg{name: result.Name})
-			case view.ContextMenuDelete:
-				// Delete the named context
-				name := result.Name
-				if a.delCtxFn != nil {
-					if err := a.delCtxFn(name); err != nil {
-						a.statusBar.SetError(fmt.Sprintf("delete context: %v", err))
-						return a, nil
-					}
-				}
-				newContexts := make([]config.ContextConfig, 0, len(a.contexts))
-				for _, c := range a.contexts {
-					if c.Name != name {
-						newContexts = append(newContexts, c)
-					}
-				}
-				a.contexts = newContexts
-				a.contextMenu.SetContexts(newContexts, a.currentContextName)
-				// If the active context was deleted, switch to first available
-				if name == a.currentContextName && len(newContexts) > 0 {
-					a.showContextMenu = false
-					return a.Update(switchContextMsg{name: newContexts[0].Name})
-				}
-				return a, nil
-			case view.ContextMenuOpenAdd:
-				a.showContextMenu = false
-				a.showAddContextDialog = true
-				a.addContextDialog = view.NewAddContextDialog(a.theme)
-				return a, nil
-			}
-			return a, nil
-		}
-	}
-
-	// Colorblind menu intercepts all key events while open.
-	if a.showColorblindMenu {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			updated, preview, chosen, closed := a.colorblindMenu.Update(keyMsg)
-			a.colorblindMenu = updated
-			if closed {
-				a.showColorblindMenu = false
-				if chosen != nil {
-					// Enter: confirm and persist.
-					a.applyColorblindnessType(*chosen, true)
-				} else {
-					// Esc: restore the type that was active before the menu opened.
-					a.applyColorblindnessType(a.previewColorblindType, false)
-				}
-			} else {
-				// Still navigating: apply live preview (no save).
-				a.applyColorblindnessType(preview, false)
-			}
-			return a, nil
-		}
-	}
-
 	// Royal paywall intercepts all key events while open.
 	if a.showRoyalPaywall {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
@@ -429,42 +358,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if result != nil {
 					switch *result {
 					case view.PaywallResultSponsor:
-						// Open browser and revert to the pre-menu theme.
+						// Open browser and revert to the pre-paywall theme.
 						_ = exec.Command("xdg-open", view.GitHubSponsorsURL).Start()
-						a.applyTheme(a.previewThemeID, false, a.previewDegraded)
+						a.applyTheme(a.paywallRestoreID, false, a.paywallRestoreDeg)
 					case view.PaywallResultDegrade:
 						a.applyTheme(theme.ThemeRoyal, true, true)
 					case view.PaywallResultCancel:
-						a.applyTheme(a.previewThemeID, false, a.previewDegraded)
+						a.applyTheme(a.paywallRestoreID, false, a.paywallRestoreDeg)
 					}
 				}
-			}
-			return a, nil
-		}
-	}
-
-	// Theme menu intercepts all key events while open.
-	if a.showThemeMenu {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			updated, preview, chosen, closed := a.themeMenu.Update(keyMsg)
-			a.themeMenu = updated
-			if closed {
-				a.showThemeMenu = false
-				if chosen != nil {
-					// If Royal is chosen without a sponsor key, show the paywall.
-					if *chosen == theme.ThemeRoyal && !theme.IsSponsor(a.username, a.sponsorKey) {
-						a.showRoyalPaywall = true
-						a.royalPaywall = view.NewRoyalPaywall(a.theme)
-					} else {
-						a.applyTheme(*chosen, true, false)
-					}
-				} else {
-					// Esc: restore the theme that was active before the menu opened.
-					a.applyTheme(a.previewThemeID, false, a.previewDegraded)
-				}
-			} else {
-				// Still navigating: apply live preview (no degrade).
-				a.applyTheme(preview, false, false)
 			}
 			return a, nil
 		}
@@ -535,6 +437,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.ApplySearch("")
 				return a, nil
 			}
+			// Pop the back-stack first: returns the user to the view they
+			// pushed from with its state (cursor, scroll, data) preserved.
+			var closeCmd tea.Cmd
+			if cw, ok := a.currentView.(interface{ CloseCmd() tea.Cmd }); ok {
+				closeCmd = cw.CloseCmd()
+			}
+			if a.popView() {
+				a.updateBreadcrumb()
+				return a, closeCmd
+			}
 			if hp, ok := a.activeView().(view.HasParent); ok {
 				parent := hp.ParentView(a.theme, a.client, a.store)
 				a.activeView().Close()
@@ -561,10 +473,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			// Navigate to builds(*) with the running filter pre-enabled.
-			a.activeView().Close()
 			av := view.NewAllBuildsView(a.theme, a.client, a.store, a.username, a.gitUsernames, a.slowInterval)
 			av.ToggleRunning()
-			a.currentView = av
+			a.replaceView(av)
 			a.updateBreadcrumb()
 			return a, av.Init()
 		}
@@ -599,8 +510,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// :builds command — navigate to builds scoped to current context.
 	if _, ok := msg.(openBuildsForContextMsg); ok {
 		bv := a.buildsViewForCurrentContext()
-		a.activeView().Close()
-		a.currentView = bv
+		a.replaceView(bv)
 		a.updateBreadcrumb()
 		return a, bv.Init()
 	}
@@ -612,8 +522,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nc.FriendlyName = a.friendlyName
 		nc.GitUsernames = a.gitUsernames
 		mv := view.NewMyBuildsView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.activeView().Close()
-		a.currentView = mv
+		a.replaceView(mv)
 		a.updateBreadcrumb()
 		return a, mv.Init()
 	}
@@ -622,8 +531,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(openJobsForContextMsg); ok {
 		jl := a.jobListForCurrentContext()
 		if jl != nil {
-			a.activeView().Close()
-			a.currentView = jl
+			a.replaceView(jl)
 			a.updateBreadcrumb()
 			return a, jl.Init()
 		}
@@ -637,8 +545,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nc.FriendlyName = a.friendlyName
 		nc.GitUsernames = a.gitUsernames
 		mv := view.NewMyConsoleView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.activeView().Close()
-		a.currentView = mv
+		a.replaceView(mv)
 		a.updateBreadcrumb()
 		return a, mv.Init()
 	}
@@ -658,8 +565,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nc.FriendlyName = a.friendlyName
 		nc.GitUsernames = a.gitUsernames
 		mv := view.NewMyMatrixView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.activeView().Close()
-		a.currentView = mv
+		a.replaceView(mv)
 		a.updateBreadcrumb()
 		return a, mv.Init()
 	}
@@ -670,18 +576,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			bv.ToggleRunning()
 			return a, nil
 		}
-		a.activeView().Close()
 		av := view.NewAllBuildsView(a.theme, a.client, a.store, a.username, a.gitUsernames, a.slowInterval)
 		av.ToggleRunning()
-		a.currentView = av
+		a.replaceView(av)
 		a.updateBreadcrumb()
 		return a, av.Init()
-	}
-
-	// Connection probe results for the context switcher popup.
-	if csm, ok := msg.(contextConnStatusMsg); ok {
-		a.contextMenu.SetConnStatus(csm.name, csm.ok)
-		return a, nil
 	}
 
 	// Connection probe result for the add-context dialog.
@@ -714,6 +613,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newDisk = a.diskStoreFn(target.URL)
 		}
 		newStore := cache.NewStore(newDisk)
+		a.resetNavStack()
 		a.activeView().Close()
 		a.client = newClient
 		a.store = newStore
@@ -739,15 +639,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Open context menu — probe all contexts concurrently.
+	// Open context view — push onto the nav stack. Probes fire from its Init.
 	if _, ok := msg.(openContextMenuMsg); ok {
-		a.contextMenu = view.NewContextMenu(a.theme, a.contexts, a.currentContextName)
-		a.showContextMenu = true
-		var cmds []tea.Cmd
-		for _, ctx := range a.contexts {
-			cmds = append(cmds, probeContext(ctx))
-		}
-		return a, tea.Batch(cmds...)
+		cv := view.NewContextView(a.theme, a.contexts, a.currentContextName)
+		return a, func() tea.Msg { return view.PushViewMsg{View: cv} }
 	}
 
 	// Open preferences dialog
@@ -764,22 +659,90 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// Open colorblind menu
+	// Open colorblind view — pushed onto the nav stack.
 	if _, ok := msg.(openColorblindMenuMsg); ok {
-		a.previewColorblindType = a.colorblindnessType
-		a.colorblindMenu = view.NewColorblindMenu(a.theme, a.colorblindnessType)
-		a.showColorblindMenu = true
+		cbv := view.NewColorblindView(a.theme, a.colorblindnessType)
+		return a, func() tea.Msg { return view.PushViewMsg{View: cbv} }
+	}
+
+	// Open theme view — pushed onto the nav stack.
+	if _, ok := msg.(openThemeMenuMsg); ok {
+		sponsored := theme.IsSponsor(a.username, a.sponsorKey)
+		tv := view.NewThemeView(a.theme, a.themeID, a.baseTheme.Peasant, sponsored)
+		return a, func() tea.Msg { return view.PushViewMsg{View: tv} }
+	}
+
+	// ColorblindPreviewMsg / ColorblindConfirmMsg from ColorblindView.
+	if cp, ok := msg.(view.ColorblindPreviewMsg); ok {
+		a.applyColorblindnessType(cp.Type, false)
+		return a, nil
+	}
+	if cc, ok := msg.(view.ColorblindConfirmMsg); ok {
+		a.applyColorblindnessType(cc.Type, true)
 		return a, nil
 	}
 
-	// Open theme menu
-	if _, ok := msg.(openThemeMenuMsg); ok {
-		a.previewThemeID = a.themeID
-		a.previewDegraded = a.baseTheme.Peasant
-		sponsored := theme.IsSponsor(a.username, a.sponsorKey)
-		a.themeMenu = view.NewThemeMenu(a.theme, a.themeID, sponsored)
-		a.showThemeMenu = true
+	// Theme preview / confirm / locked-royal from ThemeView.
+	if tp, ok := msg.(view.ThemePreviewMsg); ok {
+		a.applyTheme(tp.ID, false, tp.Degraded)
 		return a, nil
+	}
+	if tc, ok := msg.(view.ThemeConfirmMsg); ok {
+		a.applyTheme(tc.ID, true, false)
+		return a, nil
+	}
+	if lr, ok := msg.(view.ThemeLockedRoyalMsg); ok {
+		a.paywallRestoreID = lr.OriginalID
+		a.paywallRestoreDeg = lr.OriginalDegraded
+		a.showRoyalPaywall = true
+		a.royalPaywall = view.NewRoyalPaywall(a.theme)
+		return a, nil
+	}
+
+	// Context view actions.
+	if sr, ok := msg.(view.ContextSwitchRequestMsg); ok {
+		return a.Update(switchContextMsg{name: sr.Name})
+	}
+	if dr, ok := msg.(view.ContextDeleteRequestMsg); ok {
+		name := dr.Name
+		if a.delCtxFn != nil {
+			if err := a.delCtxFn(name); err != nil {
+				a.statusBar.SetError(fmt.Sprintf("delete context: %v", err))
+				return a, nil
+			}
+		}
+		newContexts := make([]config.ContextConfig, 0, len(a.contexts))
+		for _, c := range a.contexts {
+			if c.Name != name {
+				newContexts = append(newContexts, c)
+			}
+		}
+		a.contexts = newContexts
+		// If the active context was deleted, switch to first available.
+		if name == a.currentContextName && len(newContexts) > 0 {
+			return a.Update(switchContextMsg{name: newContexts[0].Name})
+		}
+		// Otherwise, notify the active view (ContextView) that the list changed.
+		return a, func() tea.Msg {
+			return view.ContextListUpdatedMsg{Contexts: a.contexts, Current: a.currentContextName}
+		}
+	}
+	if _, ok := msg.(view.OpenAddContextDialogMsg); ok {
+		a.showAddContextDialog = true
+		a.addContextDialog = view.NewAddContextDialog(a.theme)
+		return a, nil
+	}
+
+	// PopViewMsg — pop the top view from the nav stack.
+	if _, ok := msg.(view.PopViewMsg); ok {
+		var closeCmd tea.Cmd
+		if cw, ok := a.currentView.(interface{ CloseCmd() tea.Cmd }); ok {
+			closeCmd = cw.CloseCmd()
+		}
+		if a.popView() {
+			a.updateBreadcrumb()
+		}
+		return a, closeCmd
 	}
 
 	// OpenScopedStagesMsg — open scoped last-build stage view (from JobList s shortcut).
@@ -789,8 +752,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nc.FriendlyName = a.friendlyName
 		nc.GitUsernames = a.gitUsernames
 		mv := view.NewMyBuildsView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.activeView().Close()
-		a.currentView = mv
+		a.replaceView(mv)
 		a.updateBreadcrumb()
 		return a, mv.Init()
 	}
@@ -804,15 +766,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sp.SetScopedParent(mbv.NC(), a.slowInterval)
 			}
 		}
-		prev.Close()
-		a.currentView = push.View
+		a.pushView(push.View)
 		a.updateBreadcrumb()
 		return a, push.View.Init()
 	}
 	if otb, ok := msg.(view.OpenTriggeredBuildMsg); ok {
-		a.activeView().Close()
 		sv := view.NewPendingStageView(a.theme, a.client, a.store, otb.NC, otb.LastKnownBuild)
-		a.currentView = sv
+		a.replaceView(sv)
 		a.updateBreadcrumb()
 		return a, sv.Init()
 	}
@@ -863,19 +823,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusBar.SetError(fsm.Err.Error())
 			return a, nil
 		}
-		a.activeView().Close()
 		buildNC := fsm.NC.AtBuild(fsm.Build.Number)
 		if fsm.FailedStage != nil && len(fsm.FailedStage.NodeIDs) > 0 {
 			sv := view.NewStageView(a.theme, a.client, a.store, buildNC, fsm.Build)
 			sv.SetStages(fsm.Stages, fsm.FailedIdx)
 			sl := view.NewStageLogView(a.theme, a.client, a.store, buildNC.AtStage(fsm.FailedStage.Name), fsm.FailedStage.NodeIDs, fsm.Build.Status == jenkins.BuildStatusRunning)
-			a.currentView = sl
+			a.replaceView(sl)
 			a.updateBreadcrumb()
 			return a, sl.Init()
 		}
 		// No failed stage found — open full console log
 		cv := view.NewConsoleView(a.theme, a.client, buildNC)
-		a.currentView = cv
+		a.replaceView(cv)
 		a.updateBreadcrumb()
 		return a, cv.Init()
 	}
@@ -1138,20 +1097,11 @@ func (a App) View() string {
 
 	rendered := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
-	if a.showContextMenu {
-		rendered = a.contextMenu.Render(rendered, a.width, a.height)
-	}
 	if a.showPrefsDialog {
 		rendered = a.prefsDialog.Render(rendered, a.width, a.height)
 	}
 	if a.showAddContextDialog {
 		rendered = a.addContextDialog.Render(rendered, a.width, a.height)
-	}
-	if a.showColorblindMenu {
-		rendered = a.colorblindMenu.Render(rendered, a.width, a.height)
-	}
-	if a.showThemeMenu {
-		rendered = a.themeMenu.Render(rendered, a.width, a.height)
 	}
 	if a.showRoyalPaywall {
 		rendered = a.royalPaywall.Render(rendered, a.width, a.height)
@@ -1236,6 +1186,54 @@ func (a *App) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a App) activeView() view.View {
 	return a.currentView
+}
+
+// pushView records the current view on the back-stack and makes v active.
+// The pushed view is NOT closed — its state (cursor, scroll, data) is
+// preserved so ESC returns the user to exactly where they were.
+func (a *App) pushView(v view.View) {
+	if a.currentView != nil {
+		a.navStack = append(a.navStack, a.currentView)
+	}
+	a.currentView = v
+}
+
+// popView pops the top of the back-stack and makes it the active view.
+// Returns false when the stack is empty. Closes the current view.
+func (a *App) popView() bool {
+	if len(a.navStack) == 0 {
+		return false
+	}
+	top := a.navStack[len(a.navStack)-1]
+	a.navStack = a.navStack[:len(a.navStack)-1]
+	if a.currentView != nil {
+		a.currentView.Close()
+	}
+	a.currentView = top
+	return true
+}
+
+// replaceView swaps the active view, closing the current one and discarding
+// any back-stack entries. Use for command-based jumps (":builds", context
+// switch, etc.) that break the push/pop chain.
+func (a *App) replaceView(v view.View) {
+	a.resetNavStack()
+	if a.currentView != nil {
+		a.currentView.Close()
+	}
+	a.currentView = v
+}
+
+// resetNavStack closes and discards every view on the back-stack.
+// Used by command-based jumps (":builds", ESC→ParentView, context switches)
+// that break the push/pop chain.
+func (a *App) resetNavStack() {
+	for _, v := range a.navStack {
+		if v != nil {
+			v.Close()
+		}
+	}
+	a.navStack = nil
 }
 
 // buildsViewForCurrentContext returns a BuildsView scoped to the NC of the
@@ -1469,18 +1467,6 @@ func injectScrollbar(rendered string, scroll view.ScrollInfo, thumbColor lipglos
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-// probeContext fires a background connection test for a named context.
-// The result arrives as contextConnStatusMsg.
-func probeContext(ctx config.ContextConfig) tea.Cmd {
-	return func() tea.Msg {
-		c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		client := jenkins.NewClient(ctx.URL, ctx.Username, ctx.Token, ctx.Insecure)
-		_, err := client.WhoAmI(c)
-		return contextConnStatusMsg{name: ctx.Name, ok: err == nil}
-	}
 }
 
 // probeAddContext fires a connection test for the add-context dialog.

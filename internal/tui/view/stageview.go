@@ -106,6 +106,23 @@ type StageView struct {
 	// Used to interpolate smooth elapsed times between 2s refreshes.
 	lastRefreshAt time.Time
 
+	// stageStartWall records the wall-clock start time of each running stage,
+	// keyed by stage index. Set once on the first refresh where the stage is
+	// observed running (as time.Now() - s.Duration) and never updated
+	// afterwards. Jenkins reports Duration in coarse (~minute) jumps for
+	// long-running stages, which caused the progress bar to reset every minute
+	// and then jump ahead. Tracking our own start time keeps the bar smooth.
+	stageStartWall map[int]time.Time
+
+	// Post-completion finalizer state. Jenkins sometimes reports a terminal
+	// build status before it has written the final Duration to the json API
+	// or flushed the full console log (where "when"-conditional skip lines
+	// live). buildFinishedAt marks the first time we saw the build finish,
+	// so the retry loops below can bound themselves by wall-clock time.
+	buildFinishedAt    time.Time
+	buildDetailRetries int
+	whenSkipRetries    int
+
 	// Ghost stages from the previous completed build.
 	prevStages  []jenkins.Stage // stages from previous completed build
 	ghostsValid bool            // current stages are a prefix of prevStages
@@ -197,6 +214,9 @@ func (sv *StageView) stageCacheKey() string {
 // setBuild updates the build and caches it for later restoration.
 func (sv *StageView) setBuild(b jenkins.Build) {
 	sv.build = b
+	if b.Duration > 0 {
+		sv.buildDetailRetries = 0
+	}
 	if sv.store != nil {
 		sv.store.BuildDetail.Put(sv.stageCacheKey(), b)
 	}
@@ -300,6 +320,54 @@ func (sv *StageView) fetchBuildDetail() tea.Cmd {
 			return buildDetailMsg{err: err}
 		}
 		return buildDetailMsg{build: detail.Build}
+	}
+}
+
+// Post-completion retry budgets. Jenkins typically finalises Duration and
+// flushes the console log within a couple of seconds of the terminal status
+// appearing; these caps are loose upper bounds so a genuinely empty result
+// can't loop forever.
+const (
+	maxBuildDetailRetries = 10
+	buildDetailRetryDelay = 2 * time.Second
+	maxWhenSkipRetries    = 3
+	whenSkipRetryDelay    = 3 * time.Second
+)
+
+// scheduleBuildDetailRetry waits before re-issuing a build-detail fetch,
+// used when the first post-completion fetch still returned Duration == 0.
+func (sv *StageView) scheduleBuildDetailRetry() tea.Cmd {
+	ctx := sv.ctx
+	fetch := sv.fetchBuildDetail()
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(buildDetailRetryDelay):
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fetch()
+	}
+}
+
+// scheduleWhenSkipRetry waits before re-running the full console-log parse,
+// used when the first post-completion detectWhenSkips run returned nothing
+// (Jenkins may not have flushed the stage-skipped lines yet).
+func (sv *StageView) scheduleWhenSkipRetry() tea.Cmd {
+	ctx := sv.ctx
+	detect := sv.detectWhenSkips()
+	return func() tea.Msg {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(whenSkipRetryDelay):
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		return detect()
 	}
 }
 
@@ -467,8 +535,8 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case stageProgressTickMsg:
 		if sv.build.Status == jenkins.BuildStatusRunning || sv.anyStageRunning() {
 			sv.populateTable()
-			return sv, sv.scheduleProgressTick()
 		}
+		return sv, sv.scheduleProgressTick()
 
 	case stageRefreshMsg:
 		if msg.err != nil {
@@ -490,6 +558,12 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sv.stages = msg.stages
 		if sv.store != nil {
 			sv.store.Stages.Put(sv.stageCacheKey(), msg.stages)
+		}
+		// Update build status before populating the table so the Pipeline
+		// row reflects the latest build state on the transition refresh
+		// (e.g. Running → Success).
+		if msg.build != nil {
+			sv.setBuild(*msg.build)
 		}
 		// Accumulate incremental console log and parse for when-skip detection.
 		if msg.logChunk != "" {
@@ -528,25 +602,12 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
-		// Use official build status from Jenkins API when available.
+		// setBuild was already called above so the Pipeline row reflected
+		// the latest status during populateTable. Here we only read the
+		// status to decide whether to keep refreshing.
 		buildFinished := false
 		if msg.build != nil {
-			sv.setBuild(*msg.build)
 			buildFinished = msg.build.Status != jenkins.BuildStatusRunning
-		}
-
-		// B14: When the build API still reports running but all stages have
-		// finished, infer the terminal status from stage data. This updates
-		// the progress bar display but does NOT stop refreshing — new stages
-		// (e.g. "Declarative: Post Actions") can still appear after existing
-		// stages finish. Only the build API is authoritative for "done".
-		if !buildFinished && allStagesFinished(sv.stages) {
-			inferred := inferBuildStatusFromStages(sv.stages)
-			if inferred != jenkins.BuildStatusUnknown {
-				slog.Debug("stageview.refresh: inferred build status from stages (still refreshing)", "inferred", inferred)
-				sv.build.Status = inferred
-				// Don't set buildFinished — keep refreshing until build API confirms.
-			}
 		}
 
 		// Keep refreshing while stages are running or the build hasn't finalized.
@@ -558,6 +619,9 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Build finished — hide ghost stages and do final detection.
 			sv.ghostsValid = false
 			sv.populateTable()
+			if sv.buildFinishedAt.IsZero() {
+				sv.buildFinishedAt = time.Now()
+			}
 			cmds = append(cmds, sv.whenSkipCmd())
 			if sv.build.Duration == 0 {
 				cmds = append(cmds, sv.fetchBuildDetail())
@@ -566,6 +630,17 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return sv, tea.Batch(cmds...)
 
 	case whenSkipDetectedMsg:
+		if len(msg.skippedOccs) == 0 {
+			// Jenkins may not have flushed the stage-skipped lines to the
+			// console log yet. Retry (bounded) for a short window after the
+			// build finished before giving up.
+			if !sv.buildFinishedAt.IsZero() && sv.whenSkipRetries < maxWhenSkipRetries {
+				sv.whenSkipRetries++
+				return sv, sv.scheduleWhenSkipRetry()
+			}
+			return sv, nil
+		}
+		sv.whenSkipRetries = 0
 		sv.currentSkipOccs = msg.skippedOccs
 		if sv.store != nil {
 			sv.store.WhenSkipped.Put(sv.stageCacheKey(), msg.skippedOccs)
@@ -575,9 +650,17 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return sv, nil
 
 	case buildDetailMsg:
-		if msg.err == nil {
-			sv.setBuild(msg.build)
-			sv.populateTable()
+		if msg.err != nil {
+			return sv, nil
+		}
+		sv.setBuild(msg.build)
+		sv.populateTable()
+		// Jenkins sometimes reports a terminal status before it has written
+		// the final Duration. Retry (bounded) until the duration materialises.
+		if msg.build.Duration == 0 && isTerminalStatus(msg.build.Status) &&
+			sv.buildDetailRetries < maxBuildDetailRetries {
+			sv.buildDetailRetries++
+			return sv, sv.scheduleBuildDetailRetry()
 		}
 		return sv, nil
 
@@ -756,6 +839,22 @@ func (sv *StageView) anyStageRunning() bool {
 	return false
 }
 
+// isTerminalStatus reports whether a build status represents a completed
+// (non-running) state. Empty and "unknown" are excluded: we only retry
+// duration fetches for builds that Jenkins has explicitly marked done.
+func isTerminalStatus(s jenkins.BuildStatus) bool {
+	switch s {
+	case jenkins.BuildStatusSuccess,
+		jenkins.BuildStatusFailed,
+		jenkins.BuildStatusAborted,
+		jenkins.BuildStatusUnstable,
+		jenkins.BuildStatusSkipped,
+		jenkins.BuildStatusNotBuilt:
+		return true
+	}
+	return false
+}
+
 // allStagesFinished returns true when stages exist and none are Running or NotBuilt.
 func allStagesFinished(stages []jenkins.Stage) bool {
 	if len(stages) == 0 {
@@ -918,13 +1017,22 @@ func (sv *StageView) populateTable() {
 			icon = "⇶ "
 		}
 
-		// For running stages, interpolate elapsed time for smooth animation.
+		// For running stages, use our own wall-clock timing instead of
+		// Jenkins' s.Duration. Jenkins reports Duration in coarse jumps
+		// (~minute granularity) for long stages, so reading it on every
+		// render would make the bar reset and leap forward. We lock in a
+		// start time on first observation and interpolate from there.
 		durationCell := formatDuration(s.Duration)
 		if s.Status == jenkins.BuildStatusRunning {
-			stageElapsed := s.Duration
-			if !sv.lastRefreshAt.IsZero() {
-				stageElapsed += time.Since(sv.lastRefreshAt)
+			if sv.stageStartWall == nil {
+				sv.stageStartWall = make(map[int]time.Time)
 			}
+			start, ok := sv.stageStartWall[i]
+			if !ok {
+				start = time.Now().Add(-s.Duration)
+				sv.stageStartWall[i] = start
+			}
+			stageElapsed := time.Since(start)
 			if sv.ghostsValid && i < len(sv.prevStages) && sv.prevStages[i].Duration > 0 {
 				durationCell = sv.progressBar.DualRenderWithText(colStageDurationWidth, stageElapsed, sv.prevStages[i].Duration)
 			} else {

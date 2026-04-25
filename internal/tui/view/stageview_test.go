@@ -413,9 +413,13 @@ func TestInferBuildStatusFromStages(t *testing.T) {
 	}
 }
 
-// TestBuildFinishDetection_B14 verifies that when the build API still reports
-// running but all stages have finished, the build status is inferred from stages.
-func TestBuildFinishDetection_B14(t *testing.T) {
+// TestBuildFinishDetection_DoesNotPreemptAPI verifies that when the build API
+// still reports running but all stages have finished, the view does NOT
+// prematurely mutate sv.build.Status. The API is the only authoritative source
+// for "done" — a new stage (e.g. "Declarative: Post Actions") can still appear
+// after existing stages finish, and preempting the status causes the progress
+// bar to flip to SUCCESS, hides ghost stages, and stops the animation tick.
+func TestBuildFinishDetection_DoesNotPreemptAPI(t *testing.T) {
 	initialBuild := jenkins.Build{Status: jenkins.BuildStatusRunning, Timestamp: time.Now()}
 	stages := []jenkins.Stage{
 		{Name: "Build", Status: jenkins.BuildStatusRunning},
@@ -430,15 +434,15 @@ func TestBuildFinishDetection_B14(t *testing.T) {
 	}
 	_ = stageRefresh(sv, newStages, jenkins.BuildStatusRunning)
 
-	// Build status should be inferred as success.
-	if sv.build.Status != jenkins.BuildStatusSuccess {
-		t.Errorf("expected build status to be inferred as success, got %v", sv.build.Status)
+	if sv.build.Status != jenkins.BuildStatusRunning {
+		t.Errorf("expected build status to remain running until API confirms, got %v", sv.build.Status)
 	}
 }
 
-// TestBuildFinishDetection_B14_Failed verifies that when all stages finished
-// with a failure, the inferred status is failed.
-func TestBuildFinishDetection_B14_Failed(t *testing.T) {
+// TestBuildFinishDetection_DoesNotPreemptAPI_WhenFailing verifies the same
+// invariant holds when stages contain a failure — we must still defer to the
+// API, because post-actions may still run.
+func TestBuildFinishDetection_DoesNotPreemptAPI_WhenFailing(t *testing.T) {
 	initialBuild := jenkins.Build{Status: jenkins.BuildStatusRunning, Timestamp: time.Now()}
 	stages := []jenkins.Stage{
 		{Name: "Build", Status: jenkins.BuildStatusRunning},
@@ -453,8 +457,8 @@ func TestBuildFinishDetection_B14_Failed(t *testing.T) {
 	}
 	_ = stageRefresh(sv, newStages, jenkins.BuildStatusRunning)
 
-	if sv.build.Status != jenkins.BuildStatusFailed {
-		t.Errorf("expected build status to be inferred as failed, got %v", sv.build.Status)
+	if sv.build.Status != jenkins.BuildStatusRunning {
+		t.Errorf("expected build status to remain running until API confirms, got %v", sv.build.Status)
 	}
 }
 
@@ -639,5 +643,111 @@ func TestEffectiveEstimate(t *testing.T) {
 				t.Errorf("effectiveEstimate() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestProgressTick_AlwaysReschedules verifies the 200ms progress tick keeps
+// rescheduling itself even when the build is in a terminal state. Without this,
+// a transient "all stages finished" state (or an API that briefly reports the
+// wrong status) permanently stops the animation thread.
+func TestProgressTick_AlwaysReschedules(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, []jenkins.Stage{
+		{Name: "Build", Status: jenkins.BuildStatusSuccess},
+	})
+	_, cmd := sv.Update(stageProgressTickMsg{})
+	if cmd == nil {
+		t.Fatal("expected stageProgressTickMsg to return a reschedule cmd even when build is terminal")
+	}
+}
+
+// TestBuildDetailMsg_RetriesOnZeroDuration verifies the post-completion retry
+// loop: if Jenkins returns a terminal build status with Duration==0, the view
+// schedules another fetch (bounded by maxBuildDetailRetries).
+func TestBuildDetailMsg_RetriesOnZeroDuration(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, nil)
+	_, cmd := sv.Update(buildDetailMsg{build: jenkins.Build{
+		Status:   jenkins.BuildStatusSuccess,
+		Duration: 0,
+	}})
+	if cmd == nil {
+		t.Fatal("expected retry cmd when terminal build returns Duration=0")
+	}
+	if sv.buildDetailRetries != 1 {
+		t.Errorf("expected buildDetailRetries=1, got %d", sv.buildDetailRetries)
+	}
+}
+
+// TestBuildDetailMsg_StopsAtMaxRetries verifies the retry loop is bounded.
+func TestBuildDetailMsg_StopsAtMaxRetries(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, nil)
+	sv.buildDetailRetries = maxBuildDetailRetries
+	_, cmd := sv.Update(buildDetailMsg{build: jenkins.Build{
+		Status:   jenkins.BuildStatusSuccess,
+		Duration: 0,
+	}})
+	if cmd != nil {
+		t.Error("expected no retry cmd once maxBuildDetailRetries is reached")
+	}
+}
+
+// TestBuildDetailMsg_ResetsCounterOnNonZeroDuration verifies that a successful
+// fetch clears the retry counter so a future zero-duration response starts
+// fresh rather than being immediately cut off.
+func TestBuildDetailMsg_ResetsCounterOnNonZeroDuration(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, nil)
+	sv.buildDetailRetries = 5
+	_, _ = sv.Update(buildDetailMsg{build: jenkins.Build{
+		Status:   jenkins.BuildStatusSuccess,
+		Duration: 42 * time.Second,
+	}})
+	if sv.buildDetailRetries != 0 {
+		t.Errorf("expected counter reset on non-zero duration, got %d", sv.buildDetailRetries)
+	}
+}
+
+// TestWhenSkipDetected_RetriesOnEmpty verifies that an empty when-skip parse
+// result triggers a retry while the build has recently finished and the
+// retry budget is available.
+func TestWhenSkipDetected_RetriesOnEmpty(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, nil)
+	sv.buildFinishedAt = time.Now()
+	_, cmd := sv.Update(whenSkipDetectedMsg{skippedOccs: map[string][]bool{}})
+	if cmd == nil {
+		t.Fatal("expected retry cmd when when-skip parse returned empty shortly after build finished")
+	}
+	if sv.whenSkipRetries != 1 {
+		t.Errorf("expected whenSkipRetries=1, got %d", sv.whenSkipRetries)
+	}
+}
+
+// TestWhenSkipDetected_StopsAtMaxRetries verifies the retry loop is bounded.
+func TestWhenSkipDetected_StopsAtMaxRetries(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, nil)
+	sv.buildFinishedAt = time.Now()
+	sv.whenSkipRetries = maxWhenSkipRetries
+	_, cmd := sv.Update(whenSkipDetectedMsg{skippedOccs: map[string][]bool{}})
+	if cmd != nil {
+		t.Error("expected no retry cmd once maxWhenSkipRetries is reached")
+	}
+}
+
+// TestWhenSkipDetected_AppliesNonEmpty verifies that a non-empty parse result
+// is applied to stages and resets the retry counter.
+func TestWhenSkipDetected_AppliesNonEmpty(t *testing.T) {
+	sv := makeStageView(jenkins.Build{Status: jenkins.BuildStatusSuccess}, []jenkins.Stage{
+		{Name: "DeployProd", Status: jenkins.BuildStatusSuccess},
+	})
+	sv.buildFinishedAt = time.Now()
+	sv.whenSkipRetries = 2
+	occs := map[string][]bool{"DeployProd": {true}}
+	_, cmd := sv.Update(whenSkipDetectedMsg{skippedOccs: occs})
+	if cmd != nil {
+		t.Error("expected no retry cmd when skip occurrences were found")
+	}
+	if sv.whenSkipRetries != 0 {
+		t.Errorf("expected counter reset on non-empty result, got %d", sv.whenSkipRetries)
+	}
+	if sv.stages[0].Status != jenkins.BuildStatusSkipped {
+		t.Errorf("expected DeployProd marked as skipped, got %v", sv.stages[0].Status)
 	}
 }

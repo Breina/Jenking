@@ -378,6 +378,7 @@ func (pp *PreviewPanel) fetchLogs() tea.Cmd {
 	nodeIDs := make([]int, len(pp.nodeIDs))
 	copy(nodeIDs, pp.nodeIDs)
 	stageIdx := pp.stageIdx
+	stageName := pp.stageNameSnap
 
 	return func() tea.Msg {
 		// Try cache for individual nodes (async path).
@@ -404,40 +405,30 @@ func (pp *PreviewPanel) fetchLogs() tea.Cmd {
 				}
 			}
 		}
-		// Check if stage is still running — match by nodeID overlap, not name.
+		// Check if stage is still running and pick up any newly-added nodes.
+		// Match by name + smallest overlapping NodeID set so a child preview
+		// is never promoted to its enclosing parent (see findOwningStage).
 		running := false
-		idSet := make(map[int]struct{}, len(nodeIDs))
-		for _, id := range nodeIDs {
-			idSet[id] = struct{}{}
-		}
 		fetchedStages, err := client.ListStages(ctx, jobPath, buildNumber)
 		if err == nil {
-			for _, s := range fetchedStages {
-				matched := false
-				for _, nid := range s.NodeIDs {
-					if _, ok := idSet[nid]; ok {
-						matched = true
-						break
-					}
-				}
-				if matched {
-					running = s.Status == jenkins.BuildStatusRunning
-					if len(s.NodeIDs) > len(nodeIDs) {
-						nodeIDs = s.NodeIDs
-						for _, nid := range s.NodeIDs {
-							if _, ok := nodes[nid]; !ok {
-								nl, err := client.GetNodeLogProgressive(ctx, jobPath, buildNumber, nid, 0)
-								if err == nil {
-									nodes[nid] = &nodeLogState{
-										text:      strings.TrimRight(nl.Text, "\n"),
-										nextStart: nl.NextStart,
-										moreData:  nl.MoreData,
-									}
-								}
+			if idx, ok := findOwningStage(fetchedStages, stageName, nodeIDs); ok {
+				s := fetchedStages[idx]
+				running = s.Status == jenkins.BuildStatusRunning
+				if len(s.NodeIDs) > len(nodeIDs) {
+					nodeIDs = s.NodeIDs
+					for _, nid := range s.NodeIDs {
+						if _, ok := nodes[nid]; ok {
+							continue
+						}
+						nl, err := client.GetNodeLogProgressive(ctx, jobPath, buildNumber, nid, 0)
+						if err == nil {
+							nodes[nid] = &nodeLogState{
+								text:      strings.TrimRight(nl.Text, "\n"),
+								nextStart: nl.NextStart,
+								moreData:  nl.MoreData,
 							}
 						}
 					}
-					break
 				}
 			}
 		}

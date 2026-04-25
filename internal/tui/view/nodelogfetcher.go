@@ -52,26 +52,12 @@ func pollNodeLogs(ctx context.Context, client jenkins.JenkinsClient, jobPath str
 		return NodeLogResult{Nodes: nodes, NodeIDs: oldNodeIDs, Running: true}
 	}
 
-	// Match stage by nodeID overlap (not name) to avoid parent/child confusion.
-	oldIDSet := make(map[int]struct{}, len(oldNodeIDs))
-	for _, id := range oldNodeIDs {
-		oldIDSet[id] = struct{}{}
-	}
 	var nodeIDs []int
 	running := false
-	for _, s := range stages {
-		for _, nid := range s.NodeIDs {
-			if _, ok := oldIDSet[nid]; ok {
-				nodeIDs = s.NodeIDs
-				running = s.Status == jenkins.BuildStatusRunning
-				break
-			}
-		}
-		if nodeIDs != nil {
-			break
-		}
-	}
-	if nodeIDs == nil {
+	if idx, ok := findOwningStage(stages, stageName, oldNodeIDs); ok {
+		nodeIDs = stages[idx].NodeIDs
+		running = stages[idx].Status == jenkins.BuildStatusRunning
+	} else {
 		nodeIDs = oldNodeIDs
 	}
 
@@ -172,6 +158,52 @@ func allNodesTerminal(nodes map[int]*nodeLogState) bool {
 		}
 	}
 	return true
+}
+
+// findOwningStage picks the stage whose NodeIDs represent the previewed
+// stage. A parent stage's NodeIDs include every descendant's node IDs
+// (parseFlowGraphTable collects all rows within a stage's scope), so a
+// naive "first overlap" match can silently promote a child preview to
+// its parent and prepend the parent's pre-child log rows. To avoid that:
+// prefer a candidate whose Name matches stageName, and among candidates
+// prefer the one with the smallest NodeIDs set (the tightest container).
+func findOwningStage(stages []jenkins.Stage, stageName string, oldNodeIDs []int) (int, bool) {
+	if len(stages) == 0 || len(oldNodeIDs) == 0 {
+		return 0, false
+	}
+	oldSet := make(map[int]struct{}, len(oldNodeIDs))
+	for _, id := range oldNodeIDs {
+		oldSet[id] = struct{}{}
+	}
+	bestNamed := -1
+	bestAny := -1
+	for i, s := range stages {
+		overlap := false
+		for _, nid := range s.NodeIDs {
+			if _, ok := oldSet[nid]; ok {
+				overlap = true
+				break
+			}
+		}
+		if !overlap {
+			continue
+		}
+		if bestAny < 0 || len(s.NodeIDs) < len(stages[bestAny].NodeIDs) {
+			bestAny = i
+		}
+		if s.Name == stageName {
+			if bestNamed < 0 || len(s.NodeIDs) < len(stages[bestNamed].NodeIDs) {
+				bestNamed = i
+			}
+		}
+	}
+	if bestNamed >= 0 {
+		return bestNamed, true
+	}
+	if bestAny >= 0 {
+		return bestAny, true
+	}
+	return 0, false
 }
 
 // aggregateNodeLogs joins node logs in nodeID order.

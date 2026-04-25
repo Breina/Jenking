@@ -132,3 +132,7 @@ Network Trash Folder
 Temporary Items
 .apdisk
 
+
+# Integration test artifacts
+test/e2e/snapshots/
+test/e2e/bin/

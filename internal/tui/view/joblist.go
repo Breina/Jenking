@@ -141,6 +141,29 @@ func (jl *JobList) SearchQuery() string {
 	return jl.searchQuery
 }
 
+// rowForJobPath returns the table row index of the job with the given FullPath,
+// or 0 when not found or the key is empty. Used to preserve cursor selection
+// by identity across refreshes and re-sorts.
+func (jl *JobList) rowForJobPath(fullPath string) int {
+	if fullPath == "" {
+		return 0
+	}
+	if jl.filteredJobs != nil {
+		for row, di := range jl.filteredJobs {
+			if di >= 0 && di < len(jl.jobs) && jl.jobs[di].FullPath == fullPath {
+				return row
+			}
+		}
+		return 0
+	}
+	for i, j := range jl.jobs {
+		if j.FullPath == fullPath {
+			return i
+		}
+	}
+	return 0
+}
+
 // dataIndex maps a table row index to the actual jl.jobs index.
 func (jl *JobList) dataIndex(tableIdx int) int {
 	if jl.filteredJobs != nil && tableIdx >= 0 && tableIdx < len(jl.filteredJobs) {
@@ -337,7 +360,17 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			return jl, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
 		}
-		cursorIdx := jl.table.Cursor()
+		// Preserve selection by identity so a refresh/resort doesn't drift
+		// the cursor onto a different job. Exception: when the cursor is
+		// pinned at the top row, keep it at row 0 so newly arriving items
+		// don't push it downward.
+		prevKey := ""
+		prevCursor := jl.table.Cursor()
+		if prevCursor > 0 {
+			if di := jl.dataIndex(prevCursor); di >= 0 && di < len(jl.jobs) {
+				prevKey = jl.jobs[di].FullPath
+			}
+		}
 		jl.jobs = msg.Jobs
 		if jl.store != nil {
 			jl.store.Jobs.Put(jl.folderPath, msg.Jobs)
@@ -358,7 +391,11 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return ti.Timestamp.After(tj.Timestamp)
 		})
 		jl.populateTable()
-		jl.table.SetCursor(cursorIdx)
+		if prevCursor <= 0 {
+			jl.table.SetCursor(0)
+		} else {
+			jl.table.SetCursor(jl.rowForJobPath(prevKey))
+		}
 		cmds := []tea.Cmd{jl.scheduleRefresh()}
 		if jl.hasRunning() && !jl.visualTickActive {
 			jl.visualTickActive = true

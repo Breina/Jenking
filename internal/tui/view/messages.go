@@ -1,9 +1,57 @@
 package view
 
 import (
+	"github.com/Breina/Jenking/internal/config"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
+
+// PopViewMsg asks the app to pop the active view off the nav stack.
+type PopViewMsg struct{}
+
+// ContextSwitchRequestMsg is emitted by ContextView when the user selects a context.
+type ContextSwitchRequestMsg struct{ Name string }
+
+// ContextDeleteRequestMsg is emitted by ContextView when the user confirms a delete.
+type ContextDeleteRequestMsg struct{ Name string }
+
+// OpenAddContextDialogMsg is emitted by ContextView when the user asks to add a new context.
+type OpenAddContextDialogMsg struct{}
+
+// ContextListUpdatedMsg is broadcast by the app after the context list changes
+// (add or delete). ContextView rebuilds its rows from it.
+type ContextListUpdatedMsg struct {
+	Contexts []config.ContextConfig
+	Current  string
+}
+
+// ContextProbeMsg carries the result of a context connection probe.
+type ContextProbeMsg struct {
+	Name string
+	OK   bool
+}
+
+// ColorblindPreviewMsg asks the app to apply a colorblindness type without persisting.
+type ColorblindPreviewMsg struct{ Type theme.ColorblindnessType }
+
+// ColorblindConfirmMsg asks the app to apply and persist a colorblindness type.
+type ColorblindConfirmMsg struct{ Type theme.ColorblindnessType }
+
+// ThemePreviewMsg asks the app to apply a theme without persisting.
+type ThemePreviewMsg struct {
+	ID       theme.ThemeID
+	Degraded bool
+}
+
+// ThemeConfirmMsg asks the app to apply and persist a theme.
+type ThemeConfirmMsg struct{ ID theme.ThemeID }
+
+// ThemeLockedRoyalMsg asks the app to open the Royal paywall. The originals
+// are what to restore to if the user cancels.
+type ThemeLockedRoyalMsg struct {
+	OriginalID       theme.ThemeID
+	OriginalDegraded bool
+}
 
 // ThemeChangedMsg is broadcast by the app when the active theme changes
 // (e.g. colorblind mode toggled). Each view should update its stored theme.
