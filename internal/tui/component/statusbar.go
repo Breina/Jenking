@@ -2,6 +2,7 @@ package component
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -19,11 +20,12 @@ const (
 
 // StatusBar manages command/search input and error display.
 type StatusBar struct {
-	theme theme.Theme
-	mode  InputMode
-	input string
-	error string
-	width int
+	theme      theme.Theme
+	mode       InputMode
+	input      string
+	suggestion string
+	error      string
+	width      int
 }
 
 // NewStatusBar creates a new status bar.
@@ -62,6 +64,11 @@ func (s *StatusBar) SetInput(input string) {
 	s.input = input
 }
 
+// SetSuggestion updates the inline autocomplete suggestion.
+func (s *StatusBar) SetSuggestion(suggestion string) {
+	s.suggestion = suggestion
+}
+
 // HasError returns whether an error is currently displayed.
 func (s *StatusBar) HasError() bool {
 	return s.error != ""
@@ -88,9 +95,13 @@ func (s StatusBar) CommandView() string {
 	case s.error != "":
 		content = s.theme.StatusBar.Error.Render(" " + s.error + " (press any key to dismiss)")
 	case s.mode == ModeCommand:
-		content = s.theme.StatusBar.Command.Render(fmt.Sprintf(" :%s", s.input)) + s.theme.StatusBar.Help.Render("█")
+		ghost := ""
+		if s.suggestion != "" && strings.HasPrefix(s.suggestion, s.input) {
+			ghost = s.theme.StatusBar.Suggestion.Render(s.suggestion[len(s.input):])
+		}
+		content = s.theme.StatusBar.Command.Render(fmt.Sprintf(" :%s", s.input)) + ghost
 	case s.mode == ModeSearch:
-		content = s.theme.StatusBar.Command.Render(fmt.Sprintf(" /%s", s.input)) + s.theme.StatusBar.Help.Render("█")
+		content = s.theme.StatusBar.Command.Render(fmt.Sprintf(" /%s", s.input))
 	}
 
 	return lipgloss.NewStyle().

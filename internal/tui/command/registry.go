@@ -2,6 +2,8 @@ package command
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -69,5 +71,24 @@ func (r *Registry) ListVisible() []Command {
 			result = append(result, *cmd)
 		}
 	}
+	return result
+}
+
+// Suggest returns all non-hidden command names and aliases that start with
+// prefix, excluding exact matches, sorted alphabetically.
+func (r *Registry) Suggest(prefix string) []string {
+	if prefix == "" {
+		return nil
+	}
+	var result []string
+	for key, cmd := range r.commands {
+		if cmd.Hidden {
+			continue
+		}
+		if strings.HasPrefix(key, prefix) && key != prefix {
+			result = append(result, key)
+		}
+	}
+	sort.Strings(result)
 	return result
 }

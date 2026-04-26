@@ -90,12 +90,13 @@ type TableStyles struct {
 }
 
 type StatusBarStyles struct {
-	Bar     lipgloss.Style
-	Key     lipgloss.Style
-	Help    lipgloss.Style
-	Input   lipgloss.Style
-	Error   lipgloss.Style
-	Command lipgloss.Style
+	Bar        lipgloss.Style
+	Key        lipgloss.Style
+	Help       lipgloss.Style
+	Input      lipgloss.Style
+	Error      lipgloss.Style
+	Command    lipgloss.Style
+	Suggestion lipgloss.Style
 }
 
 type BuildStatusStyles struct {
@@ -202,12 +203,13 @@ func Default() Theme {
 			Selected: lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("230")).Bold(true).Padding(0, 1),
 		},
 		StatusBar: StatusBarStyles{
-			Bar:     lipgloss.NewStyle().Foreground(bright),
-			Key:     lipgloss.NewStyle().Bold(true).Foreground(accent),
-			Help:    lipgloss.NewStyle().Foreground(dim),
-			Input:   lipgloss.NewStyle().Foreground(lipgloss.Color("230")),
-			Error:   lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true),
-			Command: lipgloss.NewStyle().Foreground(lipgloss.Color("230")),
+			Bar:        lipgloss.NewStyle().Foreground(bright),
+			Key:        lipgloss.NewStyle().Bold(true).Foreground(accent),
+			Help:       lipgloss.NewStyle().Foreground(dim),
+			Input:      lipgloss.NewStyle().Foreground(lipgloss.Color("230")),
+			Error:      lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true),
+			Command:    lipgloss.NewStyle().Foreground(lipgloss.Color("230")),
+			Suggestion: lipgloss.NewStyle().Foreground(dim),
 		},
 		BuildStatus: BuildStatusStyles{
 			Running:  lipgloss.NewStyle().Foreground(lipgloss.Color("74")),  // steel blue

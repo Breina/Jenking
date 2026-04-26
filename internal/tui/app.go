@@ -97,6 +97,8 @@ type App struct {
 	width                int
 	height               int
 	cmdInput             string
+	cmdSuggestions       []string
+	cmdSuggestionIdx     int
 	searchInput          string
 	notifications        bool
 	termFocused          bool        // true while the terminal window has focus
@@ -1127,6 +1129,9 @@ func (a *App) handleCommandInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		input := a.cmdInput
 		a.statusBar.SetMode(component.ModeNormal)
 		a.cmdInput = ""
+		a.cmdSuggestions = nil
+		a.cmdSuggestionIdx = 0
+		a.statusBar.SetSuggestion("")
 
 		cmd, err := a.registry.Execute(input)
 		if err != nil {
@@ -1138,6 +1143,33 @@ func (a *App) handleCommandInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		a.statusBar.SetMode(component.ModeNormal)
 		a.cmdInput = ""
+		a.cmdSuggestions = nil
+		a.cmdSuggestionIdx = 0
+		a.statusBar.SetSuggestion("")
+		return a, nil
+
+	case "right", "tab":
+		if len(a.cmdSuggestions) > 0 {
+			a.cmdInput = a.cmdSuggestions[a.cmdSuggestionIdx]
+			a.cmdSuggestions = nil
+			a.cmdSuggestionIdx = 0
+			a.statusBar.SetInput(a.cmdInput)
+			a.statusBar.SetSuggestion("")
+		}
+		return a, nil
+
+	case "up":
+		if len(a.cmdSuggestions) > 0 {
+			a.cmdSuggestionIdx = (a.cmdSuggestionIdx - 1 + len(a.cmdSuggestions)) % len(a.cmdSuggestions)
+			a.statusBar.SetSuggestion(a.cmdSuggestions[a.cmdSuggestionIdx])
+		}
+		return a, nil
+
+	case "down":
+		if len(a.cmdSuggestions) > 0 {
+			a.cmdSuggestionIdx = (a.cmdSuggestionIdx + 1) % len(a.cmdSuggestions)
+			a.statusBar.SetSuggestion(a.cmdSuggestions[a.cmdSuggestionIdx])
+		}
 		return a, nil
 
 	case "backspace":
@@ -1145,12 +1177,26 @@ func (a *App) handleCommandInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.cmdInput = a.cmdInput[:len(a.cmdInput)-1]
 			a.statusBar.SetInput(a.cmdInput)
 		}
+		a.cmdSuggestions = a.registry.Suggest(a.cmdInput)
+		a.cmdSuggestionIdx = 0
+		if len(a.cmdSuggestions) > 0 {
+			a.statusBar.SetSuggestion(a.cmdSuggestions[0])
+		} else {
+			a.statusBar.SetSuggestion("")
+		}
 		return a, nil
 
 	default:
 		if len(msg.String()) == 1 {
 			a.cmdInput += msg.String()
 			a.statusBar.SetInput(a.cmdInput)
+			a.cmdSuggestions = a.registry.Suggest(a.cmdInput)
+			a.cmdSuggestionIdx = 0
+			if len(a.cmdSuggestions) > 0 {
+				a.statusBar.SetSuggestion(a.cmdSuggestions[0])
+			} else {
+				a.statusBar.SetSuggestion("")
+			}
 		}
 		return a, nil
 	}
