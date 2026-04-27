@@ -295,29 +295,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
 			updated, result := a.addContextDialog.Update(keyMsg)
 			a.addContextDialog = updated
-			switch result.Status {
-			case view.AddContextCancelled:
-				a.showAddContextDialog = false
-				return a, nil
-			case view.AddContextConfirmed:
-				a.showAddContextDialog = false
-				cfg := result.Config
-				if a.addCtxFn != nil {
-					if err := a.addCtxFn(cfg); err != nil {
-						a.statusBar.SetError(fmt.Sprintf("save context: %v", err))
-						return a, nil
-					}
-				}
-				a.contexts = append(a.contexts, cfg)
-				return a, tea.Batch(
-					view.ProbeContextCmd(cfg),
-					func() tea.Msg {
-						return view.ContextListUpdatedMsg{Contexts: a.contexts, Current: a.currentContextName}
-					},
-				)
-			}
-			if result.TestConn {
-				return a, probeAddContext(updated.CurrentConfig())
+			if cmd, done := a.handleAddContextResult(result); done {
+				return a, cmd
 			}
 			return a, nil
 		}
@@ -387,6 +366,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		a.updateLayout()
+		if a.showAddContextDialog {
+			a.addContextDialog.SetSize(a.width, a.height)
+		}
+		if a.showPrefsDialog {
+			a.prefsDialog.SetSize(a.width, a.height)
+		}
 		return a, nil
 
 	case tea.KeyMsg:
@@ -594,6 +579,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if apr, ok := msg.(addContextProbeResultMsg); ok {
 		if a.showAddContextDialog {
 			a.addContextDialog.SetConnStatus(apr.ok, apr.msg)
+			if pending, ready := a.addContextDialog.ConsumePending(); ready {
+				if cmd, done := a.handleAddContextResult(pending); done {
+					return a, cmd
+				}
+			}
 		}
 		return a, nil
 	}
@@ -662,6 +652,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			MaxLogLines:         a.maxLogLines,
 			LogLevel:            a.logLevel,
 		})
+		a.prefsDialog.SetSize(a.width, a.height)
 		a.showPrefsDialog = true
 		return a, nil
 	}
@@ -737,6 +728,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(view.OpenAddContextDialogMsg); ok {
 		a.showAddContextDialog = true
 		a.addContextDialog = view.NewAddContextDialog(a.theme)
+		a.addContextDialog.SetSize(a.width, a.height)
 		return a, nil
 	}
 
@@ -1121,6 +1113,36 @@ func (a App) View() string {
 	}
 
 	return rendered
+}
+
+// handleAddContextResult applies an AddContextDialog result. It returns
+// (cmd, done): when done is true the caller should return immediately.
+func (a *App) handleAddContextResult(result view.AddContextResult) (tea.Cmd, bool) {
+	switch result.Status {
+	case view.AddContextCancelled:
+		a.showAddContextDialog = false
+		return nil, true
+	case view.AddContextConfirmed:
+		a.showAddContextDialog = false
+		cfg := result.Config
+		if a.addCtxFn != nil {
+			if err := a.addCtxFn(cfg); err != nil {
+				a.statusBar.SetError(fmt.Sprintf("save context: %v", err))
+				return nil, true
+			}
+		}
+		a.contexts = append(a.contexts, cfg)
+		return tea.Batch(
+			view.ProbeContextCmd(cfg),
+			func() tea.Msg {
+				return view.ContextListUpdatedMsg{Contexts: a.contexts, Current: a.currentContextName}
+			},
+		), true
+	}
+	if result.TestConn {
+		return probeAddContext(a.addContextDialog.CurrentConfig()), true
+	}
+	return nil, false
 }
 
 func (a *App) handleCommandInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

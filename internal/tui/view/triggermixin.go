@@ -19,6 +19,7 @@ type triggerMixin struct {
 	confirmDialog  bool
 	confirmYes     bool
 	theme          theme.Theme
+	maxWidth       int
 	maxHeight      int
 	lastKnownBuild int
 
@@ -38,10 +39,11 @@ func (tm *triggerMixin) setTheme(t theme.Theme) {
 	}
 }
 
-func (tm *triggerMixin) setMaxHeight(h int) {
+func (tm *triggerMixin) setSize(w, h int) {
+	tm.maxWidth = w
 	tm.maxHeight = h
 	if tm.paramForm != nil {
-		tm.paramForm.SetMaxHeight(h)
+		tm.paramForm.SetSize(w, h)
 	}
 }
 
@@ -84,7 +86,7 @@ func (tm *triggerMixin) handleMsg(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		form := component.NewParamForm(tm.theme, msg.Params)
 		if tm.maxHeight > 0 {
-			form.SetMaxHeight(tm.maxHeight)
+			form.SetSize(tm.maxWidth, tm.maxHeight)
 		}
 		tm.paramForm = &form
 		return true, nil

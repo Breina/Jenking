@@ -688,7 +688,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return sv, nil
 		}
 		form := component.NewParamForm(sv.theme, msg.Params)
-		form.SetMaxHeight(sv.height - 6)
+		form.SetSize(sv.width, sv.height-6)
 		sv.paramForm = &form
 		return sv, nil
 

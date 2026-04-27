@@ -414,7 +414,7 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 func (dv *DescribeView) SetSize(w, h int) {
 	dv.width = w
 	dv.height = h
-	dv.trigger.setMaxHeight(h - 6)
+	dv.trigger.setSize(w, h-6)
 	if maxOff := max(0, len(dv.paramLines)-dv.height); dv.paramOffset > maxOff {
 		dv.paramOffset = maxOff
 	}

@@ -426,7 +426,7 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return jl, nil
 		}
 		form := component.NewParamForm(jl.theme, msg.Params)
-		form.SetMaxHeight(jl.height - 6)
+		form.SetSize(jl.width, jl.height-6)
 		jl.paramForm = &form
 		return jl, nil
 

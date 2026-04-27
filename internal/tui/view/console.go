@@ -256,7 +256,7 @@ func (cv *ConsoleView) ItemCount() int {
 
 func (cv *ConsoleView) SetSize(w, h int) {
 	cv.lv.SetSize(w, h)
-	cv.trigger.setMaxHeight(h - 6)
+	cv.trigger.setSize(w, h-6)
 }
 
 func (cv *ConsoleView) Commands() []command.Command {

@@ -41,7 +41,7 @@ type StageLogView struct {
 	trigger      triggerMixin
 	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
 	// using the stored scope. Set when this view is opened from a scoped view.
-	hasScopedParent     bool
+	hasScopedParent      bool
 	scopedParentScope    NavigationContext
 	scopedParentInterval time.Duration
 }
@@ -295,7 +295,7 @@ func (sl *StageLogView) ItemCount() int {
 
 func (sl *StageLogView) SetSize(w, h int) {
 	sl.lv.SetSize(w, h)
-	sl.trigger.setMaxHeight(h - 6)
+	sl.trigger.setSize(w, h-6)
 }
 
 func (sl *StageLogView) Commands() []command.Command {

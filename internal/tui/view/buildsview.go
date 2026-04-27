@@ -190,7 +190,7 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return bv, nil
 		}
 		form := component.NewParamForm(bv.theme, msg.Params)
-		form.SetMaxHeight(bv.height - 6)
+		form.SetSize(bv.width, bv.height-6)
 		bv.paramForm = &form
 		return bv, nil
 

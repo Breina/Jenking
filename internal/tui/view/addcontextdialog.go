@@ -1,26 +1,27 @@
 package view
 
 import (
+	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/config"
+	"github.com/Breina/Jenking/internal/tui/component"
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
 
-// AddContextStatus is the outcome of an AddContextDialog.Update call.
+// AddContextStatus is the outcome of an AddContextDialog.Update or
+// ConsumePending call.
 type AddContextStatus int
 
 const (
-	AddContextActive    AddContextStatus = iota
-	AddContextConfirmed                  // user submitted
-	AddContextCancelled                  // user pressed Esc
+	AddContextActive AddContextStatus = iota
+	AddContextConfirmed
+	AddContextCancelled
 )
 
-// AddContextResult is returned by Update.
+// AddContextResult is returned by Update and ConsumePending.
 type AddContextResult struct {
 	Status   AddContextStatus
 	TestConn bool                 // app should probe connection with CurrentConfig()
@@ -28,294 +29,138 @@ type AddContextResult struct {
 }
 
 const (
-	addCtxFieldName     = 0
-	addCtxFieldURL      = 1
-	addCtxFieldUsername = 2
-	addCtxFieldToken    = 3
-	addCtxFieldInsecure = 4
-	addCtxFieldCount    = 5
+	addCtxKeyName     = "name"
+	addCtxKeyURL      = "url"
+	addCtxKeyUsername = "username"
+	addCtxKeyToken    = "token"
+	addCtxKeyInsecure = "insecure"
+)
+
+type addContextProbeState int
+
+const (
+	probeIdle addContextProbeState = iota
+	probeTesting
+	probeTestingThenSubmit
 )
 
 // AddContextDialog is a modal form for adding a new Jenkins context.
 type AddContextDialog struct {
-	nameInput     textinput.Model
-	urlInput      textinput.Model
-	usernameInput textinput.Model
-	tokenInput    textinput.Model
-	insecure      bool
-	cursor        int
-	connOK        *bool
-	connMsg       string
-	theme         theme.Theme
+	form         component.PopupForm
+	probeState   addContextProbeState
+	pendingReady bool // submit pending, waiting for app to read via ConsumePending
 }
 
 // NewAddContextDialog creates an empty dialog ready for input.
 func NewAddContextDialog(t theme.Theme) AddContextDialog {
-	accentColor, _ := t.Popup.Title.GetForeground().(lipgloss.Color)
-	mk := func(placeholder string) textinput.Model {
-		ti := textinput.New()
-		ti.Placeholder = placeholder
-		ti.CharLimit = 512
-		ti.Width = 40
-		ti.TextStyle = t.Popup.Normal
-		ti.PlaceholderStyle = t.Popup.Hint
-		ti.Cursor.Style = lipgloss.NewStyle().Foreground(accentColor)
-		return ti
+	fields := []component.Field{
+		{
+			Key: addCtxKeyName, Label: "Name", Kind: component.FieldText, Required: true,
+			Description: "A short identifier for this Jenkins instance, e.g. production.",
+		},
+		{
+			Key: addCtxKeyURL, Label: "URL", Kind: component.FieldText, Required: true,
+			Description: "Full Jenkins base URL including scheme, e.g. https://jenkins.example.com.",
+			Validator:   validateURL,
+		},
+		{
+			Key: addCtxKeyUsername, Label: "Username", Kind: component.FieldText,
+			Description: "Your Jenkins username.",
+		},
+		{
+			Key: addCtxKeyToken, Label: "Token", Kind: component.FieldPassword,
+			Description: "Jenkins API token. Stored locally; rotate if compromised.",
+		},
+		{
+			Key: addCtxKeyInsecure, Label: "skip TLS verify", Kind: component.FieldBool,
+			Default:     "false",
+			Description: "Disable TLS certificate verification. Use only for self-signed test instances.",
+		},
 	}
-	token := mk("API token")
-	token.EchoMode = textinput.EchoPassword
-	token.EchoCharacter = '•'
-
-	d := AddContextDialog{
-		nameInput:     mk("e.g. production"),
-		urlInput:      mk("https://jenkins.example.com"),
-		usernameInput: mk("your-username"),
-		tokenInput:    token,
-		theme:         t,
-	}
-	d.nameInput.Focus()
-	return d
+	pf := component.NewPopupForm(t, "Add Context", fields)
+	pf.RegisterCustomKey("ctrl+t", "test", "test connection")
+	// Reserve room for the connection status line so the popup height does not
+	// shift between "○ testing…", "● connected" and "● failed: …".
+	pf.ReserveStatusLines(2)
+	return AddContextDialog{form: pf}
 }
 
-// SetConnStatus records the result of a connection probe.
+func validateURL(s string) error {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+		return fmt.Errorf("must start with http:// or https://")
+	}
+	return nil
+}
+
+// SetTheme refreshes the theme used for rendering.
+func (d *AddContextDialog) SetTheme(t theme.Theme) { d.form.SetTheme(t) }
+
+// SetSize updates the popup width/height from terminal dimensions.
+func (d *AddContextDialog) SetSize(termW, termH int) { d.form.SetSize(termW, termH) }
+
+// SetConnStatus records the result of a connection probe and decides whether
+// to confirm an in-flight Enter submit.
 func (d *AddContextDialog) SetConnStatus(ok bool, msg string) {
-	d.connOK = &ok
-	d.connMsg = msg
+	switch {
+	case ok:
+		d.form.SetStatus(component.StatusOK, "● connected")
+	default:
+		d.form.SetStatus(component.StatusError, "● failed: "+msg)
+	}
+	if d.probeState == probeTestingThenSubmit && ok {
+		d.pendingReady = true
+	}
+	d.probeState = probeIdle
 }
 
 // CurrentConfig returns the ContextConfig built from current field values.
 func (d AddContextDialog) CurrentConfig() config.ContextConfig {
+	v := d.form.Values()
 	return config.ContextConfig{
-		Name:     strings.TrimSpace(d.nameInput.Value()),
-		URL:      strings.TrimSpace(d.urlInput.Value()),
-		Username: strings.TrimSpace(d.usernameInput.Value()),
-		Token:    d.tokenInput.Value(),
-		Insecure: d.insecure,
+		Name:     strings.TrimSpace(v[addCtxKeyName]),
+		URL:      strings.TrimSpace(v[addCtxKeyURL]),
+		Username: strings.TrimSpace(v[addCtxKeyUsername]),
+		Token:    v[addCtxKeyToken],
+		Insecure: v[addCtxKeyInsecure] == "true",
 	}
+}
+
+// ConsumePending returns a Confirmed result if a queued submit is ready (after
+// a successful test), otherwise (zero, false). Callers (the app) should call
+// this after every SetConnStatus and after every Update.
+func (d *AddContextDialog) ConsumePending() (AddContextResult, bool) {
+	if !d.pendingReady {
+		return AddContextResult{}, false
+	}
+	d.pendingReady = false
+	return AddContextResult{Status: AddContextConfirmed, Config: d.CurrentConfig()}, true
 }
 
 // Update processes a key message.
 func (d AddContextDialog) Update(msg tea.KeyMsg) (AddContextDialog, AddContextResult) {
-	switch msg.String() {
-	case "esc":
+	res := d.form.Update(msg)
+	switch res.Status {
+	case component.PopupCancelled:
 		return d, AddContextResult{Status: AddContextCancelled}
-
-	case "ctrl+s":
-		return d, AddContextResult{Status: AddContextConfirmed, Config: d.CurrentConfig()}
-
-	case "ctrl+t":
+	case component.PopupCustom:
+		if res.Custom == "test" {
+			d.probeState = probeTesting
+			d.form.SetStatus(component.StatusInfo, "○ testing…")
+			return d, AddContextResult{Status: AddContextActive, TestConn: true}
+		}
+	case component.PopupSubmitted:
+		d.probeState = probeTestingThenSubmit
+		d.form.SetStatus(component.StatusInfo, "○ testing…")
 		return d, AddContextResult{Status: AddContextActive, TestConn: true}
-
-	case "tab", "down":
-		d.moveCursor(1)
-		result := AddContextResult{Status: AddContextActive}
-		if d.cursor == addCtxFieldInsecure {
-			result.TestConn = true // auto-test when landing on the last field
-		}
-		return d, result
-
-	case "shift+tab", "up":
-		d.moveCursor(-1)
-		return d, AddContextResult{Status: AddContextActive}
-
-	case "enter":
-		if d.cursor == addCtxFieldInsecure {
-			return d, AddContextResult{Status: AddContextConfirmed, Config: d.CurrentConfig()}
-		}
-		d.moveCursor(1)
-		result := AddContextResult{Status: AddContextActive}
-		if d.cursor == addCtxFieldInsecure {
-			result.TestConn = true
-		}
-		return d, result
 	}
-
-	// Field-specific handling
-	switch d.cursor {
-	case addCtxFieldInsecure:
-		if msg.String() == " " {
-			d.insecure = !d.insecure
-		}
-	default:
-		d.updateCurrentInput(msg)
-		// Clear stale probe result when inputs change
-		d.connOK = nil
-		d.connMsg = ""
-	}
-
 	return d, AddContextResult{Status: AddContextActive}
 }
 
-func (d *AddContextDialog) moveCursor(delta int) {
-	// Blur current text field
-	switch d.cursor {
-	case addCtxFieldName:
-		d.nameInput.Blur()
-	case addCtxFieldURL:
-		d.urlInput.Blur()
-	case addCtxFieldUsername:
-		d.usernameInput.Blur()
-	case addCtxFieldToken:
-		d.tokenInput.Blur()
-	}
-
-	d.cursor += delta
-	if d.cursor < 0 {
-		d.cursor = 0
-	}
-	if d.cursor >= addCtxFieldCount {
-		d.cursor = addCtxFieldCount - 1
-	}
-
-	// Focus new text field
-	switch d.cursor {
-	case addCtxFieldName:
-		d.nameInput.Focus()
-	case addCtxFieldURL:
-		d.urlInput.Focus()
-	case addCtxFieldUsername:
-		d.usernameInput.Focus()
-	case addCtxFieldToken:
-		d.tokenInput.Focus()
-	}
-}
-
-func (d *AddContextDialog) updateCurrentInput(msg tea.KeyMsg) {
-	var cmd tea.Cmd
-	switch d.cursor {
-	case addCtxFieldName:
-		d.nameInput, cmd = d.nameInput.Update(msg)
-	case addCtxFieldURL:
-		d.urlInput, cmd = d.urlInput.Update(msg)
-	case addCtxFieldUsername:
-		d.usernameInput, cmd = d.usernameInput.Update(msg)
-	case addCtxFieldToken:
-		d.tokenInput, cmd = d.tokenInput.Update(msg)
-	}
-	_ = cmd
-}
-
-// View renders the dialog box. Use Render to overlay it on a background.
-func (d AddContextDialog) View() string {
-	t := d.theme
-	accentColor := t.Popup.Title.GetForeground()
-	titleStyle := t.Popup.Title
-	labelStyle := t.Popup.Label
-	hintStyle := t.Popup.Hint
-	selectedStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-
-	renderField := func(label, value string, active bool) string {
-		prefix := "  "
-		ls := labelStyle
-		if active {
-			prefix = "▸ "
-			ls = selectedStyle
-		}
-		return ls.Render(prefix+label) + "\n    " + value
-	}
-
-	var lines []string
-	lines = append(lines, titleStyle.Render("Add Context"), "")
-
-	// Name
-	{
-		active := d.cursor == addCtxFieldName
-		val := d.nameInput.View()
-		if !active {
-			if v := d.nameInput.Value(); v != "" {
-				val = v
-			} else {
-				val = hintStyle.Render("(empty)")
-			}
-		}
-		lines = append(lines, renderField("Name", val, active))
-	}
-	// URL
-	{
-		active := d.cursor == addCtxFieldURL
-		val := d.urlInput.View()
-		if !active {
-			if v := d.urlInput.Value(); v != "" {
-				val = v
-			} else {
-				val = hintStyle.Render("(empty)")
-			}
-		}
-		lines = append(lines, renderField("URL", val, active))
-	}
-	// Username
-	{
-		active := d.cursor == addCtxFieldUsername
-		val := d.usernameInput.View()
-		if !active {
-			if v := d.usernameInput.Value(); v != "" {
-				val = v
-			} else {
-				val = hintStyle.Render("(empty)")
-			}
-		}
-		lines = append(lines, renderField("Username", val, active))
-	}
-	// Token
-	{
-		active := d.cursor == addCtxFieldToken
-		val := d.tokenInput.View()
-		if !active {
-			if v := d.tokenInput.Value(); v != "" {
-				val = strings.Repeat("•", len(v))
-			} else {
-				val = hintStyle.Render("(empty)")
-			}
-		}
-		lines = append(lines, renderField("Token", val, active))
-	}
-	// Insecure toggle
-	{
-		active := d.cursor == addCtxFieldInsecure
-		check := "[ ] skip TLS verify"
-		if d.insecure {
-			check = "[✔] skip TLS verify"
-		}
-		var line string
-		if active {
-			line = selectedStyle.Render("▸ ") + check + hintStyle.Render("  (space to toggle)")
-		} else {
-			line = "   " + check
-		}
-		lines = append(lines, line)
-	}
-
-	lines = append(lines, "")
-
-	// Connection status
-	{
-		var connLine string
-		switch {
-		case d.connOK == nil:
-			connLine = hintStyle.Render("○ not tested  (Ctrl+T to test connection)")
-		case *d.connOK:
-			connLine = t.Header.Connected.Render("● connected")
-		default:
-			errMsg := d.connMsg
-			if len(errMsg) > 60 {
-				errMsg = errMsg[:57] + "..."
-			}
-			connLine = t.Header.Disconnected.Render("● failed: " + errMsg)
-		}
-		lines = append(lines, connLine)
-	}
-
-	lines = append(lines, "", hintStyle.Render("Tab/↑↓ navigate  Ctrl+S confirm  Esc cancel"))
-
-	content := strings.Join(lines, "\n")
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentColor).
-		Padding(1, 3).
-		Render(content)
-}
+// View renders the dialog box.
+func (d AddContextDialog) View() string { return d.form.View() }
 
 // Render overlays the dialog centered on bg.
 func (d AddContextDialog) Render(bg string, width, height int) string {
-	return overlayCenter(bg, d.View(), width, height)
+	return overlayCenter(bg, d.form.View(), width, height)
 }

@@ -31,9 +31,10 @@ const (
 type ParamType string
 
 const (
-	ParamTypeString ParamType = "string"
-	ParamTypeBool   ParamType = "bool"
-	ParamTypeChoice ParamType = "choice"
+	ParamTypeString   ParamType = "string"
+	ParamTypeBool     ParamType = "bool"
+	ParamTypeChoice   ParamType = "choice"
+	ParamTypePassword ParamType = "password"
 )
 
 // ParameterDefinition describes a parameter of a parameterized Jenkins job.
@@ -518,6 +519,8 @@ func millisToTime(ms int64) time.Time {
 // parseParamType maps a Jenkins parameter class name to a ParamType.
 func parseParamType(class string) ParamType {
 	switch {
+	case strings.Contains(class, "PasswordParameterDefinition"):
+		return ParamTypePassword
 	case strings.Contains(class, "BooleanParameterDefinition"):
 		return ParamTypeBool
 	case strings.Contains(class, "ChoiceParameterDefinition"):
