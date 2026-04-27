@@ -66,14 +66,35 @@ The binary is placed in `$(go env GOPATH)/bin`. Make sure that directory is on y
 
 ## Configuration
 
-Create the config file at `~/.config/jenking/config.yaml`:
+Create the config file at `~/.config/jenking/config.yaml`.
+
+### Minimum config
 
 ```yaml
-server:
-  url: https://jenkins.example.com
-  username: your-jenkins-username
-  token: your-api-token        # or use an env var: $JENKINS_TOKEN
-  insecure: false              # set true to skip TLS verification
+contexts:
+  - name: my-jenkins
+    url: https://jenkins.example.com
+    username: your-jenkins-username
+    token: your-api-token        # or use an env var: $JENKINS_TOKEN
+
+current_context: my-jenkins
+```
+
+### Full config
+
+```yaml
+contexts:
+  - name: production
+    url: https://jenkins.example.com
+    username: your-jenkins-username
+    token: $JENKINS_TOKEN
+    insecure: false              # set true to skip TLS verification
+  - name: staging
+    url: https://jenkins-staging.example.com
+    username: your-jenkins-username
+    token: $JENKINS_STAGING_TOKEN
+
+current_context: production
 
 preferences:
   theme: default               # default | royal | matrix | ...
@@ -82,9 +103,12 @@ preferences:
   slow_refresh_interval: 2m
   max_log_lines: 10000
   log_level: off               # off | debug
-  git_usernames:               # optional: highlight your own commits
+  notifications: true          # desktop notifications on build completion
+  git_usernames:               # highlight your own commits in build history
     - your-git-username
 ```
+
+Switch between contexts inside the app with `:context`.
 
 ### API Token
 
@@ -93,8 +117,7 @@ Generate a token in Jenkins: **User menu → Configure → API Token → Add new
 You can store the token as an environment variable and reference it in the config:
 
 ```yaml
-server:
-  token: $JENKINS_TOKEN
+token: $JENKINS_TOKEN
 ```
 
 ---
