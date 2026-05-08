@@ -10,11 +10,12 @@ import (
 
 // Command represents a registered command.
 type Command struct {
-	Name    string
-	Aliases []string
-	Help    string
-	Hidden  bool // true = omitted from :help (easter egg commands)
-	Execute func(args []string) tea.Cmd
+	Name       string
+	Aliases    []string
+	Help       string
+	Hidden     bool // true = omitted from :help (easter egg commands)
+	Execute    func(args []string) tea.Cmd
+	ArgSuggest func(prefix string) []string // optional: returns arg completions for given prefix
 }
 
 // Registry holds all registered commands.
@@ -74,11 +75,27 @@ func (r *Registry) ListVisible() []Command {
 	return result
 }
 
-// Suggest returns all non-hidden command names and aliases that start with
-// prefix, excluding exact matches, sorted alphabetically.
+// Suggest returns completions for the given input.
+// If the input contains a space, it completes arguments for the named command.
+// Otherwise it completes command names and aliases, sorted alphabetically.
 func (r *Registry) Suggest(prefix string) []string {
 	if prefix == "" {
 		return nil
+	}
+	if spaceIdx := strings.Index(prefix, " "); spaceIdx != -1 {
+		cmdName := prefix[:spaceIdx]
+		argPrefix := prefix[spaceIdx+1:]
+		cmd, ok := r.commands[cmdName]
+		if !ok || cmd.ArgSuggest == nil {
+			return nil
+		}
+		args := cmd.ArgSuggest(argPrefix)
+		result := make([]string, 0, len(args))
+		for _, a := range args {
+			result = append(result, cmdName+" "+a)
+		}
+		sort.Strings(result)
+		return result
 	}
 	var result []string
 	for key, cmd := range r.commands {

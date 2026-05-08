@@ -1,14 +1,32 @@
 package view
 
 import (
+	"encoding/base64"
 	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
+
+// copyFlashMsg is emitted when a clipboard write completes.
+// isSel distinguishes selection copy (C) from log copy (c).
+type copyFlashMsg struct{ isSel bool }
+
+// copyFlashDoneMsg is emitted after the 1-second flash expires.
+type copyFlashDoneMsg struct{ isSel bool }
+
+// selectionCheckMsg carries the cleaned primary selection from the background poll.
+type selectionCheckMsg struct {
+	text      string
+	lineCount int
+}
 
 var (
 	urlRe = regexp.MustCompile(`https?://[^\s]+`)
@@ -50,22 +68,25 @@ type displayLine struct {
 // LogViewer holds all shared state and logic for rendering scrollable log output.
 // It is embedded by ConsoleView and StageLogView.
 type LogViewer struct {
-	rawLines         []string
-	lines            []displayLine
-	offset           int
-	hOffset          int // rune columns; only active when !wrap
-	width, height    int
-	wrap             bool
-	showInternal     bool
-	searchQuery      string
-	searchRe         *regexp.Regexp
-	searchMatchLines []int // lines[] indices of first chunk per search-matching raw line
-	currentMatchLine int   // lines[] index of the actively-selected search match (-1 = none)
-	errCount         int
-	warnCount        int
-	highlightedLines []int    // lines[] index of first chunk per error/warn raw line
-	lastVisibleKind  lineKind // kind of the last visible (non-filtered) line
-	theme            theme.Theme
+	rawLines           []string
+	lines              []displayLine
+	offset             int
+	hOffset            int // rune columns; only active when !wrap
+	width, height      int
+	wrap               bool
+	showInternal       bool
+	searchQuery        string
+	searchRe           *regexp.Regexp
+	searchMatchLines   []int // lines[] indices of first chunk per search-matching raw line
+	currentMatchLine   int   // lines[] index of the actively-selected search match (-1 = none)
+	errCount           int
+	warnCount          int
+	highlightedLines   []int    // lines[] index of first chunk per error/warn raw line
+	lastVisibleKind    lineKind // kind of the last visible (non-filtered) line
+	selectionText      string   // cleaned primary selection text from last poll
+	selectionLineCount int      // non-empty lines in selectionText
+	selectionInLog     bool     // true when selectionText matches content in this log
+	theme              theme.Theme
 	// renderFn, when non-nil, overrides the default renderLogLine used in
 	// renderLine/renderLineAt. Set by callers that need custom line rendering
 	// (e.g. Groovy syntax highlighting in the describe script pane).
@@ -88,8 +109,22 @@ func (lv *LogViewer) ScrollInfo() ScrollInfo {
 
 // recomputeLines rebuilds display lines from rawLines using current settings.
 // Preserves bottom-pin: if we were at the bottom, stay at the bottom.
+// Preserves the active search match position by match-list index.
 func (lv *LogViewer) recomputeLines() {
 	atBottom := len(lv.lines) == 0 || lv.offset >= max(0, len(lv.lines)-lv.contentHeight())
+
+	// Save active match index (position in searchMatchLines, not lines[] index)
+	// so we can restore it after the rebuild even when new lines shift indices.
+	savedMatchIdx := -1
+	if lv.currentMatchLine >= 0 {
+		for i, line := range lv.searchMatchLines {
+			if line == lv.currentMatchLine {
+				savedMatchIdx = i
+				break
+			}
+		}
+	}
+
 	lv.lines = nil
 	lv.errCount, lv.warnCount = 0, 0
 	lv.highlightedLines = lv.highlightedLines[:0]
@@ -124,7 +159,16 @@ func (lv *LogViewer) recomputeLines() {
 	}
 	lv.lastVisibleKind = prevKind
 	newMax := max(0, len(lv.lines)-lv.contentHeight())
-	if atBottom {
+
+	// Restore the active search match. Clamp to the new match list in case
+	// matches were removed (e.g. content replaced, not just appended).
+	if savedMatchIdx >= 0 && len(lv.searchMatchLines) > 0 {
+		if savedMatchIdx >= len(lv.searchMatchLines) {
+			savedMatchIdx = len(lv.searchMatchLines) - 1
+		}
+		lv.currentMatchLine = lv.searchMatchLines[savedMatchIdx]
+		lv.offset = min(lv.currentMatchLine, newMax)
+	} else if atBottom {
 		lv.offset = newMax
 	} else {
 		lv.offset = min(lv.offset, newMax)
@@ -171,6 +215,139 @@ func (lv *LogViewer) Badge() string {
 		parts = append(parts, lv.theme.Log.Error.Render(fmt.Sprintf("%s %d", errIcon, lv.errCount)))
 	}
 	return strings.Join(parts, "  ")
+}
+
+// CopyLogCmd copies the visible log lines to the clipboard, respecting the
+// current showInternal filter so the result matches what the user sees.
+func (lv *LogViewer) CopyLogCmd() tea.Cmd {
+	var lines []string
+	for _, raw := range lv.rawLines {
+		if !lv.showInternal && isInternalLine(raw) {
+			continue
+		}
+		lines = append(lines, raw)
+	}
+	return func() tea.Msg {
+		writeToClipboard(strings.Join(lines, "\n"))
+		return copyFlashMsg{isSel: false}
+	}
+}
+
+// CopySelectionCmd copies the cached primary selection text to the clipboard.
+func (lv *LogViewer) CopySelectionCmd() tea.Cmd {
+	text := lv.selectionText
+	return func() tea.Msg {
+		if strings.TrimSpace(text) != "" {
+			writeToClipboard(text)
+		}
+		return copyFlashMsg{isSel: true}
+	}
+}
+
+// selectionCheckCmd reads the primary selection every 300 ms, cleans it, and
+// returns a selectionCheckMsg. Views should re-issue it on each receipt.
+func selectionCheckCmd() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(300 * time.Millisecond)
+		cleaned := cleanBorderChars(readPrimarySelection())
+		count := 0
+		for _, l := range strings.Split(cleaned, "\n") {
+			if strings.TrimSpace(l) != "" {
+				count++
+			}
+		}
+		return selectionCheckMsg{text: cleaned, lineCount: count}
+	}
+}
+
+// checkSelectionInLog reports whether the first non-empty line of cleaned
+// appears as a substring in any raw log line. Called on the main goroutine.
+func (lv *LogViewer) checkSelectionInLog(cleaned string) bool {
+	var needle string
+	for _, l := range strings.Split(cleaned, "\n") {
+		if s := strings.TrimSpace(l); s != "" {
+			needle = s
+			break
+		}
+	}
+	if needle == "" {
+		return false
+	}
+	for _, raw := range lv.rawLines {
+		if strings.Contains(raw, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// logLabel returns the "copy log [N]" shortcut label.
+// The count reflects the current showInternal filter so it matches what c copies.
+func (lv *LogViewer) logLabel() string {
+	count := len(lv.rawLines)
+	if !lv.showInternal {
+		count = 0
+		for _, raw := range lv.rawLines {
+			if !isInternalLine(raw) {
+				count++
+			}
+		}
+	}
+	return fmt.Sprintf("copy log [%d]", count)
+}
+
+// selLabel returns the "copy sel [N]" shortcut label.
+func (lv *LogViewer) selLabel() string {
+	return fmt.Sprintf("copy sel [%d]", lv.selectionLineCount)
+}
+
+// readPrimarySelection returns the current primary selection text.
+// Uses type-list probes to avoid returning stale content retained by some
+// compositors after the selection is released.
+func readPrimarySelection() string {
+	if exec.Command("wl-paste", "--primary", "--list-types").Run() == nil {
+		if b, err := exec.Command("wl-paste", "--primary", "--no-newline").Output(); err == nil {
+			return string(b)
+		}
+	}
+	if exec.Command("xclip", "-selection", "primary", "-t", "TARGETS", "-o").Run() == nil {
+		if b, err := exec.Command("xclip", "-selection", "primary", "-o").Output(); err == nil {
+			return string(b)
+		}
+	}
+	if b, err := exec.Command("xsel", "--primary", "--output").Output(); err == nil {
+		return string(b)
+	}
+	return ""
+}
+
+// writeToClipboard writes text to the terminal clipboard via OSC 52.
+func writeToClipboard(text string) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(text))
+	if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
+		fmt.Fprintf(tty, "\x1b]52;c;%s\x07", encoded)
+		tty.Close()
+	}
+}
+
+// cleanBorderChars strips the │ panel border characters and their padding from
+// each line of a terminal selection.
+func cleanBorderChars(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		line = strings.TrimPrefix(line, "│")
+		line = strings.TrimRight(line, " │")
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
+// copyFlashTimer returns a cmd that fires copyFlashDoneMsg after 1 second.
+func copyFlashTimer(isSel bool) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(time.Second)
+		return copyFlashDoneMsg{isSel: isSel}
+	}
 }
 
 func (lv *LogViewer) nextHighlight(forward bool) {

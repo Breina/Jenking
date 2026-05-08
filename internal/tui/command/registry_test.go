@@ -45,6 +45,48 @@ func TestRegistryExecute(t *testing.T) {
 	}
 }
 
+func TestRegistrySuggestArgs(t *testing.T) {
+	r := NewRegistry()
+	r.Register(Command{
+		Name:    "theme",
+		Execute: func(args []string) tea.Cmd { return nil },
+		ArgSuggest: func(prefix string) []string {
+			all := []string{"default", "dracula", "matrix"}
+			var out []string
+			for _, a := range all {
+				if len(prefix) == 0 || (len(a) > len(prefix) && a[:len(prefix)] == prefix) {
+					out = append(out, a)
+				}
+			}
+			return out
+		},
+	})
+
+	// Command-name completion still works
+	got := r.Suggest("th")
+	if len(got) != 1 || got[0] != "theme" {
+		t.Errorf("Suggest(th) = %v, want [theme]", got)
+	}
+
+	// Arg completion: prefix "d" → default, dracula
+	got = r.Suggest("theme d")
+	if len(got) != 2 || got[0] != "theme default" || got[1] != "theme dracula" {
+		t.Errorf("Suggest(theme d) = %v, want [theme default, theme dracula]", got)
+	}
+
+	// Arg completion: empty prefix → all
+	got = r.Suggest("theme ")
+	if len(got) != 3 {
+		t.Errorf("Suggest(theme ) = %v, want 3 suggestions", got)
+	}
+
+	// No suggestions for unknown command
+	got = r.Suggest("unknown ")
+	if len(got) != 0 {
+		t.Errorf("Suggest(unknown ) = %v, want []", got)
+	}
+}
+
 func TestRegistryList(t *testing.T) {
 	r := NewRegistry()
 	r.Register(Command{

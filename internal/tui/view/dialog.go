@@ -64,6 +64,33 @@ func helpAlias(cmd command.Command) string {
 	return ""
 }
 
+// RenderUpdateConfirmDialog renders a centered dialog asking the user to confirm
+// an in-place update from currentVersion to latestVersion.
+// confirmYes controls which button is pre-selected.
+func RenderUpdateConfirmDialog(t theme.Theme, bg string, width, height int, currentVersion, latestVersion string, confirmYes bool) string {
+	body := fmt.Sprintf("Update from  %s  →  %s ?",
+		lipgloss.NewStyle().Faint(true).Render(currentVersion),
+		lipgloss.NewStyle().Bold(true).Render(latestVersion),
+	)
+	return renderConfirmDialog(t, bg, width, height, "Update Available", body, confirmYes)
+}
+
+// RenderUpdatingDialog renders a centered overlay indicating an update is in progress.
+func RenderUpdatingDialog(t theme.Theme, bg string, width, height int) string {
+	accentColor := t.Popup.Title.GetForeground()
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		t.Popup.Title.Align(lipgloss.Center).Render("Updating…"),
+		"",
+		lipgloss.NewStyle().Faint(true).Render("Downloading and replacing binary, please wait."),
+	)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentColor).
+		Padding(1, 4).
+		Render(content)
+	return overlayCenter(bg, box, width, height)
+}
+
 // renderConfirmDialog renders a k9s-style centered confirmation dialog
 // overlaid on top of the background content (tableView).
 // confirmYes controls which button is highlighted.

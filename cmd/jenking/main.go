@@ -83,9 +83,13 @@ func main() {
 	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.RefreshInterval, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, dashboard, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications, cfg.Preferences.MaxLogLines, cfg.Preferences.LogLevel, cfg.Contexts, active.Name, newDiskStore, cfg.AddContext, cfg.DeleteContext, cfg.SetCurrentContext, savePrefsFn)
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
 		os.Exit(1)
+	}
+	if a, ok := finalModel.(tui.App); ok && a.UpdatedTo != "" {
+		fmt.Printf("Jenking updated to %s — please restart to use the new version.\n", a.UpdatedTo)
 	}
 }
 

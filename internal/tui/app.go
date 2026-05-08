@@ -21,6 +21,8 @@ import (
 	"github.com/Breina/Jenking/internal/tui/component"
 	"github.com/Breina/Jenking/internal/tui/theme"
 	"github.com/Breina/Jenking/internal/tui/view"
+	"github.com/Breina/Jenking/internal/updater"
+	"github.com/Breina/Jenking/internal/version"
 )
 
 // debugStats is shared via pointer so value-receiver methods can mutate it.
@@ -29,6 +31,13 @@ type debugStats struct {
 	updateMs    int64
 	updateCount int64
 }
+
+type updateCheckResultMsg struct {
+	version string // empty when no newer version exists
+	err     error
+}
+type startUpdateMsg struct{}
+type updateDoneMsg struct{ err error }
 
 type openColorblindMenuMsg struct{}
 type openThemeMenuMsg struct{}
@@ -104,6 +113,11 @@ type App struct {
 	termFocused          bool        // true while the terminal window has focus
 	connected            bool        // tracks live connection status shown in header
 	dbg                  *debugStats // non-nil when log_level=debug
+	updateVersion        string      // non-empty when a newer version is available
+	showUpdateDialog     bool
+	updateDialogYes      bool // which button is highlighted in the confirm dialog
+	isUpdating           bool
+	UpdatedTo            string // set on successful self-update; read by main after p.Run()
 }
 
 // NewApp creates the root application model.
@@ -124,7 +138,28 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		Aliases: []string{"cb"},
 		Help:    "Select colorblindness compensation type",
 		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openColorblindMenuMsg{} }
+			if len(args) == 0 {
+				return func() tea.Msg { return openColorblindMenuMsg{} }
+			}
+			cbType := theme.ColorblindnessType(args[0])
+			for _, t := range theme.AllColorblindnessTypes {
+				if t == cbType {
+					return func() tea.Msg { return view.ColorblindConfirmMsg{Type: cbType} }
+				}
+			}
+			return func() tea.Msg {
+				return view.ErrorMsg{Err: fmt.Errorf("unknown colorblindness type: %s", args[0])}
+			}
+		},
+		ArgSuggest: func(prefix string) []string {
+			var result []string
+			for _, t := range theme.AllColorblindnessTypes {
+				s := string(t)
+				if strings.HasPrefix(s, prefix) && s != prefix {
+					result = append(result, s)
+				}
+			}
+			return result
 		},
 	})
 
@@ -187,7 +222,26 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		Aliases: []string{"th"},
 		Help:    "Select colour theme",
 		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openThemeMenuMsg{} }
+			if len(args) == 0 {
+				return func() tea.Msg { return openThemeMenuMsg{} }
+			}
+			id := theme.ThemeID(args[0])
+			for _, t := range theme.AllThemes {
+				if t.ID == id {
+					return func() tea.Msg { return view.ThemeConfirmMsg{ID: id} }
+				}
+			}
+			return func() tea.Msg { return view.ErrorMsg{Err: fmt.Errorf("unknown theme: %s", args[0])} }
+		},
+		ArgSuggest: func(prefix string) []string {
+			var result []string
+			for _, t := range theme.AllThemes {
+				s := string(t.ID)
+				if strings.HasPrefix(s, prefix) && s != prefix {
+					result = append(result, s)
+				}
+			}
+			return result
 		},
 	})
 
@@ -217,6 +271,24 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 				return func() tea.Msg { return openContextMenuMsg{} }
 			}
 			return func() tea.Msg { return switchContextMsg{name: args[0]} }
+		},
+		ArgSuggest: func(prefix string) []string {
+			var result []string
+			for _, ctx := range contexts {
+				if strings.HasPrefix(ctx.Name, prefix) && ctx.Name != prefix {
+					result = append(result, ctx.Name)
+				}
+			}
+			return result
+		},
+	})
+
+	registry.Register(command.Command{
+		Name:    "update",
+		Aliases: []string{"upgrade"},
+		Help:    "Update Jenking to the latest release",
+		Execute: func(args []string) tea.Cmd {
+			return func() tea.Msg { return startUpdateMsg{} }
 		},
 	})
 
@@ -273,6 +345,7 @@ func (a App) Init() tea.Cmd {
 		cmds = append(cmds, a.currentView.Init())
 	}
 	cmds = append(cmds, a.monitor.Init())
+	cmds = append(cmds, checkForUpdateCmd())
 	return tea.Batch(cmds...)
 }
 
@@ -324,6 +397,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						a.statusBar.SetError(fmt.Sprintf("save preferences: %v", err))
 					}
 				}
+			}
+			return a, nil
+		}
+	}
+
+	// Update confirm dialog intercepts all key events while open.
+	if a.showUpdateDialog {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "left", "right", "h", "l":
+				a.updateDialogYes = !a.updateDialogYes
+			case "y", "Y":
+				a.showUpdateDialog = false
+				a.isUpdating = true
+				return a, doUpdateCmd(a.updateVersion)
+			case "enter":
+				if a.updateDialogYes {
+					a.showUpdateDialog = false
+					a.isUpdating = true
+					return a, doUpdateCmd(a.updateVersion)
+				}
+				a.showUpdateDialog = false
+			case "n", "N", "esc", "q":
+				a.showUpdateDialog = false
 			}
 			return a, nil
 		}
@@ -457,6 +554,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.updateBreadcrumb()
 				return a, a.initialView.Init()
 			}
+			return a, nil
+		case msg.String() == "U" && a.updateVersion != "":
+			a.showUpdateDialog = true
+			a.updateDialogYes = true
 			return a, nil
 		case key.Matches(msg, a.keys.RunningBuilds):
 			if bv, ok := a.activeView().(*view.BuildsView); ok && bv.NC().Level == view.CtxRoot {
@@ -801,12 +902,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if pr.ok && !a.connected {
 			a.connected = true
 			a.header.SetConnected(true)
+			// Re-fetch user info in case the initial fetch failed while disconnected.
+			userCmd := fetchUserInfo(a.client, a.username)
 			// Resume any streaming view that stopped while disconnected.
 			if v := a.activeView(); v != nil {
 				model, cmd := v.Update(view.ConnectionRestoredMsg{})
 				a.currentView = model.(view.View)
-				return a, cmd
+				return a, tea.Batch(userCmd, cmd)
 			}
+			return a, userCmd
 		} else if !pr.ok {
 			// Still down — schedule next probe in 1s.
 			return a, scheduleConnCheck()
@@ -857,6 +961,37 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, cmd
 		}
 		return a, nil
+	}
+
+	// Update check result — show badge if newer version is available.
+	if ucr, ok := msg.(updateCheckResultMsg); ok {
+		if ucr.err == nil && ucr.version != "" {
+			a.updateVersion = ucr.version
+			a.header.SetUpdateVersion(ucr.version)
+		}
+		return a, nil
+	}
+
+	// :update command — open confirm dialog (or warn if nothing to update).
+	if _, ok := msg.(startUpdateMsg); ok {
+		if a.updateVersion == "" {
+			a.statusBar.SetError(fmt.Sprintf("already on latest version (%s)", version.App))
+			return a, nil
+		}
+		a.showUpdateDialog = true
+		a.updateDialogYes = true
+		return a, nil
+	}
+
+	// Update completed.
+	if ud, ok := msg.(updateDoneMsg); ok {
+		a.isUpdating = false
+		if ud.err != nil {
+			a.statusBar.SetError(fmt.Sprintf("update failed: %v", ud.err))
+			return a, nil
+		}
+		a.UpdatedTo = a.updateVersion
+		return a, tea.Quit
 	}
 
 	// Delegate non-key messages to active view
@@ -1110,6 +1245,12 @@ func (a App) View() string {
 	}
 	if a.showHelp {
 		rendered = view.RenderHelpDialog(a.theme, a.registry.ListVisible(), rendered, a.width, a.height)
+	}
+	if a.showUpdateDialog {
+		rendered = view.RenderUpdateConfirmDialog(a.theme, rendered, a.width, a.height, version.App, a.updateVersion, a.updateDialogYes)
+	}
+	if a.isUpdating {
+		rendered = view.RenderUpdatingDialog(a.theme, rendered, a.width, a.height)
 	}
 
 	return rendered
@@ -1588,6 +1729,30 @@ func fetchUserInfo(client jenkins.JenkinsClient, fallback string) tea.Cmd {
 			return userInfoMsg{fullName: fallback}
 		}
 		return userInfoMsg{fullName: user.FullName}
+	}
+}
+
+// checkForUpdateCmd fetches the latest GitHub release tag in the background.
+// It delivers updateCheckResultMsg with a non-empty version only when a newer
+// release exists; errors are silently swallowed to avoid blocking startup.
+func checkForUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		tag, err := updater.LatestVersion()
+		if err != nil {
+			return updateCheckResultMsg{err: err}
+		}
+		if updater.IsNewer(version.App, tag) {
+			return updateCheckResultMsg{version: tag}
+		}
+		return updateCheckResultMsg{}
+	}
+}
+
+// doUpdateCmd runs the self-update in the background and delivers updateDoneMsg.
+func doUpdateCmd(latestTag string) tea.Cmd {
+	return func() tea.Msg {
+		err := updater.SelfUpdate(latestTag)
+		return updateDoneMsg{err: err}
 	}
 }
 

@@ -8,9 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/tui/theme"
+	"github.com/Breina/Jenking/internal/version"
 )
-
-const appVersion = "0.1.0"
 
 const headerArt = `
      ____.              __  |\/\/|              
@@ -46,6 +45,7 @@ type Header struct {
 	user           string
 	jenkinsVersion string
 	connected      bool
+	updateVersion  string     // non-empty when a newer version is available
 	shortcuts      []Shortcut // global, always shown
 	viewShortcuts  []Shortcut // context-sensitive, set by app per active view
 	width          int
@@ -114,6 +114,12 @@ func (h *Header) SetUser(user string) {
 	h.user = user
 }
 
+// SetUpdateVersion sets the latest available version string.
+// Pass an empty string to clear the badge.
+func (h *Header) SetUpdateVersion(v string) {
+	h.updateVersion = v
+}
+
 // SetMineFilter updates whether the mine filter is active (shown inline with username).
 func (h *Header) SetMineFilter(mine bool) {
 	h.filterMine = mine
@@ -159,7 +165,7 @@ func (h Header) View() string {
 		fmt.Sprintf("%s %s", t.Header.Label.Render("       URL:"), t.Header.URL.Render(h.url)),
 		fmt.Sprintf("%s %s", t.Header.Label.Render(monarchLabel), userValue),
 		fmt.Sprintf("%s %s", t.Header.Label.Render("   Jenkins:"), t.Header.Value.Render(h.jenkinsVersion)),
-		fmt.Sprintf("%s %s", t.Header.Label.Render("   Jenking:"), t.Header.Value.Render(appVersion)),
+		h.jenkingVersionLine(t),
 		fmt.Sprintf("%s %s", t.Header.Label.Render("    Status:"), status),
 		fmt.Sprintf("%s %s", t.Header.Label.Render("   Running:"), runningStr),
 	}
@@ -232,6 +238,18 @@ func (h Header) View() string {
 	return lipgloss.NewStyle().
 		Width(h.width).
 		Render(content)
+}
+
+func (h Header) jenkingVersionLine(t theme.Theme) string {
+	label := t.Header.Label.Render("   Jenking:")
+	cur := t.Header.Value.Render(version.App)
+	if h.updateVersion == "" {
+		return fmt.Sprintf("%s %s", label, cur)
+	}
+	arrow := t.Header.Value.Faint(true).Render("→")
+	badge := t.Header.RunningBadge.Render(h.updateVersion)
+	hint := t.StatusBar.Key.Render("<U>")
+	return fmt.Sprintf("%s %s %s %s %s", label, cur, arrow, badge, hint)
 }
 
 func (h Header) renderShortcutColumns() string {

@@ -39,6 +39,8 @@ type StageLogView struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	trigger      triggerMixin
+	copyLogFlash bool
+	copySelFlash bool
 	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
 	// using the stored scope. Set when this view is opened from a scoped view.
 	hasScopedParent      bool
@@ -97,11 +99,11 @@ func (sl *StageLogView) Init() tea.Cmd {
 		sl.lv.recomputeLines()
 		if allNodesTerminal(sl.nodes) {
 			sl.done = true
-			return nil
+			return selectionCheckCmd()
 		}
-		return sl.pollLogs()
+		return tea.Batch(sl.pollLogs(), selectionCheckCmd())
 	}
-	return sl.fetchAllLogs
+	return tea.Batch(sl.fetchAllLogs, selectionCheckCmd())
 }
 
 // fetchAllLogs fetches log text for all nodes (initial load).
@@ -155,6 +157,28 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case selectionCheckMsg:
+		sl.lv.selectionText = msg.text
+		sl.lv.selectionLineCount = msg.lineCount
+		sl.lv.selectionInLog = sl.lv.checkSelectionInLog(msg.text)
+		return sl, selectionCheckCmd()
+
+	case copyFlashMsg:
+		if msg.isSel {
+			sl.copySelFlash = true
+		} else {
+			sl.copyLogFlash = true
+		}
+		return sl, copyFlashTimer(msg.isSel)
+
+	case copyFlashDoneMsg:
+		if msg.isSel {
+			sl.copySelFlash = false
+		} else {
+			sl.copyLogFlash = false
+		}
+		return sl, nil
+
 	case ThemeChangedMsg:
 		sl.lv.theme = msg.Theme
 		sl.trigger.setTheme(msg.Theme)
@@ -250,6 +274,12 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "t":
 			return sl, sl.trigger.startTrigger(sl.build.Number)
+		case "c":
+			return sl, sl.lv.CopyLogCmd()
+		case "C":
+			if sl.lv.selectionInLog {
+				return sl, sl.lv.CopySelectionCmd()
+			}
 		}
 	}
 	return sl, nil
@@ -312,9 +342,13 @@ func (sl *StageLogView) Shortcuts() []component.Shortcut {
 		{Key: "esc", Action: "stages"},
 		{Key: "/", Action: "search"},
 		{Key: "w", Action: wrapLabel},
+		{Key: "c", Action: sl.lv.logLabel(), Active: sl.copyLogFlash},
 		{Key: "d", Action: "describe"},
 		{Key: "t", Action: "trigger"},
 		{Key: "g/G", Action: "top/bottom"},
+	}
+	if sl.lv.selectionInLog {
+		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: sl.lv.selLabel(), Active: sl.copySelFlash})
 	}
 	if !sl.lv.wrap {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})

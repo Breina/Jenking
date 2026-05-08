@@ -25,16 +25,18 @@ type consoleAbortMsg struct{}
 
 // ConsoleView streams a build's console output using Jenkins' progressive log API.
 type ConsoleView struct {
-	lv         LogViewer
-	client     jenkins.JenkinsClient
-	nc         NavigationContext
-	done       bool
-	ctx        context.Context
-	cancel     context.CancelFunc
-	fetchStart int // byte offset to begin the first progressive fetch (non-zero when seeded)
-	build      jenkins.Build
-	store      *cache.Store
-	trigger    triggerMixin
+	lv           LogViewer
+	client       jenkins.JenkinsClient
+	nc           NavigationContext
+	done         bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	fetchStart   int // byte offset to begin the first progressive fetch (non-zero when seeded)
+	build        jenkins.Build
+	store        *cache.Store
+	trigger      triggerMixin
+	copyLogFlash bool
+	copySelFlash bool
 	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
 	// using the stored scope. Set when this view is opened from a scoped view.
 	hasScopedParent      bool
@@ -88,9 +90,12 @@ func (cv *ConsoleView) Init() tea.Cmd {
 	// Populate display lines from any seed data (no-op when rawLines is empty).
 	cv.lv.recomputeLines()
 	if cv.done {
-		return nil
+		return selectionCheckCmd()
 	}
-	return consoleFetch(cv.ctx, cv.client, cv.nc.JobPath(), cv.nc.Build.Number, cv.fetchStart, 0)
+	return tea.Batch(
+		consoleFetch(cv.ctx, cv.client, cv.nc.JobPath(), cv.nc.Build.Number, cv.fetchStart, 0),
+		selectionCheckCmd(),
+	)
 }
 
 func consoleFetch(ctx context.Context, client jenkins.JenkinsClient, jobPath string, buildNumber, start int, delay time.Duration) tea.Cmd {
@@ -128,6 +133,28 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case selectionCheckMsg:
+		cv.lv.selectionText = msg.text
+		cv.lv.selectionLineCount = msg.lineCount
+		cv.lv.selectionInLog = cv.lv.checkSelectionInLog(msg.text)
+		return cv, selectionCheckCmd()
+
+	case copyFlashMsg:
+		if msg.isSel {
+			cv.copySelFlash = true
+		} else {
+			cv.copyLogFlash = true
+		}
+		return cv, copyFlashTimer(msg.isSel)
+
+	case copyFlashDoneMsg:
+		if msg.isSel {
+			cv.copySelFlash = false
+		} else {
+			cv.copyLogFlash = false
+		}
+		return cv, nil
+
 	case ThemeChangedMsg:
 		cv.lv.theme = msg.Theme
 		cv.trigger.setTheme(msg.Theme)
@@ -211,6 +238,12 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				buildNum = cv.nc.Build.Number
 			}
 			return cv, cv.trigger.startTrigger(buildNum)
+		case "c":
+			return cv, cv.lv.CopyLogCmd()
+		case "C":
+			if cv.lv.selectionInLog {
+				return cv, cv.lv.CopySelectionCmd()
+			}
 		}
 	}
 	return cv, nil
@@ -278,9 +311,13 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 		{Key: "/", Action: "search"},
 		{Key: "w", Action: wrapLabel},
 		{Key: "p", Action: pipelineLabel},
+		{Key: "c", Action: cv.lv.logLabel(), Active: cv.copyLogFlash},
 		{Key: "d", Action: "describe"},
 		{Key: "t", Action: "trigger"},
 		{Key: "g/G", Action: "top/bottom"},
+	}
+	if cv.lv.selectionInLog {
+		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash})
 	}
 	if !cv.lv.wrap {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})
