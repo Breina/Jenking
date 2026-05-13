@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,11 +49,26 @@ type addContextProbeResultMsg struct {
 	msg string
 }
 type openPrefsMsg struct{}
-type openBuildsForContextMsg struct{}
-type openStagesForContextMsg struct{}
-type openJobsForContextMsg struct{}
-type openLogForContextMsg struct{}
-type openMatrixForContextMsg struct{}
+
+// viewKind identifies which navigation view a slash command opens.
+type viewKind int
+
+const (
+	kindBuilds viewKind = iota
+	kindStages
+	kindJobs
+	kindLogs
+	kindMatrix
+)
+
+// openTargetMsg is the unified navigation message emitted by :builds, :stages,
+// :jobs, :logs, and :matrix. The Target carries any positional/marker arguments
+// the user supplied; an empty Target falls back to the current view's NC.
+type openTargetMsg struct {
+	kind   viewKind
+	target command.Target
+}
+
 type openRunningBuildsMsg struct{}
 type openHelpMsg struct{}
 type connCheckMsg struct{}
@@ -159,44 +175,49 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 					result = append(result, s)
 				}
 			}
+			sort.Strings(result)
 			return result
 		},
 	})
 
+	// Suggestion closures capture `store` at registration time. After a
+	// :context switch a.store is reassigned but the captured reference is
+	// not — suggestions remain tied to the original Jenkins instance until
+	// the process restarts. Same caveat as the :context ArgSuggest above.
+	projectSuggest := func(prefix string) []string {
+		return view.TargetArgSuggest(store, prefix)
+	}
+
 	registry.Register(command.Command{
-		Name:    "builds",
-		Aliases: []string{"b", "build"},
-		Help:    "Show builds for the current context",
-		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openBuildsForContextMsg{} }
-		},
+		Name:       "builds",
+		Aliases:    []string{"b", "build"},
+		Help:       "Show builds [<project> [<branch>]]",
+		Execute:    openTargetCmd(kindBuilds),
+		ArgSuggest: projectSuggest,
 	})
 
 	registry.Register(command.Command{
-		Name:    "stages",
-		Aliases: []string{"s", "stage"},
-		Help:    "Show stages of the last build for the current context",
-		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openStagesForContextMsg{} }
-		},
+		Name:       "stages",
+		Aliases:    []string{"s", "stage"},
+		Help:       "Show stages [<project> [<branch>] [#<n>|#last]]",
+		Execute:    openTargetCmd(kindStages),
+		ArgSuggest: projectSuggest,
 	})
 
 	registry.Register(command.Command{
-		Name:    "jobs",
-		Aliases: []string{"j", "job"},
-		Help:    "Navigate to the job list for the current context",
-		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openJobsForContextMsg{} }
-		},
+		Name:       "jobs",
+		Aliases:    []string{"j", "job"},
+		Help:       "Navigate to job list [<project>]",
+		Execute:    openTargetCmd(kindJobs),
+		ArgSuggest: projectSuggest,
 	})
 
 	registry.Register(command.Command{
-		Name:    "log",
-		Aliases: []string{"l", "logs"},
-		Help:    "Show console log of the last build for the current context",
-		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openLogForContextMsg{} }
-		},
+		Name:       "log",
+		Aliases:    []string{"l", "logs"},
+		Help:       "Show console log [<project> [<branch>] [#<n>|#last]]",
+		Execute:    openTargetCmd(kindLogs),
+		ArgSuggest: projectSuggest,
 	})
 
 	registry.Register(command.Command{
@@ -209,12 +230,10 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 	})
 
 	registry.Register(command.Command{
-		Name:   "matrix",
-		Help:   "The Matrix has you...",
-		Hidden: true,
-		Execute: func(args []string) tea.Cmd {
-			return func() tea.Msg { return openMatrixForContextMsg{} }
-		},
+		Name:    "matrix",
+		Help:    "The Matrix has you...",
+		Hidden:  true,
+		Execute: openTargetCmd(kindMatrix),
 	})
 
 	registry.Register(command.Command{
@@ -241,6 +260,7 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 					result = append(result, s)
 				}
 			}
+			sort.Strings(result)
 			return result
 		},
 	})
@@ -279,6 +299,7 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 					result = append(result, ctx.Name)
 				}
 			}
+			sort.Strings(result)
 			return result
 		},
 	})
@@ -335,6 +356,24 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		connected:          true,
 		dbg:                dbg,
 	}
+}
+
+// openTargetCmd builds the Execute closure for a navigation command. It
+// parses the user's args into a Target; on parse error the error is surfaced
+// via the status bar without a view change.
+func openTargetCmd(kind viewKind) func(args []string) tea.Cmd {
+	return func(args []string) tea.Cmd {
+		t, err := command.ParseTarget(args)
+		if err != nil {
+			return errCmd(err)
+		}
+		return func() tea.Msg { return openTargetMsg{kind: kind, target: t} }
+	}
+}
+
+// errCmd returns a tea.Cmd that surfaces err on the status bar via ErrorMsg.
+func errCmd(err error) tea.Cmd {
+	return func() tea.Msg { return view.ErrorMsg{Err: err} }
 }
 
 func (a App) Init() tea.Cmd {
@@ -600,67 +639,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	// :builds command — navigate to builds scoped to current context.
-	if _, ok := msg.(openBuildsForContextMsg); ok {
-		bv := a.buildsViewForCurrentContext()
-		a.replaceView(bv)
-		a.updateBreadcrumb()
-		return a, bv.Init()
-	}
-
-	// :stages command — navigate to stages of last build scoped to current context.
-	if _, ok := msg.(openStagesForContextMsg); ok {
-		nc := a.currentContextNC().AtScope()
-		nc.Username = a.username
-		nc.FriendlyName = a.friendlyName
-		nc.GitUsernames = a.gitUsernames
-		mv := view.NewMyBuildsView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.replaceView(mv)
-		a.updateBreadcrumb()
-		return a, mv.Init()
-	}
-
-	// :jobs command — navigate to the job list for the current context.
-	if _, ok := msg.(openJobsForContextMsg); ok {
-		jl := a.jobListForCurrentContext()
-		if jl != nil {
-			a.replaceView(jl)
-			a.updateBreadcrumb()
-			return a, jl.Init()
-		}
-		return a, nil
-	}
-
-	// :log command — navigate to console log of last build scoped to current context.
-	if _, ok := msg.(openLogForContextMsg); ok {
-		nc := a.currentContextNC().AtScope()
-		nc.Username = a.username
-		nc.FriendlyName = a.friendlyName
-		nc.GitUsernames = a.gitUsernames
-		mv := view.NewMyConsoleView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.replaceView(mv)
-		a.updateBreadcrumb()
-		return a, mv.Init()
-	}
-
-	// :matrix command — Matrix-mode log view.
-	// Only active when: Matrix theme is set, a full log view is open, and the build is running.
-	if _, ok := msg.(openMatrixForContextMsg); ok {
-		if a.themeID != theme.ThemeMatrix {
-			return a, nil
-		}
-		rlv, ok := a.currentView.(view.RunningLogView)
-		if !ok || !rlv.IsBuildRunning() {
-			return a, nil
-		}
-		nc := a.currentContextNC().AtScope()
-		nc.Username = a.username
-		nc.FriendlyName = a.friendlyName
-		nc.GitUsernames = a.gitUsernames
-		mv := view.NewMyMatrixView(a.theme, a.client, a.store, nc, a.slowInterval)
-		a.replaceView(mv)
-		a.updateBreadcrumb()
-		return a, mv.Init()
+	// Unified navigation: :builds / :stages / :jobs / :logs / :matrix.
+	if otm, ok := msg.(openTargetMsg); ok {
+		return a.handleOpenTarget(otm)
 	}
 
 	// :running command — navigate to builds(*) with the running filter pre-enabled.
@@ -1453,10 +1434,100 @@ func (a *App) resetNavStack() {
 	a.navStack = nil
 }
 
-// buildsViewForCurrentContext returns a BuildsView scoped to the NC of the
-// currently active view. Used by the :builds command.
-func (a *App) buildsViewForCurrentContext() *view.BuildsView {
-	nc := a.currentContextNC().AtScope()
+// handleOpenTarget resolves an openTargetMsg into a concrete view and pushes
+// it. Empty targets fall back to the current view's NC, preserving today's
+// no-arg slash-command behaviour.
+func (a App) handleOpenTarget(otm openTargetMsg) (tea.Model, tea.Cmd) {
+	current := a.currentContextNC()
+	current.Username = a.username
+	current.FriendlyName = a.friendlyName
+	current.GitUsernames = a.gitUsernames
+
+	nc, err := view.ResolveTarget(otm.target, a.store, current)
+	if err != nil {
+		return a, errCmd(err)
+	}
+	nc.Username = a.username
+	nc.FriendlyName = a.friendlyName
+	nc.GitUsernames = a.gitUsernames
+
+	// Empty target preserves today's behaviour: the no-args slash command
+	// always opens the scope-level view of the current location, never a
+	// build-specific view (even when the active view is itself CtxBuild).
+	if otm.target.IsEmpty() {
+		nc = nc.AtScope()
+	}
+
+	switch otm.kind {
+	case kindBuilds:
+		bv := a.buildsViewFor(nc)
+		a.replaceView(bv)
+		a.updateBreadcrumb()
+		return a, bv.Init()
+
+	case kindStages:
+		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
+			sv := view.NewStageView(a.theme, a.client, a.store, nc, jenkins.Build{Number: nc.Build.Number})
+			a.replaceView(sv)
+			a.updateBreadcrumb()
+			return a, sv.Init()
+		}
+		scope := nc.AtScope()
+		mv := view.NewMyBuildsView(a.theme, a.client, a.store, scope, a.slowInterval)
+		a.replaceView(mv)
+		a.updateBreadcrumb()
+		return a, mv.Init()
+
+	case kindLogs:
+		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
+			cv := view.NewConsoleView(a.theme, a.client, nc)
+			a.replaceView(cv)
+			a.updateBreadcrumb()
+			return a, cv.Init()
+		}
+		scope := nc.AtScope()
+		mv := view.NewMyConsoleView(a.theme, a.client, a.store, scope, a.slowInterval)
+		a.replaceView(mv)
+		a.updateBreadcrumb()
+		return a, mv.Init()
+
+	case kindJobs:
+		var jl view.View
+		if otm.target.IsEmpty() {
+			jl = a.jobListForCurrentContext()
+		} else {
+			jl = a.jobListForTarget(nc)
+		}
+		if jl == nil {
+			return a, nil
+		}
+		a.replaceView(jl)
+		a.updateBreadcrumb()
+		return a, jl.Init()
+
+	case kindMatrix:
+		// :matrix is gated to Matrix-themed running-log views (today's behaviour).
+		// Args are accepted but only the AtScope() portion is honoured.
+		if a.themeID != theme.ThemeMatrix {
+			return a, nil
+		}
+		rlv, ok := a.currentView.(view.RunningLogView)
+		if !ok || !rlv.IsBuildRunning() {
+			return a, nil
+		}
+		scope := nc.AtScope()
+		mv := view.NewMyMatrixView(a.theme, a.client, a.store, scope, a.slowInterval)
+		a.replaceView(mv)
+		a.updateBreadcrumb()
+		return a, mv.Init()
+	}
+	return a, nil
+}
+
+// buildsViewFor returns a BuildsView scoped to the given NC. The NC is
+// reduced to scope-level (Build/Stage stripped) before dispatch.
+func (a *App) buildsViewFor(nc view.NavigationContext) *view.BuildsView {
+	nc = nc.AtScope()
 	switch nc.Level {
 	case view.CtxBranch:
 		return view.NewBuildsView(a.theme, a.client, a.store, nc, view.NewBranchBuildsProvider(a.client, a.store, nc))
@@ -1466,6 +1537,28 @@ func (a *App) buildsViewForCurrentContext() *view.BuildsView {
 		return view.NewFolderBuildsView(a.theme, a.client, a.store, nc.FolderPath, a.username, a.gitUsernames, a.slowInterval)
 	default:
 		return view.NewAllBuildsView(a.theme, a.client, a.store, a.username, a.gitUsernames, a.slowInterval)
+	}
+}
+
+// jobListForTarget returns the JobList for an explicitly-targeted NC: drills
+// INTO a project (showing its branches), into a folder (showing its children),
+// or to the root dashboard. Used when the user supplied target arguments.
+func (a *App) jobListForTarget(nc view.NavigationContext) view.View {
+	switch nc.Level {
+	case view.CtxFolder:
+		title := nc.FolderPath
+		if idx := strings.LastIndex(nc.FolderPath, "/"); idx >= 0 {
+			title = nc.FolderPath[idx+1:]
+		}
+		return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username, a.gitUsernames)
+	case view.CtxProject, view.CtxBranch, view.CtxBuild, view.CtxStage:
+		pp := nc.ProjectName
+		if nc.FolderPath != "" {
+			pp = nc.FolderPath + "/" + nc.ProjectName
+		}
+		return view.NewJobList(a.theme, a.client, a.store, pp, nc.ProjectName, true, a.username, a.gitUsernames)
+	default:
+		return a.initialView
 	}
 }
 

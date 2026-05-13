@@ -36,6 +36,15 @@ func main() {
 
 	active := cfg.ActiveContext()
 	client := jenkins.NewClient(active.URL, active.Username, active.Token, active.Insecure)
+	disk := newDiskStore(active.URL)
+	store := cache.NewStore(disk)
+
+	// Headless --raw mode: bypass TUI entirely. Skips WhoAmI; auth errors
+	// surface from the underlying API call instead.
+	if cleanArgs, raw := stripRawFlag(os.Args[1:]); raw {
+		runHeadless(client, store, cleanArgs)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -61,14 +70,35 @@ func main() {
 	}
 	activeTheme := theme.ApplyColorblindFilter(baseTheme, cbType)
 
-	disk := newDiskStore(active.URL)
-	store := cache.NewStore(disk)
 	keys := tui.DefaultKeyMap()
 	debug := logging.ParseLevel(cfg.Preferences.LogLevel) == logging.LevelDebug
 	header := component.NewHeader(activeTheme, active.URL, user.FullName, user.JenkinsVersion, debug)
 	breadcrumb := component.NewBreadcrumb(activeTheme)
 	statusBar := component.NewStatusBar(activeTheme)
 	dashboard := view.NewJobList(activeTheme, client, store, "", "Dashboard", false, user.ID, cfg.Preferences.GitUsernames)
+
+	// Optional deep-link from CLI: `jenking <verb> [args...]`. When the first
+	// positional argument is a known navigation verb, attempt to construct
+	// the target view and use it as the initial view. On failure, error to
+	// stderr and exit non-zero — the user gets a fast actionable failure
+	// rather than landing on the dashboard with an obscure status-bar message.
+	var initialView view.View = dashboard
+	if len(os.Args) > 1 && isDeepLinkVerb(os.Args[1]) {
+		v, err := buildDeepLinkView(os.Args[1], os.Args[2:], deepLinkArgs{
+			theme:        activeTheme,
+			client:       client,
+			store:        store,
+			username:     user.ID,
+			friendlyName: user.FullName,
+			gitUsernames: cfg.Preferences.GitUsernames,
+			slowInterval: cfg.Preferences.SlowRefreshInterval,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "jenking: %v\n", err)
+			os.Exit(1)
+		}
+		initialView = v
+	}
 
 	saveFn := func(t theme.ColorblindnessType) error {
 		return cfg.SetColorblindnessType(string(t))
@@ -80,7 +110,7 @@ func main() {
 		return cfg.SetPreferences(notifications, gitUsernames, refreshInterval, slowInterval, maxLogLines, logLevel)
 	}
 
-	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.RefreshInterval, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, dashboard, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications, cfg.Preferences.MaxLogLines, cfg.Preferences.LogLevel, cfg.Contexts, active.Name, newDiskStore, cfg.AddContext, cfg.DeleteContext, cfg.SetCurrentContext, savePrefsFn)
+	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.RefreshInterval, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, initialView, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications, cfg.Preferences.MaxLogLines, cfg.Preferences.LogLevel, cfg.Contexts, active.Name, newDiskStore, cfg.AddContext, cfg.DeleteContext, cfg.SetCurrentContext, savePrefsFn)
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	finalModel, err := p.Run()

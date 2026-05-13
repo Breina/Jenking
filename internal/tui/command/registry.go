@@ -90,11 +90,14 @@ func (r *Registry) Suggest(prefix string) []string {
 			return nil
 		}
 		args := cmd.ArgSuggest(argPrefix)
+		// Preserve the ArgSuggest function's ordering (e.g. #last first,
+		// then build numbers descending). ArgSuggest implementations are
+		// responsible for sorting their own results if alphabetical order
+		// is desired.
 		result := make([]string, 0, len(args))
 		for _, a := range args {
 			result = append(result, cmdName+" "+a)
 		}
-		sort.Strings(result)
 		return result
 	}
 	var result []string
