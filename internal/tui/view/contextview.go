@@ -212,16 +212,19 @@ func (v *ContextView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (v *ContextView) View() string {
-	tableView := v.table.View()
+	return v.table.View()
+}
+
+func (v *ContextView) PopupView() string {
 	if v.confirmDelete && len(v.contexts) > 0 {
 		name := v.contexts[v.table.Cursor()].Name
-		return renderConfirmDialog(v.theme, tableView, v.width, v.height,
+		return renderConfirmBox(v.theme,
 			"Delete Context",
 			fmt.Sprintf("Delete context %q?", name),
 			v.confirmDeleteYes,
 		)
 	}
-	return tableView
+	return ""
 }
 
 func (v *ContextView) Title() string { return "context" }

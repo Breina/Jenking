@@ -601,25 +601,28 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (jl *JobList) View() string {
-	tableView := jl.table.View()
+	return jl.table.View()
+}
+
+func (jl *JobList) PopupView() string {
 	if jl.paramForm != nil {
-		return overlayCenter(tableView, jl.paramForm.View(), jl.width, jl.height)
+		return jl.paramForm.View()
 	}
 	if jl.confirmTrigger {
-		return renderConfirmDialog(jl.theme, tableView, jl.width, jl.height,
+		return renderConfirmBox(jl.theme,
 			"Trigger Build",
 			"Start a new build of "+decodeName(jl.triggerNC.ProjectName)+"?",
 			jl.triggerYes,
 		)
 	}
 	if jl.confirmCancel {
-		return renderConfirmDialog(jl.theme, tableView, jl.width, jl.height,
+		return renderConfirmBox(jl.theme,
 			"Cancel Build",
 			fmt.Sprintf("Stop build #%d?", jl.confirmCancelNum),
 			jl.confirmCancelYes,
 		)
 	}
-	return tableView
+	return ""
 }
 
 func (jl *JobList) Title() string {

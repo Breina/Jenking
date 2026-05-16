@@ -61,6 +61,11 @@ type ThemeChangedMsg struct{ Theme theme.Theme }
 // app.go handles this by pushing the new view onto the stack.
 type PushViewMsg struct{ View View }
 
+// SwapViewMsg replaces the current view without touching the nav stack.
+// Use for "sideways" navigation (e.g. stages → tests) where ESC from the new
+// view should return to the parent of the replaced view, not back to it.
+type SwapViewMsg struct{ View View }
+
 // ErrorMsg is returned by views to surface errors to the status bar.
 type ErrorMsg struct{ Err error }
 
@@ -116,6 +121,15 @@ type TriggerBuildResultMsg struct {
 type OpenTriggeredBuildMsg struct {
 	NC             NavigationContext
 	LastKnownBuild int
+}
+
+// ArtifactsMsg carries build artifacts for a build.
+// Artifacts is an empty slice when the build has no artifacts.
+type ArtifactsMsg struct {
+	JobPath   string
+	BuildNum  int
+	Artifacts []jenkins.Artifact
+	Err       error
 }
 
 // TestReportMsg carries JUnit test results for a build.

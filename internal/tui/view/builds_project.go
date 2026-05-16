@@ -27,6 +27,7 @@ type ProjectBuildsProvider struct {
 	nc     NavigationContext
 	builds []jenkins.ProjectBuild
 	tt     testTracker
+	at     artifactTracker
 }
 
 // NewProjectBuildsProvider creates a provider for a multibranch project.
@@ -45,6 +46,7 @@ func (p *ProjectBuildsProvider) Init() tea.Cmd {
 			p.builds = e.Value
 			for _, b := range p.builds {
 				p.tt.preloadOne(p.store, b.BranchPath, b.Number)
+				p.at.preloadOne(p.store, b.BranchPath, b.Number)
 			}
 		}
 	}
@@ -106,17 +108,14 @@ func (p *ProjectBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 		if p.hasRunning() {
 			cmds = append(cmds, p.scheduleVisualTick())
 		}
-		if p.store != nil {
-			for _, b := range p.builds {
-				if b.Status != jenkins.BuildStatusRunning {
-					cmds = append(cmds, fetchTestReport(p.client, p.store, b.BranchPath, b.Number))
-				}
-			}
-		}
 		return true, cmds
 
 	case TestReportMsg:
 		p.tt.handleMsg(msg)
+		return true, nil
+
+	case ArtifactsMsg:
+		p.at.handleMsg(msg)
 		return true, nil
 	}
 	return false, nil
@@ -130,6 +129,7 @@ func (p *ProjectBuildsProvider) Builds() []UnifiedBuild {
 			JobPath:    b.BranchPath,
 			BranchName: b.BranchName,
 			TestResult: p.tt.get(b.BranchPath, b.Number),
+			Artifacts:  p.at.get(b.BranchPath, b.Number),
 		}
 	}
 	return result

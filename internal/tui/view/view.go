@@ -241,8 +241,11 @@ type Searchable interface {
 // PopupLayer is optionally implemented by views that can show overlaid popups
 // (confirm dialogs, param forms, etc.). The app checks this before routing ESC
 // to the navigation stack so that ESC always closes the topmost popup first.
+// PopupView returns the rendered popup box (unpositioned); the app overlays it
+// at full terminal dimensions so it is never clipped by panel borders.
 type PopupLayer interface {
 	HasPopup() bool
+	PopupView() string
 }
 
 // BreadcrumbSegment describes a single k9s-style breadcrumb: viewType(context)[count].

@@ -31,6 +31,7 @@ func NewDiskStore(dir string) (*DiskStore, error) {
 func (d *DiskStore) allBuildsPath() string   { return filepath.Join(d.dir, "allbuilds.gob") }
 func (d *DiskStore) stagesPath() string      { return filepath.Join(d.dir, "stages.gob") }
 func (d *DiskStore) testReportsPath() string { return filepath.Join(d.dir, "testreports.gob") }
+func (d *DiskStore) artifactsPath() string   { return filepath.Join(d.dir, "artifacts.gob") }
 func (d *DiskStore) jobsPath() string        { return filepath.Join(d.dir, "jobs.gob") }
 
 // LoadAllBuilds reads all completed builds from disk.
@@ -117,6 +118,41 @@ func (d *DiskStore) loadAllTestReportsLocked() (map[string]*jenkins.TestReport, 
 	return readGob[map[string]*jenkins.TestReport](d.testReportsPath())
 }
 
+// LoadArtifacts returns the cached artifact list for the given key ("jobPath:buildNum").
+func (d *DiskStore) LoadArtifacts(key string) ([]jenkins.Artifact, error) {
+	m, err := d.loadAllArtifacts()
+	if err != nil {
+		return nil, err
+	}
+	v, ok := m[key]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return v, nil
+}
+
+// SaveArtifacts persists the artifact list for a single build (read-modify-write).
+func (d *DiskStore) SaveArtifacts(key string, artifacts []jenkins.Artifact) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	m, _ := d.loadAllArtifactsLocked()
+	if m == nil {
+		m = make(map[string][]jenkins.Artifact)
+	}
+	m[key] = artifacts
+	return writeGob(d.artifactsPath(), m)
+}
+
+func (d *DiskStore) loadAllArtifacts() (map[string][]jenkins.Artifact, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.loadAllArtifactsLocked()
+}
+
+func (d *DiskStore) loadAllArtifactsLocked() (map[string][]jenkins.Artifact, error) {
+	return readGob[map[string][]jenkins.Artifact](d.artifactsPath())
+}
+
 // LoadJobs returns the cached job listing for the given folder path.
 func (d *DiskStore) LoadJobs(folderPath string) ([]jenkins.Job, error) {
 	m, err := d.loadAllJobs()
@@ -190,6 +226,7 @@ func (d *DiskStore) populate(
 	allBuilds *Cache[string, []jenkins.UserBuild],
 	stages *Cache[string, []jenkins.Stage],
 	testReports *Cache[string, *jenkins.TestReport],
+	artifacts *Cache[string, []jenkins.Artifact],
 ) {
 	if jm, err := d.loadAllJobs(); err == nil {
 		for fp, j := range jm {
@@ -212,6 +249,12 @@ func (d *DiskStore) populate(
 	if rm, err := d.loadAllTestReports(); err == nil {
 		for key, r := range rm {
 			testReports.Put(key, r)
+		}
+	}
+
+	if am, err := d.loadAllArtifacts(); err == nil {
+		for key, a := range am {
+			artifacts.Put(key, a)
 		}
 	}
 }

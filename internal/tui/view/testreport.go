@@ -190,6 +190,9 @@ func (v *TestReportView) Close() error {
 
 func (v *TestReportView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View {
 	nc := v.nc.AtBranch(v.nc.BranchName)
+	if v.nc.Level == CtxProject {
+		return NewBuildsView(t, c, s, nc, NewProjectBuildsProvider(c, s, nc))
+	}
 	return NewBuildsView(t, c, s, nc, NewBranchBuildsProvider(c, s, nc))
 }
 

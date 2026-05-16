@@ -42,6 +42,8 @@ type BuildsView struct {
 	confirmTrigger bool
 	triggerYes     bool
 	paramForm      *component.ParamForm
+	// lazy fetch tracking
+	lastFetchedKey string
 }
 
 // NewBuildsView creates a BuildsView backed by the given provider.
@@ -55,7 +57,6 @@ func NewBuildsView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Sto
 		{Title: "STATUS", Width: colStatusBWidth},
 		{Title: "DURATION", Width: colDurationWidth},
 		{Title: "STARTED", Width: colStartedWidth},
-		{Title: "TESTS", Width: colTestsWidth},
 		{Title: "TRIGGERED BY", Width: colTriggeredByWidth},
 	}
 	// fixedColsWidth = sum of all (col.Width+2) for fixed columns (REF excluded).
@@ -147,11 +148,39 @@ func (bv *BuildsView) populateTable() {
 			statusStr = renderStatus(bv.theme, b.Status)
 			durationStr = formatDuration(b.Duration)
 		}
-		row := component.Row{ref, statusStr, durationStr, relativeTime(b.Timestamp),
-			renderTestBadge(bv.theme, b.TestResult), b.Cause}
+		row := component.Row{ref, statusStr, durationStr, relativeTime(b.Timestamp), b.Cause}
 		rows = append(rows, row)
 	}
 	bv.table.SetRows(rows)
+}
+
+// maybeFetchSelected fires fetch commands for the selected build if not already cached.
+// Guards with lastFetchedKey so it only fires once per selection change.
+func (bv *BuildsView) maybeFetchSelected() tea.Cmd {
+	if bv.store == nil {
+		return nil
+	}
+	builds := bv.provider.Builds()
+	di := bv.dataIndex(bv.table.Cursor())
+	if di < 0 || di >= len(builds) {
+		return nil
+	}
+	b := builds[di]
+	key := fmt.Sprintf("%s:%d", b.JobPath, b.Number)
+	if key == bv.lastFetchedKey {
+		return nil
+	}
+	bv.lastFetchedKey = key
+	var cmds []tea.Cmd
+	if bv.store.TestReports.Get(key) == nil {
+		cmds = append(cmds, fetchTestReport(bv.client, bv.store, b.JobPath, b.Number))
+	}
+	// Use b.Artifacts (tracker state) not store cache: store can be populated without
+	// the provider's tracker being updated (e.g. preloadOne not called for this build).
+	if b.Artifacts == nil {
+		cmds = append(cmds, fetchArtifacts(bv.client, bv.store, b.JobPath, b.Number))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -160,7 +189,7 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cursorIdx := bv.table.Cursor()
 		bv.populateTable()
 		bv.table.SetCursor(cursorIdx)
-		return bv, tea.Batch(cmds...)
+		return bv, tea.Batch(append(cmds, bv.maybeFetchSelected())...)
 	}
 
 	switch msg := msg.(type) {
@@ -317,6 +346,15 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return bv, func() tea.Msg { return PushViewMsg{View: child} }
 				}
 			}
+		case "A":
+			di := bv.dataIndex(bv.table.Cursor())
+			if di >= 0 && di < len(builds) {
+				selected := builds[di]
+				if len(selected.Artifacts) > 0 {
+					child := NewArtifactView(bv.theme, selected.Artifacts, bv.nc.AtBuild(selected.Number), selected.Build)
+					return bv, func() tea.Msg { return PushViewMsg{View: child} }
+				}
+			}
 		case "x":
 			di := bv.dataIndex(bv.table.Cursor())
 			if di >= 0 && di < len(builds) {
@@ -332,29 +370,32 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			bv.ToggleRunning()
 		}
 	}
-	return bv, nil
+	return bv, bv.maybeFetchSelected()
 }
 
 func (bv *BuildsView) View() string {
-	tableView := bv.table.View()
+	return bv.table.View()
+}
+
+func (bv *BuildsView) PopupView() string {
 	if bv.paramForm != nil {
-		return overlayCenter(tableView, bv.paramForm.View(), bv.width, bv.height)
+		return bv.paramForm.View()
 	}
 	if bv.confirmTrigger {
-		return renderConfirmDialog(bv.theme, tableView, bv.width, bv.height,
+		return renderConfirmBox(bv.theme,
 			"Trigger Build",
 			fmt.Sprintf("Start a new build of %s?", decodeName(bv.nc.ProjectName)),
 			bv.triggerYes,
 		)
 	}
 	if bv.confirmCancel {
-		return renderConfirmDialog(bv.theme, tableView, bv.width, bv.height,
+		return renderConfirmBox(bv.theme,
 			"Cancel Build",
 			fmt.Sprintf("Stop build %s?", renderBuildRef(bv.theme, bv.confirmBuild, bv.nc.Level)),
 			bv.confirmYes,
 		)
 	}
-	return tableView
+	return ""
 }
 
 func (bv *BuildsView) Title() string {
@@ -403,8 +444,12 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 		if builds[di].Status == jenkins.BuildStatusRunning {
 			sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
 		}
-		if builds[di].TestResult != nil && len(builds[di].TestResult.Suites) > 0 {
-			sc = append(sc, component.Shortcut{Key: "T", Action: "test results"})
+		if builds[di].TestResult != nil {
+			badge := renderTestBadge(bv.theme, builds[di].TestResult)
+			sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
+		}
+		if len(builds[di].Artifacts) > 0 {
+			sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(builds[di].Artifacts))})
 		}
 	}
 	return sc

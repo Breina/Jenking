@@ -66,6 +66,7 @@ type UnifiedBuild struct {
 	BranchName  string              // empty for single-branch views
 	DisplayName string              // human-readable project name (for REF column at root/folder level)
 	TestResult  *jenkins.TestReport // nil until fetched or unavailable
+	Artifacts   []jenkins.Artifact  // nil = not yet fetched; empty slice = confirmed none
 }
 
 // BuildsViewConfig declares which shortcuts are active for a provider.
@@ -121,5 +122,43 @@ func (tt *testTracker) handleMsg(msg TestReportMsg) bool {
 		return false
 	}
 	tt.set(msg.JobPath, msg.BuildNum, msg.Report)
+	return true
+}
+
+// artifactTracker caches per-build artifact lists keyed by "jobPath:buildNum".
+type artifactTracker struct {
+	arts map[string][]jenkins.Artifact
+}
+
+func (at *artifactTracker) get(jobPath string, buildNum int) []jenkins.Artifact {
+	if at.arts == nil {
+		return nil
+	}
+	v, ok := at.arts[testKey(jobPath, buildNum)]
+	if !ok {
+		return nil
+	}
+	return v
+}
+
+func (at *artifactTracker) set(jobPath string, buildNum int, a []jenkins.Artifact) {
+	if at.arts == nil {
+		at.arts = map[string][]jenkins.Artifact{}
+	}
+	at.arts[testKey(jobPath, buildNum)] = a
+}
+
+func (at *artifactTracker) preloadOne(store *cache.Store, jobPath string, buildNum int) {
+	key := testKey(jobPath, buildNum)
+	if entry := store.Artifacts.Get(key); entry != nil {
+		at.set(jobPath, buildNum, entry.Value)
+	}
+}
+
+func (at *artifactTracker) handleMsg(msg ArtifactsMsg) bool {
+	if msg.Err != nil {
+		return false
+	}
+	at.set(msg.JobPath, msg.BuildNum, msg.Artifacts)
 	return true
 }

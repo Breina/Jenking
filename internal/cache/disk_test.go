@@ -212,7 +212,8 @@ func TestDiskStore_Populate(t *testing.T) {
 	stagesCache := New[string, []jenkins.Stage](0)
 	reportsCache := New[string, *jenkins.TestReport](100)
 
-	d.populate(jobsCache, allBuilds, stagesCache, reportsCache)
+	artifactsCache := New[string, []jenkins.Artifact](100)
+	d.populate(jobsCache, allBuilds, stagesCache, reportsCache, artifactsCache)
 
 	if e := jobsCache.Get("Code"); e == nil || len(e.Value) != 1 {
 		t.Errorf("Jobs not populated: %v", e)

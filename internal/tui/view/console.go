@@ -271,8 +271,11 @@ func (cv *ConsoleView) View() string {
 		rows = append(rows, "")
 	}
 
-	content := strings.Join(rows, "\n")
-	return cv.trigger.overlay(content, cv.lv.width, cv.lv.height)
+	return strings.Join(rows, "\n")
+}
+
+func (cv *ConsoleView) PopupView() string {
+	return cv.trigger.popupView()
 }
 
 func (cv *ConsoleView) Title() string {

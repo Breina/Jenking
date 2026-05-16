@@ -307,8 +307,11 @@ func (sl *StageLogView) View() string {
 		rows = append(rows, "")
 	}
 
-	content := strings.Join(rows, "\n")
-	return sl.trigger.overlay(content, sl.lv.width, sl.lv.height)
+	return strings.Join(rows, "\n")
+}
+
+func (sl *StageLogView) PopupView() string {
+	return sl.trigger.popupView()
 }
 
 func (sl *StageLogView) Title() string {

@@ -854,6 +854,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updateBreadcrumb()
 		return a, push.View.Init()
 	}
+	if swap, ok := msg.(view.SwapViewMsg); ok {
+		if a.currentView != nil {
+			a.currentView.Close()
+		}
+		a.currentView = swap.View
+		a.updateBreadcrumb()
+		return a, swap.View.Init()
+	}
 	if otb, ok := msg.(view.OpenTriggeredBuildMsg); ok {
 		sv := view.NewPendingStageView(a.theme, a.client, a.store, otb.NC, otb.LastKnownBuild)
 		a.replaceView(sv)
@@ -1214,6 +1222,14 @@ func (a App) View() string {
 	sections = append(sections, a.navTags.View())
 
 	rendered := lipgloss.JoinVertical(lipgloss.Left, sections...)
+
+	// Overlay view-level popups (trigger/confirm dialogs, param forms) at full
+	// terminal dimensions so they are never clipped by the content panel border.
+	if pl, ok := v.(view.PopupLayer); ok && pl.HasPopup() {
+		if popup := pl.PopupView(); popup != "" {
+			rendered = view.OverlayPopup(rendered, popup, a.width, a.height)
+		}
+	}
 
 	if a.showPrefsDialog {
 		rendered = a.prefsDialog.Render(rendered, a.width, a.height)

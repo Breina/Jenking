@@ -277,6 +277,15 @@ func (sv *ScopedView) HasPopup() bool {
 	return false
 }
 
+func (sv *ScopedView) PopupView() string {
+	if sv.inner != nil {
+		if pp, ok := sv.inner.(PopupLayer); ok {
+			return pp.PopupView()
+		}
+	}
+	return ""
+}
+
 func (sv *ScopedView) NC() NavigationContext { return sv.resolver.scope }
 
 // ParentView implements HasParent. ESC from a scoped view returns to the

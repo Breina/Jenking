@@ -23,6 +23,7 @@ type BranchBuildsProvider struct {
 	nc     NavigationContext
 	builds []jenkins.Build
 	tt     testTracker
+	at     artifactTracker
 }
 
 // NewBranchBuildsProvider creates a provider for a single branch/job.
@@ -41,6 +42,7 @@ func (p *BranchBuildsProvider) Init() tea.Cmd {
 			p.builds = e.Value
 			for _, b := range p.builds {
 				p.tt.preloadOne(p.store, p.nc.JobPath(), b.Number)
+				p.at.preloadOne(p.store, p.nc.JobPath(), b.Number)
 			}
 		}
 	}
@@ -112,17 +114,14 @@ func (p *BranchBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 		if p.hasRunning() {
 			cmds = append(cmds, p.scheduleVisualTick())
 		}
-		if p.store != nil {
-			for _, b := range p.builds {
-				if b.Status != jenkins.BuildStatusRunning {
-					cmds = append(cmds, fetchTestReport(p.client, p.store, p.nc.JobPath(), b.Number))
-				}
-			}
-		}
 		return true, cmds
 
 	case TestReportMsg:
 		p.tt.handleMsg(msg)
+		return true, nil
+
+	case ArtifactsMsg:
+		p.at.handleMsg(msg)
 		return true, nil
 	}
 	return false, nil
@@ -135,6 +134,7 @@ func (p *BranchBuildsProvider) Builds() []UnifiedBuild {
 			Build:      b,
 			JobPath:    p.nc.JobPath(),
 			TestResult: p.tt.get(p.nc.JobPath(), b.Number),
+			Artifacts:  p.at.get(p.nc.JobPath(), b.Number),
 		}
 	}
 	return result
@@ -158,10 +158,36 @@ func fetchTestReport(client jenkins.JenkinsClient, store *cache.Store, jobPath s
 		report, err := client.GetTestReport(context.Background(), jobPath, buildNum)
 		if err == nil {
 			store.TestReports.Put(cacheKey, report)
-			if store.Disk != nil {
+			// Only persist non-nil reports; nil (no tests / 404) is fast to re-check.
+			if report != nil && store.Disk != nil {
 				_ = store.Disk.SaveTestReport(cacheKey, report)
 			}
 		}
 		return TestReportMsg{JobPath: jobPath, BuildNum: buildNum, Report: report, Err: err}
+	}
+}
+
+// fetchArtifacts returns a Cmd that retrieves build artifacts,
+// checking the cache first. Dispatches ArtifactsMsg on completion.
+func fetchArtifacts(client jenkins.JenkinsClient, store *cache.Store, jobPath string, buildNum int) tea.Cmd {
+	cacheKey := fmt.Sprintf("%s:%d", jobPath, buildNum)
+	if entry := store.Artifacts.Get(cacheKey); entry != nil {
+		artifacts := entry.Value
+		return func() tea.Msg {
+			return ArtifactsMsg{JobPath: jobPath, BuildNum: buildNum, Artifacts: artifacts}
+		}
+	}
+	return func() tea.Msg {
+		artifacts, err := client.GetArtifacts(context.Background(), jobPath, buildNum)
+		if err == nil {
+			if artifacts == nil {
+				artifacts = []jenkins.Artifact{}
+			}
+			store.Artifacts.Put(cacheKey, artifacts)
+			if len(artifacts) > 0 && store.Disk != nil {
+				_ = store.Disk.SaveArtifacts(cacheKey, artifacts)
+			}
+		}
+		return ArtifactsMsg{JobPath: jobPath, BuildNum: buildNum, Artifacts: artifacts, Err: err}
 	}
 }

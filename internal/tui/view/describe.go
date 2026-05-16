@@ -305,8 +305,7 @@ func (dv *DescribeView) View() string {
 			return strings.Join(rows, "\n")
 		}
 		rows := dv.scriptLV.renderRows()
-		content := strings.Join(rows, "\n")
-		return dv.trigger.overlay(content, dv.width, dv.height)
+		return strings.Join(rows, "\n")
 	}
 	end := min(dv.paramOffset+dv.height, len(dv.paramLines))
 	visible := dv.paramLines[dv.paramOffset:end]
@@ -339,8 +338,11 @@ func (dv *DescribeView) PreviewView() string {
 		return strings.Join(rows, "\n")
 	}
 	rows := dv.scriptLV.renderRows()
-	content := strings.Join(rows, "\n")
-	return dv.trigger.overlay(content, dv.scriptLV.width, dv.scriptLV.height)
+	return strings.Join(rows, "\n")
+}
+
+func (dv *DescribeView) PopupView() string {
+	return dv.trigger.popupView()
 }
 
 // SetPreviewSize implements PreviewProvider.

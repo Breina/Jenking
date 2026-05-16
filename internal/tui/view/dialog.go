@@ -91,10 +91,9 @@ func RenderUpdatingDialog(t theme.Theme, bg string, width, height int) string {
 	return overlayCenter(bg, box, width, height)
 }
 
-// renderConfirmDialog renders a k9s-style centered confirmation dialog
-// overlaid on top of the background content (tableView).
-// confirmYes controls which button is highlighted.
-func renderConfirmDialog(t theme.Theme, tableView string, width, height int, title, body string, confirmYes bool) string {
+// renderConfirmBox builds the styled box for a confirmation dialog.
+// It returns the rendered box string without positioning it on any background.
+func renderConfirmBox(t theme.Theme, title, body string, confirmYes bool) string {
 	titleStyle := t.Popup.Title
 	accentColor := t.Popup.Title.GetForeground()
 
@@ -128,13 +127,24 @@ func renderConfirmDialog(t theme.Theme, tableView string, width, height int, tit
 		buttons,
 	)
 
-	box := lipgloss.NewStyle().
+	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(accentColor).
 		Padding(1, 4).
 		Render(content)
+}
 
-	return overlayCenter(tableView, box, width, height)
+// renderConfirmDialog renders a k9s-style centered confirmation dialog
+// overlaid on top of the background content (tableView).
+// confirmYes controls which button is highlighted.
+func renderConfirmDialog(t theme.Theme, tableView string, width, height int, title, body string, confirmYes bool) string {
+	return overlayCenter(tableView, renderConfirmBox(t, title, body, confirmYes), width, height)
+}
+
+// OverlayPopup centres popup over bg at full terminal dimensions (w×h).
+// Used by the app to render view-level popups over the fully assembled screen.
+func OverlayPopup(bg, popup string, w, h int) string {
+	return overlayCenter(bg, popup, w, h)
 }
 
 // overlayCenter places overlay in the center of background (bg), which is
@@ -176,110 +186,156 @@ func overlayCenter(bg, overlay string, bgWidth, bgHeight int) string {
 			break
 		}
 		left := ansiTakeLeft(result[row], startCol)
-		right := ansiTakeRight(result[row], startCol+ow)
+		right := ansiTakeRange(result[row], startCol+ow, bgWidth)
 		result[row] = left + ol + right
 	}
 
 	return strings.Join(result, "\n")
 }
 
-// visualLen returns the number of visible columns in s (ignoring ANSI escapes).
+// skipEsc advances i past the escape sequence starting at s[i] (which must be '\033').
+// Handles CSI (\033[...final), OSC (\033]...BEL or \033\\), and 2-char sequences.
+func skipEsc(s string, i int) int {
+	i++ // skip ESC itself
+	if i >= len(s) {
+		return i
+	}
+	switch s[i] {
+	case '[': // CSI — ends at a byte in 0x40–0x7E (inclusive)
+		i++
+		for i < len(s) && (s[i] < 0x40 || s[i] > 0x7E) {
+			i++
+		}
+		if i < len(s) {
+			i++
+		}
+	case ']': // OSC — ends at BEL (\a) or ST (\033\\)
+		i++
+		for i < len(s) {
+			if s[i] == '\007' {
+				i++
+				break
+			}
+			if s[i] == '\033' && i+1 < len(s) && s[i+1] == '\\' {
+				i += 2
+				break
+			}
+			i++
+		}
+	default: // 2-char sequence (\033c, \033M, …)
+		i++
+	}
+	return i
+}
+
+// visualLen returns the number of visible columns in s (ignoring all ANSI escapes).
 func visualLen(s string) int {
 	n := 0
-	inEsc := false
 	for i := 0; i < len(s); {
-		if inEsc {
-			if s[i] == 'm' {
-				inEsc = false
-			}
+		if s[i] == '\033' {
+			i = skipEsc(s, i)
+			continue
+		}
+		if s[i] < 0x20 { // other control chars — skip
 			i++
 			continue
 		}
-		if i+1 < len(s) && s[i] == '\033' && s[i+1] == '[' {
-			inEsc = true
-			i += 2
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		_ = r
+		_, size := utf8.DecodeRuneInString(s[i:])
 		n++
 		i += size
 	}
 	return n
 }
 
-// ansiTakeLeft returns the leftmost n visible columns of s, preserving ANSI
-// escape sequences and appending a reset if any escape was open.
+// ansiTakeLeft returns the leftmost n visible columns of s.
+// All escape sequences are passed through unchanged; SGR colour state is closed
+// with \033[0m if any colour was opened before the cut point.
 func ansiTakeLeft(s string, n int) string {
 	var out strings.Builder
 	col := 0
 	i := 0
-	openEsc := false
+	openSGR := false
 	for i < len(s) && col < n {
-		// Consume any CSI sequences without counting columns
-		if i+1 < len(s) && s[i] == '\033' && s[i+1] == '[' {
-			j := i + 2
-			for j < len(s) && s[j] != 'm' {
-				j++
-			}
-			if j < len(s) {
-				j++ // include 'm'
-			}
+		if s[i] == '\033' {
+			j := skipEsc(s, i)
 			seq := s[i:j]
 			out.WriteString(seq)
-			openEsc = seq != "\033[0m" && seq != "\033[m"
+			// Track SGR open state (CSI sequences only; resets close it).
+			if i+1 < len(s) && s[i+1] == '[' {
+				if seq == "\033[0m" || seq == "\033[m" {
+					openSGR = false
+				} else {
+					openSGR = true
+				}
+			}
 			i = j
 			continue
 		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		_ = r
+		if s[i] < 0x20 { // non-escape control chars: pass through, don't count
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
 		out.WriteString(s[i : i+size])
 		col++
 		i += size
 	}
-	// Pad with spaces if we didn't reach n columns
 	for col < n {
 		out.WriteByte(' ')
 		col++
 	}
-	if openEsc {
+	if openSGR {
 		out.WriteString("\033[0m")
 	}
 	return out.String()
 }
 
-// ansiTakeRight returns the visible content starting at column skip, preserving
-// ANSI escapes. Escapes before skip are replayed so colours aren't lost.
+// ansiTakeRange returns visible columns [from, to) of s, preserving ANSI escapes.
+func ansiTakeRange(s string, from, to int) string {
+	if from >= to {
+		return ""
+	}
+	mid := ansiTakeRight(s, from)
+	return ansiTakeLeft(mid, to-from)
+}
+
+// ansiTakeRight returns the visible content starting at column skip.
+// SGR sequences before the cut point are replayed so colours aren't lost;
+// non-SGR sequences (OSC 8 hyperlinks, etc.) are discarded before the cut.
 func ansiTakeRight(s string, skip int) string {
-	var pending strings.Builder // escape sequences before cut point
+	var sgrPending strings.Builder // SGR sequences before cut point
 	var out strings.Builder
 	col := 0
 	i := 0
 	past := false
 	for i < len(s) {
-		if i+1 < len(s) && s[i] == '\033' && s[i+1] == '[' {
-			j := i + 2
-			for j < len(s) && s[j] != 'm' {
-				j++
-			}
-			if j < len(s) {
-				j++
-			}
+		if s[i] == '\033' {
+			j := skipEsc(s, i)
 			seq := s[i:j]
 			if !past {
-				pending.WriteString(seq)
+				// Only replay SGR sequences (CSI ending in 'm') — skip OSC etc.
+				if i+1 < len(s) && s[i+1] == '[' {
+					sgrPending.WriteString(seq)
+				}
 			} else {
 				out.WriteString(seq)
 			}
 			i = j
 			continue
 		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		_ = r
+		if s[i] < 0x20 {
+			if past {
+				out.WriteByte(s[i])
+			}
+			i++
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
 		if col >= skip {
 			if !past {
 				past = true
-				out.WriteString(pending.String())
+				out.WriteString(sgrPending.String())
 			}
 			out.WriteString(s[i : i+size])
 		}

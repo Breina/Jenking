@@ -11,9 +11,10 @@ var navHierarchy = []string{"jobs", "builds", "stages", "log"}
 
 // navAlternates maps view types that share a position with a canonical entry.
 var navAlternates = map[string]string{
-	"tests":    "log",
-	"matrix":   "log",
-	"describe": "stages",
+	"tests":     "stages",
+	"artifacts": "stages",
+	"matrix":    "log",
+	"describe":  "stages",
 }
 
 // NavTags renders k9s-style navigation tags at the bottom of the TUI.

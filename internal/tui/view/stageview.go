@@ -129,6 +129,11 @@ type StageView struct {
 
 	store *cache.Store
 
+	// Test results and artifacts for the current build. Fetched after build completes.
+	testResult      *jenkins.TestReport
+	artifacts       []jenkins.Artifact
+	artifactsLoaded bool
+
 	// Trigger build dialog state.
 	confirmTrigger bool
 	triggerYes     bool
@@ -280,6 +285,8 @@ func (sv *StageView) Init() tea.Cmd {
 			}
 			if sv.isRunning() {
 				cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick(), sv.fetchPrevStages)
+			} else {
+				cmds = append(cmds, sv.buildDataCmds()...)
 			}
 			return tea.Batch(cmds...)
 		}
@@ -294,6 +301,8 @@ func (sv *StageView) Init() tea.Cmd {
 	}
 	if sv.build.Status == jenkins.BuildStatusRunning {
 		cmds = append(cmds, sv.fetchPrevStages)
+	} else if sv.build.Status != "" {
+		cmds = append(cmds, sv.buildDataCmds()...)
 	}
 	return tea.Batch(cmds...)
 }
@@ -304,6 +313,18 @@ func (sv *StageView) fetchStages() tea.Msg {
 		return nil
 	}
 	return StagesMsg{Stages: stages, Err: err}
+}
+
+// buildDataCmds returns commands to fetch test results and artifacts for the
+// current build. Should only be called for completed (non-running) builds.
+func (sv *StageView) buildDataCmds() []tea.Cmd {
+	if sv.store == nil {
+		return nil
+	}
+	return []tea.Cmd{
+		fetchTestReport(sv.client, sv.store, sv.nc.JobPath(), sv.build.Number),
+		fetchArtifacts(sv.client, sv.store, sv.nc.JobPath(), sv.build.Number),
+	}
 }
 
 func (sv *StageView) fetchBuildDetail() tea.Cmd {
@@ -631,6 +652,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if sv.build.Duration == 0 {
 				cmds = append(cmds, sv.fetchBuildDetail())
 			}
+			cmds = append(cmds, sv.buildDataCmds()...)
 		}
 		return sv, tea.Batch(cmds...)
 
@@ -652,6 +674,19 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		jenkins.MarkSkipped(sv.stages, msg.skippedOccs)
 		sv.populateTable()
+		return sv, nil
+
+	case TestReportMsg:
+		if msg.Err == nil && msg.JobPath == sv.nc.JobPath() && msg.BuildNum == sv.build.Number {
+			sv.testResult = msg.Report
+		}
+		return sv, nil
+
+	case ArtifactsMsg:
+		if msg.Err == nil && msg.JobPath == sv.nc.JobPath() && msg.BuildNum == sv.build.Number {
+			sv.artifacts = msg.Artifacts
+			sv.artifactsLoaded = true
+		}
 		return sv, nil
 
 	case buildDetailMsg:
@@ -828,6 +863,20 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "t":
 			return sv, fetchJobParams(sv.client, sv.nc)
+		case "T":
+			if sv.testResult != nil && len(sv.testResult.Suites) > 0 {
+				nc := sv.nc
+				build := sv.build
+				child := NewTestReportView(sv.theme, *sv.testResult, nc, build)
+				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
+			}
+		case "A":
+			if len(sv.artifacts) > 0 {
+				nc := sv.nc
+				build := sv.build
+				child := NewArtifactView(sv.theme, sv.artifacts, nc, build)
+				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
+			}
 		case "x":
 			if sv.build.Status == jenkins.BuildStatusRunning {
 				sv.confirmCancel = true
@@ -1278,24 +1327,28 @@ func (sv *StageView) View() string {
 		content = sv.table.View()
 	}
 
+	return content
+}
+
+func (sv *StageView) PopupView() string {
 	if sv.paramForm != nil {
-		return overlayCenter(content, sv.paramForm.View(), sv.width, sv.height)
+		return sv.paramForm.View()
 	}
 	if sv.confirmTrigger {
-		return renderConfirmDialog(sv.theme, content, sv.width, sv.height,
+		return renderConfirmBox(sv.theme,
 			"Trigger Build",
 			fmt.Sprintf("Start a new build of %s?", decodeName(sv.nc.ProjectName)),
 			sv.triggerYes,
 		)
 	}
 	if sv.confirmCancel {
-		return renderConfirmDialog(sv.theme, content, sv.width, sv.height,
+		return renderConfirmBox(sv.theme,
 			"Cancel Build",
 			fmt.Sprintf("Stop build #%d?", sv.build.Number),
 			sv.confirmYes,
 		)
 	}
-	return content
+	return ""
 }
 
 // renderFinishedBar renders a static full-width bar for a completed build.
@@ -1363,6 +1416,13 @@ func (sv *StageView) Shortcuts() []component.Shortcut {
 	)
 	if sv.build.Status == jenkins.BuildStatusRunning && !sv.pending {
 		sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
+	}
+	if sv.testResult != nil {
+		badge := renderTestBadge(sv.theme, sv.testResult)
+		sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
+	}
+	if len(sv.artifacts) > 0 {
+		sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(sv.artifacts))})
 	}
 	return sc
 }

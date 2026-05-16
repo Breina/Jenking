@@ -150,17 +150,17 @@ func (tm *triggerMixin) confirmAction() tea.Cmd {
 	return triggerBuild(tm.client, tm.nc, nil)
 }
 
-// overlay wraps bg with the active trigger dialog (no-op when no dialog is shown).
-func (tm *triggerMixin) overlay(bg string, w, h int) string {
+// popupView returns the rendered popup box (unpositioned), or "" when no popup is active.
+func (tm *triggerMixin) popupView() string {
 	if tm.paramForm != nil {
-		return overlayCenter(bg, tm.paramForm.View(), w, h)
+		return tm.paramForm.View()
 	}
 	if tm.confirmDialog {
-		return renderConfirmDialog(tm.theme, bg, w, h,
+		return renderConfirmBox(tm.theme,
 			"Trigger Build",
 			fmt.Sprintf("Start a new build of %s?", decodeName(tm.nc.ProjectName)),
 			tm.confirmYes,
 		)
 	}
-	return bg
+	return ""
 }

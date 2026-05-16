@@ -166,6 +166,12 @@ type TestReport struct {
 	Suites   []TestSuite
 }
 
+// Artifact represents a single build artifact.
+type Artifact struct {
+	DisplayPath string // human-readable name shown in Jenkins UI
+	URL         string // absolute download URL
+}
+
 // JSON response structs (unexported) for unmarshalling Jenkins API responses.
 
 type jsonJob struct {

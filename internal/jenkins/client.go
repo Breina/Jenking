@@ -28,6 +28,7 @@ type JenkinsClient interface {
 	GetBuildScript(ctx context.Context, jobPath string, buildNumber int) (string, error)
 	GetBuildParameters(ctx context.Context, jobPath string, buildNumber int) (map[string]string, error)
 	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*TestReport, error)
+	GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]Artifact, error)
 	TriggerBuild(ctx context.Context, jobPath string, params map[string]string) error
 	ReplayBuild(ctx context.Context, jobPath string, buildNum int, script string) error
 	CancelBuild(ctx context.Context, jobPath string, number int) error

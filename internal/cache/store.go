@@ -31,6 +31,7 @@ type Store struct {
 	AllBuilds     *Cache[string, []jenkins.UserBuild]    // singleton key ""; from ScanAllBuilds
 	WhenSkipped   *Cache[string, map[string][]bool]      // key: "jobPath:buildNum"
 	TestReports   *Cache[string, *jenkins.TestReport]    // key: "jobPath:buildNum"
+	Artifacts     *Cache[string, []jenkins.Artifact]     // key: "jobPath:buildNum"
 	BuildDetail   *Cache[string, jenkins.Build]          // key: "jobPath:buildNum"
 
 	Disk        *DiskStore // nil when disk persistence is disabled
@@ -51,13 +52,14 @@ func NewStore(disk *DiskStore) *Store {
 		AllBuilds:     New[string, []jenkins.UserBuild](0),
 		WhenSkipped:   New[string, map[string][]bool](0),
 		TestReports:   New[string, *jenkins.TestReport](100),
+		Artifacts:     New[string, []jenkins.Artifact](100),
 		BuildDetail:   New[string, jenkins.Build](100),
 		Disk:          disk,
 		dirtyJobs:     make(map[string]bool),
 		dirtyBuilds:   make(map[string]bool),
 	}
 	if disk != nil {
-		disk.populate(s.Jobs, s.AllBuilds, s.Stages, s.TestReports)
+		disk.populate(s.Jobs, s.AllBuilds, s.Stages, s.TestReports, s.Artifacts)
 	}
 	return s
 }
@@ -73,6 +75,7 @@ func (s *Store) TotalEntries() int {
 		s.AllBuilds.Size() +
 		s.WhenSkipped.Size() +
 		s.TestReports.Size() +
+		s.Artifacts.Size() +
 		s.BuildDetail.Size()
 }
 
