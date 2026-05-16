@@ -101,10 +101,22 @@ func (lv *LogViewer) contentHeight() int {
 
 // ScrollInfo returns the current scroll position for use by the border scrollbar.
 func (lv *LogViewer) ScrollInfo() ScrollInfo {
+	markers := make([]ScrollMarker, 0, len(lv.searchMatchLines)+len(lv.highlightedLines))
+	for _, idx := range lv.searchMatchLines {
+		markers = append(markers, ScrollMarker{Line: idx, Kind: ScrollMarkerSearch})
+	}
+	for _, idx := range lv.highlightedLines {
+		kind := ScrollMarkerWarning
+		if idx < len(lv.lines) && lv.lines[idx].kind == lineKindError {
+			kind = ScrollMarkerError
+		}
+		markers = append(markers, ScrollMarker{Line: idx, Kind: kind})
+	}
 	return ScrollInfo{
 		Offset:     lv.offset,
 		TotalLines: len(lv.lines),
 		ViewHeight: lv.contentHeight(),
+		Markers:    markers,
 	}
 }
 

@@ -468,11 +468,27 @@ type ContentHeightHint interface {
 	ContentHeightHint() int
 }
 
+// ScrollMarkerKind identifies the type of a scrollbar marker.
+type ScrollMarkerKind uint8
+
+const (
+	ScrollMarkerSearch  ScrollMarkerKind = iota // search match
+	ScrollMarkerWarning                         // warning line
+	ScrollMarkerError                           // error line
+)
+
+// ScrollMarker marks a notable display-line position on the scrollbar.
+type ScrollMarker struct {
+	Line int // display line index
+	Kind ScrollMarkerKind
+}
+
 // ScrollInfo describes the scroll position of a scrollable view.
 type ScrollInfo struct {
-	Offset     int // index of first visible display line
-	TotalLines int // total number of display lines
-	ViewHeight int // number of visible lines (viewport height)
+	Offset     int            // index of first visible display line
+	TotalLines int            // total number of display lines
+	ViewHeight int            // number of visible lines (viewport height)
+	Markers    []ScrollMarker // optional: error/warning/search positions for the scrollbar gutter
 }
 
 // HasScrollInfo is optionally implemented by views that support vertical scrolling.

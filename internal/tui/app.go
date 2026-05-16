@@ -1192,7 +1192,7 @@ func (a App) View() string {
 	contentPanel = injectBorderTitle(contentPanel, breadcrumbTitle, contentBadge, borderColor, a.width)
 	if si, ok := v.(view.HasScrollInfo); ok {
 		thumbColor, _ := a.theme.Table.Selected.GetForeground().(lipgloss.Color)
-		contentPanel = injectScrollbar(contentPanel, si.ScrollInfo(), thumbColor)
+		contentPanel = injectScrollbar(contentPanel, si.ScrollInfo(), thumbColor, a.theme)
 	}
 
 	// Assemble layout
@@ -1242,7 +1242,7 @@ func (a App) View() string {
 		previewPanel = injectBorderTitle(previewPanel, previewBC.View(), previewBadge, borderColor, a.width)
 		if psi, ok := v.(view.HasPreviewScrollInfo); ok {
 			thumbColor, _ := a.theme.Table.Selected.GetForeground().(lipgloss.Color)
-			previewPanel = injectScrollbar(previewPanel, psi.PreviewScrollInfo(), thumbColor)
+			previewPanel = injectScrollbar(previewPanel, psi.PreviewScrollInfo(), thumbColor, a.theme)
 		}
 
 		sections = append(sections, previewPanel)
@@ -1792,7 +1792,8 @@ var rightBorderRe = regexp.MustCompile(`(?:\x1b\[[0-9;]*m)*│(?:\x1b\[[0-9;]*m)
 
 // injectScrollbar colors a portion of the right border to indicate scroll position.
 // Only applies when totalLines exceeds the viewport (i.e., the content is scrollable).
-func injectScrollbar(rendered string, scroll view.ScrollInfo, thumbColor lipgloss.Color) string {
+// Markers (errors, warnings, search matches) are painted in the gutter; the thumb takes priority.
+func injectScrollbar(rendered string, scroll view.ScrollInfo, thumbColor lipgloss.Color, t theme.Theme) string {
 	if scroll.TotalLines <= scroll.ViewHeight || scroll.ViewHeight <= 0 {
 		return rendered
 	}
@@ -1812,6 +1813,39 @@ func injectScrollbar(rendered string, scroll view.ScrollInfo, thumbColor lipglos
 	}
 	thumbBottom := thumbTop + thumbSize
 
+	// Build per-row marker colors. Higher-priority kinds win on overlap.
+	// Priority: error(3) > warning(2) > search(1).
+	type rowMark struct {
+		color    lipgloss.Color
+		priority int
+	}
+	var rowMarkers map[int]rowMark
+	if len(scroll.Markers) > 0 {
+		errColor, _ := t.Log.Error.GetForeground().(lipgloss.Color)
+		warnColor, _ := t.Log.Warning.GetForeground().(lipgloss.Color)
+		searchColor, _ := t.Search.CurrentMatch.GetBackground().(lipgloss.Color)
+
+		rowMarkers = make(map[int]rowMark, len(scroll.Markers))
+		for _, m := range scroll.Markers {
+			// Use the same coordinate mapping as the thumb so that when a marked
+			// line is at the top of the viewport its marker lands on thumbTop.
+			row := min(m.Line, maxOffset) * (contentLineCount - thumbSize) / maxOffset
+			var col lipgloss.Color
+			var pri int
+			switch m.Kind {
+			case view.ScrollMarkerError:
+				col, pri = errColor, 3
+			case view.ScrollMarkerWarning:
+				col, pri = warnColor, 2
+			case view.ScrollMarkerSearch:
+				col, pri = searchColor, 1
+			}
+			if existing, ok := rowMarkers[row]; !ok || pri > existing.priority {
+				rowMarkers[row] = rowMark{color: col, priority: pri}
+			}
+		}
+	}
+
 	thumbStyle := lipgloss.NewStyle().Foreground(thumbColor)
 	thumb := thumbStyle.Render("│")
 
@@ -1819,6 +1853,9 @@ func injectScrollbar(rendered string, scroll view.ScrollInfo, thumbColor lipglos
 		lineIdx := i - 1
 		if lineIdx >= thumbTop && lineIdx < thumbBottom {
 			lines[i] = rightBorderRe.ReplaceAllLiteralString(lines[i], thumb)
+		} else if rm, ok := rowMarkers[lineIdx]; ok {
+			marker := lipgloss.NewStyle().Foreground(rm.color).Render("│")
+			lines[i] = rightBorderRe.ReplaceAllLiteralString(lines[i], marker)
 		}
 	}
 
