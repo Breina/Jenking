@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -37,13 +38,14 @@ func NewBranchBuildsProvider(client jenkins.JenkinsClient, store *cache.Store, n
 }
 
 func (p *BranchBuildsProvider) Init() tea.Cmd {
-	if p.store != nil {
-		if e := p.store.Builds.Get(p.nc.JobPath()); e != nil {
-			p.builds = e.Value
-			for _, b := range p.builds {
-				p.tt.preloadOne(p.store, p.nc.JobPath(), b.Number)
-				p.at.preloadOne(p.store, p.nc.JobPath(), b.Number)
-			}
+	// Preload of historical builds is implicit: the registry is already
+	// populated from disk at startup, and Builds() queries it directly.
+	// We still preload test results / artifacts for any builds the registry
+	// knows about so they render without a flash on first paint.
+	if p.store != nil && p.store.Registry != nil {
+		for _, ub := range p.store.Registry.Query(p.registryFilter()) {
+			p.tt.preloadOne(p.store, p.nc.JobPath(), ub.Number)
+			p.at.preloadOne(p.store, p.nc.JobPath(), ub.Number)
 		}
 	}
 	return p.fetchBuilds
@@ -69,7 +71,14 @@ func (p *BranchBuildsProvider) scheduleVisualTick() tea.Cmd {
 	return p.scheduleContextTick(1*time.Second, func() tea.Msg { return branchBuildsVisualTickMsg{} })
 }
 
+func (p *BranchBuildsProvider) registryFilter() buildregistry.Filter {
+	return buildregistry.Filter{JobPath: p.nc.JobPath()}
+}
+
 func (p *BranchBuildsProvider) hasRunning() bool {
+	if p.store != nil && p.store.Registry != nil {
+		return p.store.Registry.HasRunning(p.registryFilter())
+	}
 	for _, b := range p.builds {
 		if b.Status == jenkins.BuildStatusRunning {
 			return true
@@ -104,8 +113,10 @@ func (p *BranchBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 		}
 		p.builds = msg.Builds
 		if p.store != nil {
-			p.store.Builds.Put(p.nc.JobPath(), msg.Builds)
 			p.store.ClearDirtyBuilds(p.nc.JobPath())
+			if p.store.Registry != nil {
+				p.store.Registry.IngestBranchList(p.nc.JobPath(), msg.Builds)
+			}
 		}
 		sort.Slice(p.builds, func(i, j int) bool {
 			return p.builds[i].Number > p.builds[j].Number
@@ -128,6 +139,20 @@ func (p *BranchBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 }
 
 func (p *BranchBuildsProvider) Builds() []UnifiedBuild {
+	// Prefer registry-backed view (applies invariant 2 for stale Running entries).
+	if p.store != nil && p.store.Registry != nil {
+		ubs := p.store.Registry.Query(p.registryFilter())
+		result := make([]UnifiedBuild, len(ubs))
+		for i, ub := range ubs {
+			result[i] = UnifiedBuild{
+				Build:      ub.Build,
+				JobPath:    p.nc.JobPath(),
+				TestResult: p.tt.get(p.nc.JobPath(), ub.Number),
+				Artifacts:  p.at.get(p.nc.JobPath(), ub.Number),
+			}
+		}
+		return result
+	}
 	result := make([]UnifiedBuild, len(p.builds))
 	for i, b := range p.builds {
 		result[i] = UnifiedBuild{

@@ -2,11 +2,11 @@ package cache
 
 import (
 	"encoding/gob"
-	"errors"
 	"os"
 	"path/filepath"
 	"sync"
 
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -28,22 +28,39 @@ func NewDiskStore(dir string) (*DiskStore, error) {
 	return &DiskStore{dir: dir}, nil
 }
 
-func (d *DiskStore) allBuildsPath() string   { return filepath.Join(d.dir, "allbuilds.gob") }
 func (d *DiskStore) stagesPath() string      { return filepath.Join(d.dir, "stages.gob") }
 func (d *DiskStore) testReportsPath() string { return filepath.Join(d.dir, "testreports.gob") }
 func (d *DiskStore) artifactsPath() string   { return filepath.Join(d.dir, "artifacts.gob") }
 func (d *DiskStore) jobsPath() string        { return filepath.Join(d.dir, "jobs.gob") }
+func (d *DiskStore) registryPath() string    { return filepath.Join(d.dir, "registry.gob") }
 
-// LoadAllBuilds reads all completed builds from disk.
-func (d *DiskStore) LoadAllBuilds() ([]jenkins.UserBuild, error) {
-	return readGob[[]jenkins.UserBuild](d.allBuildsPath())
+// LoadRegistry returns the persisted registry records, or os.ErrNotExist if absent.
+func (d *DiskStore) LoadRegistry() ([]buildregistry.Record, error) {
+	return readGob[[]buildregistry.Record](d.registryPath())
 }
 
-// SaveAllBuilds atomically writes the full build list to disk.
-func (d *DiskStore) SaveAllBuilds(builds []jenkins.UserBuild) error {
+// SaveRegistry atomically writes registry records to disk.
+func (d *DiskStore) SaveRegistry(records []buildregistry.Record) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return writeGob(d.allBuildsPath(), builds)
+	return writeGob(d.registryPath(), records)
+}
+
+// RemoveLegacyFiles deletes on-disk files left over from pre-registry versions.
+// Called once at startup; errors are returned but typically ignored by the caller.
+func (d *DiskStore) RemoveLegacyFiles() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	legacy := []string{
+		filepath.Join(d.dir, "allbuilds.gob"),
+		filepath.Join(d.dir, "allbuilds.gob.tmp"),
+	}
+	for _, p := range legacy {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // LoadStages returns the cached stages for the given key ("jobPath:buildNum").
@@ -221,9 +238,9 @@ func writeGob(path string, v any) error {
 
 // populate loads all persisted data into the provided caches.
 // Called once from NewStore at startup; errors are silently ignored (cache is regenerable).
+// Build status lives in the registry, loaded separately via LoadRegistry.
 func (d *DiskStore) populate(
 	jobs *Cache[string, []jenkins.Job],
-	allBuilds *Cache[string, []jenkins.UserBuild],
 	stages *Cache[string, []jenkins.Stage],
 	testReports *Cache[string, *jenkins.TestReport],
 	artifacts *Cache[string, []jenkins.Artifact],
@@ -232,12 +249,6 @@ func (d *DiskStore) populate(
 		for fp, j := range jm {
 			jobs.Put(fp, j)
 		}
-	}
-
-	if builds, err := d.LoadAllBuilds(); err == nil {
-		allBuilds.Put("", builds)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		// File corrupt or unreadable — leave cache empty.
 	}
 
 	if sm, err := d.loadAllStages(); err == nil {

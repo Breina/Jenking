@@ -15,6 +15,7 @@ import (
 
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/config"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/monitor"
 	"github.com/Breina/Jenking/internal/notify"
@@ -25,6 +26,19 @@ import (
 	"github.com/Breina/Jenking/internal/updater"
 	"github.com/Breina/Jenking/internal/version"
 )
+
+// wireMonitor builds a RunningBuildsMonitor and attaches a Reconciler to the
+// store's Registry so background GetBuild fetches drive build-status transitions
+// for builds the monitor never observed in its prev set (e.g. transient builds
+// that completed between two 1s polls).
+func wireMonitor(client jenkins.JenkinsClient, store *cache.Store) *monitor.RunningBuildsMonitor {
+	m := monitor.NewRunningBuildsMonitor(client, store)
+	if store != nil && store.Registry != nil {
+		rec := buildregistry.NewReconciler(client, store.Registry, nil)
+		store.Registry.SetReconcile(rec.Reconcile)
+	}
+	return m
+}
 
 // debugStats is shared via pointer so value-receiver methods can mutate it.
 type debugStats struct {
@@ -329,7 +343,7 @@ func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType 
 		keys:               keys,
 		client:             client,
 		store:              store,
-		monitor:            monitor.NewRunningBuildsMonitor(client, store),
+		monitor:            wireMonitor(client, store),
 		username:           username,
 		friendlyName:       friendlyName,
 		gitUsernames:       gitUsernames,
@@ -696,7 +710,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.activeView().Close()
 		a.client = newClient
 		a.store = newStore
-		a.monitor = monitor.NewRunningBuildsMonitor(newClient, newStore)
+		a.monitor = wireMonitor(newClient, newStore)
 		a.username = target.Username
 		a.friendlyName = ""
 		a.currentContextName = target.Name

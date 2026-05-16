@@ -3,6 +3,7 @@ package cache
 import (
 	"sync"
 
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -21,18 +22,21 @@ type StageLogKey struct {
 }
 
 // Store is the app-wide cache container shared by all views.
+//
+// Build-status state lives entirely in Registry — the single source of truth.
+// The remaining Cache fields persist non-build-status data (jobs, stages,
+// test reports, artifacts) that has its own immutable-after-completion semantics.
 type Store struct {
-	Jobs          *Cache[string, []jenkins.Job]          // key: folderPath
-	Builds        *Cache[string, []jenkins.Build]        // key: jobPath
-	ProjectBuilds *Cache[string, []jenkins.ProjectBuild] // key: projectPath
-	Stages        *Cache[string, []jenkins.Stage]        // key: "jobPath:buildNum"
-	NodeLogs      *Cache[StageLogKey, NodeLogSnapshot]   // LRU(200)
-	RunningBuilds *Cache[string, []jenkins.UserBuild]    // singleton key ""
-	AllBuilds     *Cache[string, []jenkins.UserBuild]    // singleton key ""; from ScanAllBuilds
-	WhenSkipped   *Cache[string, map[string][]bool]      // key: "jobPath:buildNum"
-	TestReports   *Cache[string, *jenkins.TestReport]    // key: "jobPath:buildNum"
-	Artifacts     *Cache[string, []jenkins.Artifact]     // key: "jobPath:buildNum"
-	BuildDetail   *Cache[string, jenkins.Build]          // key: "jobPath:buildNum"
+	Jobs        *Cache[string, []jenkins.Job]        // key: folderPath
+	Stages      *Cache[string, []jenkins.Stage]      // key: "jobPath:buildNum"
+	NodeLogs    *Cache[StageLogKey, NodeLogSnapshot] // LRU(200)
+	WhenSkipped *Cache[string, map[string][]bool]    // key: "jobPath:buildNum"
+	TestReports *Cache[string, *jenkins.TestReport]  // key: "jobPath:buildNum"
+	Artifacts   *Cache[string, []jenkins.Artifact]   // key: "jobPath:buildNum"
+	BuildDetail *Cache[string, jenkins.Build]        // key: "jobPath:buildNum"
+
+	// Registry is the single source of truth for build status.
+	Registry *buildregistry.Registry
 
 	Disk        *DiskStore // nil when disk persistence is disabled
 	dirtyMu     sync.Mutex
@@ -43,40 +47,51 @@ type Store struct {
 // NewStore creates a Store with sensible defaults. disk may be nil to disable persistence.
 func NewStore(disk *DiskStore) *Store {
 	s := &Store{
-		Jobs:          New[string, []jenkins.Job](0),
-		Builds:        New[string, []jenkins.Build](0),
-		ProjectBuilds: New[string, []jenkins.ProjectBuild](0),
-		Stages:        New[string, []jenkins.Stage](0),
-		NodeLogs:      New[StageLogKey, NodeLogSnapshot](200),
-		RunningBuilds: New[string, []jenkins.UserBuild](0),
-		AllBuilds:     New[string, []jenkins.UserBuild](0),
-		WhenSkipped:   New[string, map[string][]bool](0),
-		TestReports:   New[string, *jenkins.TestReport](100),
-		Artifacts:     New[string, []jenkins.Artifact](100),
-		BuildDetail:   New[string, jenkins.Build](100),
-		Disk:          disk,
-		dirtyJobs:     make(map[string]bool),
-		dirtyBuilds:   make(map[string]bool),
+		Jobs:        New[string, []jenkins.Job](0),
+		Stages:      New[string, []jenkins.Stage](0),
+		NodeLogs:    New[StageLogKey, NodeLogSnapshot](200),
+		WhenSkipped: New[string, map[string][]bool](0),
+		TestReports: New[string, *jenkins.TestReport](100),
+		Artifacts:   New[string, []jenkins.Artifact](100),
+		BuildDetail: New[string, jenkins.Build](100),
+		Disk:        disk,
+		dirtyJobs:   make(map[string]bool),
+		dirtyBuilds: make(map[string]bool),
 	}
+	// Registry: persistent build-status truth. Reconcile is wired by the app
+	// (which owns the JenkinsClient) via Registry.SetReconcile.
+	var persist buildregistry.PersistFn
 	if disk != nil {
-		disk.populate(s.Jobs, s.AllBuilds, s.Stages, s.TestReports, s.Artifacts)
+		persist = func(records []buildregistry.Record) {
+			_ = disk.SaveRegistry(records)
+		}
+	}
+	s.Registry = buildregistry.New(buildregistry.Config{Persist: persist})
+	if disk != nil {
+		_ = disk.RemoveLegacyFiles()
+		disk.populate(s.Jobs, s.Stages, s.TestReports, s.Artifacts)
+		if records, err := disk.LoadRegistry(); err == nil && len(records) > 0 {
+			s.Registry.LoadFromDisk(records)
+		}
 	}
 	return s
 }
 
-// TotalEntries returns the sum of all cache sizes across the store.
+// TotalEntries returns the sum of all cache sizes across the store, including
+// the Registry's record count.
 func (s *Store) TotalEntries() int {
+	regSize := 0
+	if s.Registry != nil {
+		regSize = len(s.Registry.Snapshot())
+	}
 	return s.Jobs.Size() +
-		s.Builds.Size() +
-		s.ProjectBuilds.Size() +
 		s.Stages.Size() +
 		s.NodeLogs.Size() +
-		s.RunningBuilds.Size() +
-		s.AllBuilds.Size() +
 		s.WhenSkipped.Size() +
 		s.TestReports.Size() +
 		s.Artifacts.Size() +
-		s.BuildDetail.Size()
+		s.BuildDetail.Size() +
+		regSize
 }
 
 // MarkJobsDirty marks the Jobs cache for folderPath as stale.

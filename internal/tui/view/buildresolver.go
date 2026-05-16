@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -63,41 +64,44 @@ func newBuildResolver(client jenkins.JenkinsClient, store *cache.Store, scope Na
 }
 
 // preloadFromCache populates lastRunningBuilds and lastSlowBuilds from
-// the shared cache store, if available.
+// the registry, if available.
 func (r *buildResolver) preloadFromCache() {
-	if r.store == nil {
-		dbg("preloadFromCache: store is nil")
+	if r.store == nil || r.store.Registry == nil {
+		dbg("preloadFromCache: store/registry is nil")
 		return
 	}
-	if cached := r.store.RunningBuilds.Get(""); cached != nil {
-		r.lastRunningBuilds = cached.Value
-		dbg("preloadFromCache: loaded %d running builds", len(r.lastRunningBuilds))
-	}
+	r.lastRunningBuilds = r.scopedRunningBuilds()
+	r.lastSlowBuilds = r.store.Registry.Query(r.scopeFilter())
+	dbg("preloadFromCache: %d running, %d historical (scope=%v)", len(r.lastRunningBuilds), len(r.lastSlowBuilds), r.scope.Level)
+}
+
+// scopeFilter returns the registry filter for the resolver's current scope.
+func (r *buildResolver) scopeFilter() buildregistry.Filter {
 	switch r.scope.Level {
-	case CtxRoot, CtxFolder:
-		if cached := r.store.AllBuilds.Get(""); cached != nil {
-			r.lastSlowBuilds = cached.Value
-			dbg("preloadFromCache: CtxRoot/CtxFolder loaded %d slow builds", len(r.lastSlowBuilds))
-		} else {
-			dbg("preloadFromCache: CtxRoot/CtxFolder — no slow builds in cache")
-		}
+	case CtxFolder:
+		return buildregistry.Filter{FolderPrefix: r.scope.FolderPath}
 	case CtxProject:
-		key := r.scope.JobPath()
-		if cached := r.store.ProjectBuilds.Get(key); cached != nil {
-			r.lastSlowBuilds = projectBuildsToUserBuilds(cached.Value, key)
-			dbg("preloadFromCache: CtxProject key=%q loaded %d project builds -> %d user builds", key, len(cached.Value), len(r.lastSlowBuilds))
-		} else {
-			dbg("preloadFromCache: CtxProject key=%q — no project builds in cache", key)
-		}
+		return buildregistry.Filter{ProjectPath: r.scope.JobPath()}
 	case CtxBranch:
-		key := r.scope.JobPath()
-		if cached := r.store.Builds.Get(key); cached != nil {
-			r.lastSlowBuilds = buildsToUserBuilds(cached.Value, key)
-			dbg("preloadFromCache: CtxBranch key=%q loaded %d builds", key, len(r.lastSlowBuilds))
-		} else {
-			dbg("preloadFromCache: CtxBranch key=%q — no builds in cache", key)
+		return buildregistry.Filter{JobPath: r.scope.JobPath()}
+	default:
+		return buildregistry.Filter{}
+	}
+}
+
+// scopedRunningBuilds returns the live running set restricted to the scope.
+func (r *buildResolver) scopedRunningBuilds() []jenkins.UserBuild {
+	all := r.store.Registry.RunningBuilds()
+	if r.scope.Level == CtxRoot {
+		return all
+	}
+	out := all[:0:0]
+	for _, b := range all {
+		if r.matchesScope(b) {
+			out = append(out, b)
 		}
 	}
+	return out
 }
 
 // fetchSlow fetches historical builds using the scope-appropriate API.
@@ -108,9 +112,8 @@ func (r *buildResolver) fetchSlow() tea.Msg {
 		dbg("fetchSlow: CtxProject key=%q starting", key)
 		builds, err := r.client.ListProjectBuilds(r.ctx, key)
 		dbg("fetchSlow: CtxProject key=%q got %d builds, err=%v, ctxErr=%v", key, len(builds), err, r.ctx.Err())
-		if err == nil && r.store != nil {
-			r.store.ProjectBuilds.Put(key, builds)
-			dbg("fetchSlow: CtxProject key=%q cached %d project builds", key, len(builds))
+		if err == nil && r.store != nil && r.store.Registry != nil {
+			r.store.Registry.IngestProjectList(key, builds)
 		}
 		if r.ctx.Err() != nil {
 			dbg("fetchSlow: CtxProject key=%q context cancelled, returning nil", key)
@@ -122,9 +125,8 @@ func (r *buildResolver) fetchSlow() tea.Msg {
 		dbg("fetchSlow: CtxBranch key=%q starting", key)
 		builds, err := r.client.ListBuilds(r.ctx, key)
 		dbg("fetchSlow: CtxBranch key=%q got %d builds, err=%v, ctxErr=%v", key, len(builds), err, r.ctx.Err())
-		if err == nil && r.store != nil {
-			r.store.Builds.Put(key, builds)
-			dbg("fetchSlow: CtxBranch key=%q cached %d builds", key, len(builds))
+		if err == nil && r.store != nil && r.store.Registry != nil {
+			r.store.Registry.IngestBranchList(key, builds)
 		}
 		if r.ctx.Err() != nil {
 			dbg("fetchSlow: CtxBranch key=%q context cancelled, returning nil", key)
@@ -229,13 +231,14 @@ func (r *buildResolver) bestMatch(builds []jenkins.UserBuild) *jenkins.UserBuild
 	return &candidates[0]
 }
 
-// cacheSlowBuilds stores slow-fetched builds in the appropriate cache.
+// cacheSlowBuilds feeds slow-scan results into the registry. Branch/project
+// scopes already ingested in fetchSlow; this handles CtxRoot/CtxFolder.
 func (r *buildResolver) cacheSlowBuilds(builds []jenkins.UserBuild) {
-	if r.store == nil {
+	if r.store == nil || r.store.Registry == nil {
 		return
 	}
 	switch r.scope.Level {
 	case CtxRoot, CtxFolder:
-		r.store.AllBuilds.Put("", builds)
+		r.store.Registry.IngestScan(builds)
 	}
 }

@@ -82,7 +82,7 @@ func newTargetStore(t *testing.T) *cache.Store {
 		{Name: "main", FullPath: "webidm/main", Type: jenkins.JobTypePipeline, BranchType: jenkins.BranchTypeBranch},
 		{Name: "feature%2Ffoo", FullPath: "webidm/feature%2Ffoo", Type: jenkins.JobTypePipeline, BranchType: jenkins.BranchTypeBranch},
 	})
-	s.Builds.Put("webidm/main", []jenkins.Build{{Number: 42}, {Number: 41}, {Number: 40}})
+	s.Registry.IngestBranchList("webidm/main", []jenkins.Build{{Number: 42}, {Number: 41}, {Number: 40}})
 	s.Stages.Put("webidm/main:42", []jenkins.Stage{
 		{Name: "Build"},
 		{Name: "Test"},

@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/tui/view"
 )
@@ -20,24 +21,25 @@ type monitorPollMsg struct {
 	err    error
 }
 
-// RunningBuildsMonitor polls ListRunningBuilds every 1s and emits
-// RunningBuildsUpdatedMsg. It tracks arrivals/departures and fetches
-// final build status for builds that just left the running set.
+// RunningBuildsMonitor polls ListRunningBuilds every 1s and feeds the
+// buildregistry. It also emits RunningBuildsUpdatedMsg for views that want
+// a tick signal, and BuildCompletedMsg for builds that just left the running
+// set (so views like StageView can pattern-match on completion).
 //
-// Usage: call Init() from App.Init(), and pass every incoming message
-// to HandleMsg() at the top of App.Update().
+// Departure tracking lives in the registry — we just diff against
+// store.Registry's previous live set on each poll.
 type RunningBuildsMonitor struct {
-	client     jenkins.JenkinsClient
-	store      *cache.Store
-	prevBuilds map[string]jenkins.UserBuild // key -> last known snapshot
+	client   jenkins.JenkinsClient
+	store    *cache.Store
+	prevLive map[string]jenkins.UserBuild
 }
 
 // NewRunningBuildsMonitor creates a monitor. store may be nil in tests.
 func NewRunningBuildsMonitor(client jenkins.JenkinsClient, store *cache.Store) *RunningBuildsMonitor {
 	return &RunningBuildsMonitor{
-		client:     client,
-		store:      store,
-		prevBuilds: make(map[string]jenkins.UserBuild),
+		client:   client,
+		store:    store,
+		prevLive: make(map[string]jenkins.UserBuild),
 	}
 }
 
@@ -47,15 +49,12 @@ func (m *RunningBuildsMonitor) Init() tea.Cmd {
 }
 
 // HandleMsg should be called for every message in App.Update().
-// Returns (true, cmds) when the message is an internal monitor message and
-// was fully consumed. The caller must not process the message further.
 func (m *RunningBuildsMonitor) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 	switch msg := msg.(type) {
 	case monitorTickMsg:
 		return true, []tea.Cmd{m.poll}
 	case monitorPollMsg:
 		if msg.err != nil {
-			// On error keep the previous state; schedule the next tick.
 			return true, []tea.Cmd{m.scheduleTick()}
 		}
 		return true, m.processPoll(msg.builds)
@@ -69,7 +68,6 @@ func (m *RunningBuildsMonitor) poll() tea.Msg {
 	return monitorPollMsg{builds: builds, err: err}
 }
 
-// buildKeyJobPath strips the "#number" suffix from a build key to recover the job path.
 func buildKeyJobPath(key string) string {
 	if idx := strings.LastIndex(key, "#"); idx >= 0 {
 		return key[:idx]
@@ -77,8 +75,6 @@ func buildKeyJobPath(key string) string {
 	return key
 }
 
-// parentPath returns the folder that contains a job path (strips the last segment).
-// Returns "" for top-level paths.
 func parentPath(jobPath string) string {
 	if idx := strings.LastIndex(jobPath, "/"); idx >= 0 {
 		return jobPath[:idx]
@@ -86,7 +82,6 @@ func parentPath(jobPath string) string {
 	return ""
 }
 
-// jobInListing reports whether any job in the listing has the given full path.
 func jobInListing(jobs []jenkins.Job, jobPath string) bool {
 	for _, j := range jobs {
 		if j.FullPath == jobPath {
@@ -102,16 +97,16 @@ func (m *RunningBuildsMonitor) scheduleTick() tea.Cmd {
 	})
 }
 
-// processPoll is called from HandleMsg (inside App.Update) — safe to mutate state.
 func (m *RunningBuildsMonitor) processPoll(builds []jenkins.UserBuild) []tea.Cmd {
-	newMap := make(map[string]jenkins.UserBuild, len(builds))
+	polledAt := time.Now()
+	newLive := make(map[string]jenkins.UserBuild, len(builds))
 	for _, b := range builds {
-		newMap[jenkins.BuildKey(b.JobPath, b.Number)] = b
+		newLive[jenkins.BuildKey(b.JobPath, b.Number)] = b
 	}
 
 	arrived := make([]string, 0)
-	for k := range newMap {
-		if _, ok := m.prevBuilds[k]; !ok {
+	for k := range newLive {
+		if _, ok := m.prevLive[k]; !ok {
 			arrived = append(arrived, k)
 		}
 	}
@@ -121,8 +116,6 @@ func (m *RunningBuildsMonitor) processPoll(builds []jenkins.UserBuild) []tea.Cmd
 			jobPath := buildKeyJobPath(k)
 			folderPath := parentPath(jobPath)
 			m.store.MarkBuildsDirty(jobPath)
-			// Mark folder dirty only when we don't already know this job —
-			// if the job is cached, RunningCount will be updated inline from the message.
 			e := m.store.Jobs.Get(folderPath)
 			if e == nil || !jobInListing(e.Value, jobPath) {
 				m.store.MarkJobsDirty(folderPath)
@@ -132,12 +125,13 @@ func (m *RunningBuildsMonitor) processPoll(builds []jenkins.UserBuild) []tea.Cmd
 
 	departed := make([]string, 0)
 	var completionCmds []tea.Cmd
-	for k, b := range m.prevBuilds {
-		if _, ok := newMap[k]; !ok {
+	for k, b := range m.prevLive {
+		if _, ok := newLive[k]; !ok {
 			departed = append(departed, k)
 			capturedKey := k
 			captured := b
 			client := m.client
+			store := m.store
 			completionCmds = append(completionCmds, func() tea.Msg {
 				detail, err := client.GetBuild(context.Background(), captured.JobPath, captured.Number)
 				if err != nil {
@@ -146,15 +140,19 @@ func (m *RunningBuildsMonitor) processPoll(builds []jenkins.UserBuild) []tea.Cmd
 						Number: captured.Number, Err: err,
 					}
 				}
+				if store != nil && store.Registry != nil {
+					store.Registry.ApplyCompletion(
+						buildregistry.Key{JobPath: captured.JobPath, Number: captured.Number},
+						detail.Build,
+					)
+				}
 				return view.BuildCompletedMsg{
 					Key: capturedKey, JobPath: captured.JobPath,
 					Number: captured.Number, Build: detail.Build,
 				}
 			})
-			if m.store != nil {
-				store := m.store
+			if store != nil {
 				cacheKey := fmt.Sprintf("%s:%d", captured.JobPath, captured.Number)
-				// Cascade: fetch final stages and cache them (immutable after completion).
 				completionCmds = append(completionCmds, func() tea.Msg {
 					stages, err := client.ListStages(context.Background(), captured.JobPath, captured.Number)
 					if err == nil {
@@ -165,7 +163,6 @@ func (m *RunningBuildsMonitor) processPoll(builds []jenkins.UserBuild) []tea.Cmd
 					}
 					return nil
 				})
-				// Cascade: fetch test report and cache it (immutable after completion).
 				completionCmds = append(completionCmds, func() tea.Msg {
 					report, err := client.GetTestReport(context.Background(), captured.JobPath, captured.Number)
 					if err == nil {
@@ -180,9 +177,9 @@ func (m *RunningBuildsMonitor) processPoll(builds []jenkins.UserBuild) []tea.Cmd
 		}
 	}
 
-	m.prevBuilds = newMap
-	if m.store != nil {
-		m.store.RunningBuilds.Put("", builds)
+	m.prevLive = newLive
+	if m.store != nil && m.store.Registry != nil {
+		m.store.Registry.IngestRunningSnapshot(builds, polledAt)
 	}
 
 	updatedMsg := view.RunningBuildsUpdatedMsg{

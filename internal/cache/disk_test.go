@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -19,43 +20,51 @@ func newTestDiskStore(t *testing.T) *DiskStore {
 	return d
 }
 
-func TestDiskStore_AllBuilds_RoundTrip(t *testing.T) {
+func TestDiskStore_Registry_RoundTrip(t *testing.T) {
 	d := newTestDiskStore(t)
 
-	_, err := d.LoadAllBuilds()
+	_, err := d.LoadRegistry()
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected ErrNotExist for missing file, got %v", err)
 	}
 
-	builds := []jenkins.UserBuild{
-		{JobPath: "folder/job", DisplayName: "folder/job #1", Build: jenkins.Build{
-			Number:    1,
-			Status:    jenkins.BuildStatusSuccess,
-			Timestamp: time.Unix(1700000000, 0),
-			Duration:  5 * time.Second,
-		}},
-		{JobPath: "folder/job", DisplayName: "folder/job #2", Build: jenkins.Build{
-			Number:    2,
-			Status:    jenkins.BuildStatusFailed,
-			Timestamp: time.Unix(1700001000, 0),
-			Duration:  3 * time.Second,
-		}},
+	records := []buildregistry.Record{
+		{
+			JobPath:  "folder/job",
+			Terminal: true,
+			Build: jenkins.Build{
+				Number:    1,
+				Status:    jenkins.BuildStatusSuccess,
+				Timestamp: time.Unix(1700000000, 0),
+				Duration:  5 * time.Second,
+			},
+		},
+		{
+			JobPath:  "folder/job",
+			Terminal: true,
+			Build: jenkins.Build{
+				Number:    2,
+				Status:    jenkins.BuildStatusFailed,
+				Timestamp: time.Unix(1700001000, 0),
+				Duration:  3 * time.Second,
+			},
+		},
 	}
 
-	if err := d.SaveAllBuilds(builds); err != nil {
-		t.Fatalf("SaveAllBuilds: %v", err)
+	if err := d.SaveRegistry(records); err != nil {
+		t.Fatalf("SaveRegistry: %v", err)
 	}
 
-	got, err := d.LoadAllBuilds()
+	got, err := d.LoadRegistry()
 	if err != nil {
-		t.Fatalf("LoadAllBuilds: %v", err)
+		t.Fatalf("LoadRegistry: %v", err)
 	}
-	if len(got) != len(builds) {
-		t.Fatalf("expected %d builds, got %d", len(builds), len(got))
+	if len(got) != len(records) {
+		t.Fatalf("expected %d records, got %d", len(records), len(got))
 	}
-	for i, b := range builds {
-		if got[i].JobPath != b.JobPath || got[i].Number != b.Number || got[i].Status != b.Status {
-			t.Errorf("build[%d] mismatch: got %+v, want %+v", i, got[i], b)
+	for i, want := range records {
+		if got[i].JobPath != want.JobPath || got[i].Build.Number != want.Build.Number || got[i].Build.Status != want.Build.Status {
+			t.Errorf("record[%d] mismatch: got %+v, want %+v", i, got[i], want)
 		}
 	}
 }
@@ -188,17 +197,11 @@ func TestDiskStore_Populate(t *testing.T) {
 	d := newTestDiskStore(t)
 
 	folderJobs := []jenkins.Job{{Name: "pipeline-a", FullPath: "Code/pipeline-a", Type: jenkins.JobTypePipeline}}
-	builds := []jenkins.UserBuild{
-		{JobPath: "job", Build: jenkins.Build{Number: 1, Status: jenkins.BuildStatusSuccess}},
-	}
 	stages := []jenkins.Stage{{Name: "Deploy", Status: jenkins.BuildStatusSuccess}}
 	report := &jenkins.TestReport{Passed: 5}
 
 	if err := d.SaveJobs("Code", folderJobs); err != nil {
 		t.Fatalf("SaveJobs: %v", err)
-	}
-	if err := d.SaveAllBuilds(builds); err != nil {
-		t.Fatalf("SaveAllBuilds: %v", err)
 	}
 	if err := d.SaveStages("job:1", stages); err != nil {
 		t.Fatalf("SaveStages: %v", err)
@@ -208,18 +211,13 @@ func TestDiskStore_Populate(t *testing.T) {
 	}
 
 	jobsCache := New[string, []jenkins.Job](0)
-	allBuilds := New[string, []jenkins.UserBuild](0)
 	stagesCache := New[string, []jenkins.Stage](0)
 	reportsCache := New[string, *jenkins.TestReport](100)
-
 	artifactsCache := New[string, []jenkins.Artifact](100)
-	d.populate(jobsCache, allBuilds, stagesCache, reportsCache, artifactsCache)
+	d.populate(jobsCache, stagesCache, reportsCache, artifactsCache)
 
 	if e := jobsCache.Get("Code"); e == nil || len(e.Value) != 1 {
 		t.Errorf("Jobs not populated: %v", e)
-	}
-	if e := allBuilds.Get(""); e == nil || len(e.Value) != 1 {
-		t.Errorf("AllBuilds not populated: %v", e)
 	}
 	if e := stagesCache.Get("job:1"); e == nil || len(e.Value) != 1 {
 		t.Errorf("Stages not populated: %v", e)

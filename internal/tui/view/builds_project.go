@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -41,13 +42,12 @@ func NewProjectBuildsProvider(client jenkins.JenkinsClient, store *cache.Store, 
 }
 
 func (p *ProjectBuildsProvider) Init() tea.Cmd {
-	if p.store != nil {
-		if e := p.store.ProjectBuilds.Get(p.nc.JobPath()); e != nil {
-			p.builds = e.Value
-			for _, b := range p.builds {
-				p.tt.preloadOne(p.store, b.BranchPath, b.Number)
-				p.at.preloadOne(p.store, b.BranchPath, b.Number)
-			}
+	// Registry is already populated from disk; preload only test results /
+	// artifacts so the first paint isn't blank.
+	if p.store != nil && p.store.Registry != nil {
+		for _, b := range p.store.Registry.QueryProject(p.nc.JobPath()) {
+			p.tt.preloadOne(p.store, b.BranchPath, b.Number)
+			p.at.preloadOne(p.store, b.BranchPath, b.Number)
 		}
 	}
 	return p.fetchBuilds
@@ -74,6 +74,9 @@ func (p *ProjectBuildsProvider) scheduleVisualTick() tea.Cmd {
 }
 
 func (p *ProjectBuildsProvider) hasRunning() bool {
+	if p.store != nil && p.store.Registry != nil {
+		return p.store.Registry.HasRunning(buildregistry.Filter{ProjectPath: p.nc.JobPath()})
+	}
 	for _, b := range p.builds {
 		if b.Status == jenkins.BuildStatusRunning {
 			return true
@@ -101,14 +104,27 @@ func (p *ProjectBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 		sort.Slice(p.builds, func(i, j int) bool {
 			return p.builds[i].Build.Timestamp.After(p.builds[j].Build.Timestamp)
 		})
-		if p.store != nil {
-			p.store.ProjectBuilds.Put(p.nc.JobPath(), msg.builds)
+		if p.store != nil && p.store.Registry != nil {
+			p.store.Registry.IngestProjectList(p.nc.JobPath(), msg.builds)
 		}
 		cmds := []tea.Cmd{p.scheduleRefresh()}
 		if p.hasRunning() {
 			cmds = append(cmds, p.scheduleVisualTick())
 		}
 		return true, cmds
+
+	case RunningBuildsUpdatedMsg:
+		// Registry already ingested the running snapshot; keep the visual tick
+		// alive when any branch under this project is running.
+		var cmds []tea.Cmd
+		if p.hasRunning() {
+			cmds = append(cmds, p.scheduleVisualTick())
+		}
+		return true, cmds
+
+	case BuildCompletedMsg:
+		// Registry already updated via ApplyCompletion.
+		return true, nil
 
 	case TestReportMsg:
 		p.tt.handleMsg(msg)
@@ -122,6 +138,20 @@ func (p *ProjectBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 }
 
 func (p *ProjectBuildsProvider) Builds() []UnifiedBuild {
+	if p.store != nil && p.store.Registry != nil {
+		pbs := p.store.Registry.QueryProject(p.nc.JobPath())
+		result := make([]UnifiedBuild, len(pbs))
+		for i, b := range pbs {
+			result[i] = UnifiedBuild{
+				Build:      b.Build,
+				JobPath:    b.BranchPath,
+				BranchName: b.BranchName,
+				TestResult: p.tt.get(b.BranchPath, b.Number),
+				Artifacts:  p.at.get(b.BranchPath, b.Number),
+			}
+		}
+		return result
+	}
 	result := make([]UnifiedBuild, len(p.builds))
 	for i, b := range p.builds {
 		result[i] = UnifiedBuild{

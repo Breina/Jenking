@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
@@ -262,10 +263,9 @@ func TestProjectBuildsProvider_HandleMsg_Builds(t *testing.T) {
 	if len(got) != len(builds) {
 		t.Fatalf("expected %d builds, got %d", len(builds), len(got))
 	}
-	// verify cache write
-	entry := store.ProjectBuilds.Get("myproject")
-	if entry == nil {
-		t.Error("expected builds to be written to cache")
+	// verify registry ingest
+	if len(store.Registry.QueryProject("myproject")) != len(builds) {
+		t.Errorf("expected %d records in registry, got %d", len(builds), len(store.Registry.QueryProject("myproject")))
 	}
 }
 
@@ -326,37 +326,37 @@ func newTestAllBuildsProvider() *AllBuildsProvider {
 	return NewAllBuildsProvider(nil, nil, "alice", time.Minute, "")
 }
 
-func TestAllBuildsProvider_Init_PrePopulatesFromCache(t *testing.T) {
+func TestAllBuildsProvider_Init_PrePopulatesFromRegistry(t *testing.T) {
 	store := cache.NewStore(nil)
 	builds := makeUserBuilds()
-	store.AllBuilds.Put("", builds)
+	// Seed registry directly (in prod this happens via LoadFromDisk in NewStore).
+	store.Registry.IngestScan(builds)
 
 	p := NewAllBuildsProvider(nil, store, "alice", time.Minute, "")
 	_ = p.Init() // ignore returned cmd (would call nil client)
 
 	got := p.Builds()
 	if len(got) != len(builds) {
-		t.Fatalf("expected %d builds from cache, got %d", len(builds), len(got))
+		t.Fatalf("expected %d builds from registry, got %d", len(builds), len(got))
 	}
 }
 
 func TestAllBuildsProvider_HandleMsg_Running(t *testing.T) {
-	p := newTestAllBuildsProvider()
+	store := cache.NewStore(nil)
+	p := NewAllBuildsProvider(nil, store, "alice", time.Minute, "")
 	builds := makeUserBuilds()
 
-	// Only the running build (bob's, status Running) qualifies
+	// Seed the registry's live running set so Query returns Running for bob's build.
 	runningBuilds := []jenkins.UserBuild{builds[1]}
+	store.Registry.IngestRunningSnapshot(runningBuilds, time.Now())
+
 	handled, cmds := p.HandleMsg(RunningBuildsUpdatedMsg{Builds: runningBuilds})
 	if !handled {
 		t.Fatal("expected RunningBuildsUpdatedMsg to be handled")
 	}
-	// Should have exactly 1 cmd: visual tick (bob's build is running)
+	// Visual tick should be scheduled because the registry reports a running build.
 	if len(cmds) != 1 {
 		t.Errorf("expected 1 cmd (visual tick), got %d", len(cmds))
-	}
-	k := abKey(runningBuilds[0])
-	if _, ok := p.fastBuilds[k]; !ok {
-		t.Error("expected running build to be in fastBuilds")
 	}
 }
 
@@ -372,57 +372,33 @@ func TestAllBuildsProvider_HandleMsg_Full(t *testing.T) {
 	if len(cmds) != 1 {
 		t.Errorf("expected 1 cmd (slow tick), got %d", len(cmds))
 	}
-	if len(p.slowBuilds) != len(builds) {
-		t.Errorf("expected %d slow builds, got %d", len(builds), len(p.slowBuilds))
-	}
-	entry := store.AllBuilds.Get("")
-	if entry == nil {
-		t.Error("expected builds written to cache")
-	}
-}
-
-func TestAllBuildsProvider_HandleMsg_FinalStatus(t *testing.T) {
-	p := newTestAllBuildsProvider()
-	ub := makeUserBuilds()[1] // running bob build
-	k := abKey(ub)
-	p.slowBuilds[k] = ub
-
-	finalBuild := jenkins.Build{Number: 2, Status: jenkins.BuildStatusSuccess, Duration: 5 * time.Second}
-	handled, _ := p.HandleMsg(BuildCompletedMsg{Key: k, Build: finalBuild})
-	if !handled {
-		t.Fatal("expected BuildCompletedMsg to be handled")
-	}
-	updated, ok := p.slowBuilds[k]
-	if !ok {
-		t.Fatal("expected build to remain in slowBuilds")
-	}
-	if updated.Status != jenkins.BuildStatusSuccess {
-		t.Errorf("expected status Success, got %v", updated.Status)
-	}
-	if updated.Duration != 5*time.Second {
-		t.Errorf("expected duration 5s, got %v", updated.Duration)
+	// Registry should now contain the scanned builds (visible via Query, with
+	// invariant 2 applied — running entries without live confirmation downgrade).
+	got := store.Registry.Snapshot()
+	if len(got) != len(builds) {
+		t.Errorf("expected %d records in registry, got %d", len(builds), len(got))
 	}
 }
 
-func TestAllBuildsProvider_Builds_MergesOverlay(t *testing.T) {
-	p := newTestAllBuildsProvider()
-	ub := makeUserBuilds()[0] // alice's build, success
-	k := abKey(ub)
+func TestAllBuildsProvider_Builds_TerminalSticky(t *testing.T) {
+	store := cache.NewStore(nil)
+	p := NewAllBuildsProvider(nil, store, "alice", time.Minute, "")
+	ub := makeUserBuilds()[1] // bob's running build
 
-	// Slow build: success
-	p.slowBuilds[k] = ub
-
-	// Fast build: same key but running (should win)
-	fastVersion := ub
-	fastVersion.Status = jenkins.BuildStatusRunning
-	p.fastBuilds[k] = fastVersion
+	// Apply completion: build finished Success.
+	store.Registry.ApplyCompletion(
+		buildregistry.Key{JobPath: ub.JobPath, Number: ub.Number},
+		jenkins.Build{Number: ub.Number, Status: jenkins.BuildStatusSuccess, Timestamp: ub.Timestamp},
+	)
+	// Now feed a stale scan that still claims Running.
+	store.Registry.IngestScan([]jenkins.UserBuild{ub})
 
 	got := p.Builds()
 	if len(got) != 1 {
-		t.Fatalf("expected 1 merged build, got %d", len(got))
+		t.Fatalf("expected 1 build, got %d", len(got))
 	}
-	if got[0].Status != jenkins.BuildStatusRunning {
-		t.Errorf("expected fast build (Running) to win over slow build (Success), got %v", got[0].Status)
+	if got[0].Status != jenkins.BuildStatusSuccess {
+		t.Errorf("expected sticky Success, got %v", got[0].Status)
 	}
 }
 

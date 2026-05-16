@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
 )
 
@@ -216,21 +217,18 @@ func branchCandidates(store *cache.Store, projectPath, prefix string) []string {
 			}
 		}
 	}
-	// Fallback: ProjectBuilds cache (populated when the user opens the
-	// project-level builds list directly).
-	if len(out) == 0 && store.ProjectBuilds != nil {
-		if e := store.ProjectBuilds.Get(projectPath); e != nil {
-			for _, b := range e.Value {
-				d := decodeName(b.BranchName)
-				if seen[d] {
-					continue
-				}
-				seen[d] = true
-				if !strings.HasPrefix(d, prefix) || d == prefix {
-					continue
-				}
-				out = append(out, d)
+	// Fallback: registry (project-scoped query yields ProjectBuilds with branch names).
+	if len(out) == 0 && store.Registry != nil {
+		for _, b := range store.Registry.QueryProject(projectPath) {
+			d := decodeName(b.BranchName)
+			if seen[d] {
+				continue
 			}
+			seen[d] = true
+			if !strings.HasPrefix(d, prefix) || d == prefix {
+				continue
+			}
+			out = append(out, d)
 		}
 	}
 	sort.Strings(out)
@@ -245,23 +243,19 @@ func buildCandidates(store *cache.Store, projectPath, branchEnc, prefix string) 
 	seen := make(map[int]bool)
 	var numbers []int
 
-	if branchEnc != "" && store.Builds != nil {
-		if e := store.Builds.Get(projectPath + "/" + branchEnc); e != nil {
-			for _, b := range e.Value {
-				if !seen[b.Number] {
-					seen[b.Number] = true
-					numbers = append(numbers, b.Number)
-				}
+	if branchEnc != "" && store.Registry != nil {
+		for _, b := range store.Registry.Query(buildregistry.Filter{JobPath: projectPath + "/" + branchEnc}) {
+			if !seen[b.Number] {
+				seen[b.Number] = true
+				numbers = append(numbers, b.Number)
 			}
 		}
 	}
-	if len(numbers) == 0 && store.ProjectBuilds != nil {
-		if e := store.ProjectBuilds.Get(projectPath); e != nil {
-			for _, pb := range e.Value {
-				if !seen[pb.Number] {
-					seen[pb.Number] = true
-					numbers = append(numbers, pb.Number)
-				}
+	if len(numbers) == 0 && store.Registry != nil {
+		for _, pb := range store.Registry.QueryProject(projectPath) {
+			if !seen[pb.Number] {
+				seen[pb.Number] = true
+				numbers = append(numbers, pb.Number)
 			}
 		}
 	}
