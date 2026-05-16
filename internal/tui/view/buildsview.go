@@ -323,6 +323,7 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := builds[di]
 				nc := bv.ncForSelected(selected)
 				child := NewConsoleView(bv.theme, bv.client, nc.AtBuild(selected.Number))
+				child.store = bv.store
 				return bv, func() tea.Msg { return PushViewMsg{View: child} }
 			}
 		case "d":
@@ -342,7 +343,7 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if di >= 0 && di < len(builds) {
 				selected := builds[di]
 				if selected.TestResult != nil && len(selected.TestResult.Suites) > 0 {
-					child := NewTestReportView(bv.theme, *selected.TestResult, bv.nc.AtBuild(selected.Number), selected.Build)
+					child := NewTestReportView(bv.theme, *selected.TestResult, bv.nc.AtBuild(selected.Number), selected.Build, bv.client, bv.store)
 					return bv, func() tea.Msg { return PushViewMsg{View: child} }
 				}
 			}
@@ -351,7 +352,7 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if di >= 0 && di < len(builds) {
 				selected := builds[di]
 				if len(selected.Artifacts) > 0 {
-					child := NewArtifactView(bv.theme, selected.Artifacts, bv.nc.AtBuild(selected.Number), selected.Build)
+					child := NewArtifactView(bv.theme, selected.Artifacts, bv.nc.AtBuild(selected.Number), selected.Build, bv.client, bv.store)
 					return bv, func() tea.Msg { return PushViewMsg{View: child} }
 				}
 			}
@@ -426,30 +427,40 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 		{Key: "enter", Action: "stages"},
 		{Key: "esc", Action: "jobs"},
 		{Key: "/", Action: "search"},
-		{Key: "m", Action: "mine", Active: bv.filters.Mine},
-		{Key: "r", Action: "running", Active: bv.filters.Running},
 	}
 	builds := bv.provider.Builds()
 	if len(builds) == 0 {
+		sc = append(sc,
+			component.Shortcut{Key: "m", Action: "mine", Active: bv.filters.Mine},
+			component.Shortcut{Key: "r", Action: "running", Active: bv.filters.Running},
+		)
 		return sc
 	}
 	cfg := bv.provider.Config()
-	sc = append(sc, component.Shortcut{Key: "l", Action: "log"})
-	sc = append(sc, component.Shortcut{Key: "d", Action: "describe"})
-	if cfg.CanTrigger {
-		sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
-	}
+	sc = append(sc,
+		component.Shortcut{Key: "l", Action: "log"},
+		component.Shortcut{Key: "d", Action: "describe"},
+	)
 	di := bv.dataIndex(bv.table.Cursor())
 	if di >= 0 && di < len(builds) {
-		if builds[di].Status == jenkins.BuildStatusRunning {
-			sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
-		}
 		if builds[di].TestResult != nil {
 			badge := renderTestBadge(bv.theme, builds[di].TestResult)
 			sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
 		}
 		if len(builds[di].Artifacts) > 0 {
 			sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(builds[di].Artifacts))})
+		}
+	}
+	if cfg.CanTrigger {
+		sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
+	}
+	sc = append(sc,
+		component.Shortcut{Key: "m", Action: "mine", Active: bv.filters.Mine},
+		component.Shortcut{Key: "r", Action: "running", Active: bv.filters.Running},
+	)
+	if di >= 0 && di < len(builds) {
+		if builds[di].Status == jenkins.BuildStatusRunning {
+			sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
 		}
 	}
 	return sc

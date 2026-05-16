@@ -223,6 +223,15 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p", "P":
 			cv.lv.showInternal = !cv.lv.showInternal
 			cv.lv.recomputeLines()
+		case "s":
+			nc := cv.nc
+			build := cv.build
+			if build.Number == 0 {
+				build.Number = nc.Build.Number
+			}
+			return cv, func() tea.Msg {
+				return SwapViewMsg{View: NewStageView(cv.lv.theme, cv.client, cv.store, nc, build)}
+			}
 		case "d":
 			nc := cv.nc
 			build := cv.build
@@ -230,7 +239,23 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				build.Number = nc.Build.Number
 			}
 			return cv, func() tea.Msg {
-				return PushViewMsg{View: NewDescribeView(cv.lv.theme, cv.client, cv.store, nc, build)}
+				return SwapViewMsg{View: NewDescribeView(cv.lv.theme, cv.client, cv.store, nc, build)}
+			}
+		case "T":
+			if cv.store != nil {
+				key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
+				if entry := cv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+					child := NewTestReportView(cv.lv.theme, *entry.Value, cv.nc, cv.build, cv.client, cv.store)
+					return cv, func() tea.Msg { return SwapViewMsg{View: child} }
+				}
+			}
+		case "A":
+			if cv.store != nil {
+				key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
+				if entry := cv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					child := NewArtifactView(cv.lv.theme, entry.Value, cv.nc, cv.build, cv.client, cv.store)
+					return cv, func() tea.Msg { return SwapViewMsg{View: child} }
+				}
 			}
 		case "t":
 			buildNum := cv.build.Number
@@ -310,15 +335,27 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 	}
 	// esc first for stable grid positioning
 	shortcuts := []component.Shortcut{
-		{Key: "esc", Action: "stages"},
+		{Key: "esc", Action: "builds"},
 		{Key: "/", Action: "search"},
 		{Key: "w", Action: wrapLabel},
-		{Key: "p", Action: pipelineLabel},
-		{Key: "c", Action: cv.lv.logLabel(), Active: cv.copyLogFlash},
+		{Key: "s", Action: "stages"},
 		{Key: "d", Action: "describe"},
-		{Key: "t", Action: "trigger"},
-		{Key: "g/G", Action: "top/bottom"},
 	}
+	if cv.store != nil {
+		key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
+		if entry := cv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+			badge := renderTestBadge(cv.lv.theme, entry.Value)
+			shortcuts = append(shortcuts, component.Shortcut{Key: "T", Action: "tests: " + badge})
+		}
+		if entry := cv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+		}
+	}
+	shortcuts = append(shortcuts,
+		component.Shortcut{Key: "p", Action: pipelineLabel},
+		component.Shortcut{Key: "c", Action: cv.lv.logLabel(), Active: cv.copyLogFlash},
+		component.Shortcut{Key: "t", Action: "trigger"},
+	)
 	if cv.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash})
 	}
@@ -327,8 +364,6 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 	}
 	if cv.lv.searchRe != nil {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
-	} else if cv.lv.errCount+cv.lv.warnCount > 0 {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev issue"})
 	}
 	return shortcuts
 }
@@ -354,5 +389,9 @@ func (cv *ConsoleView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cac
 	if cv.hasScopedParent {
 		return NewMyBuildsView(t, c, s, cv.scopedParentScope, cv.scopedParentInterval)
 	}
-	return NewStageView(t, c, s, cv.nc, jenkins.Build{Number: cv.nc.Build.Number})
+	nc := cv.nc.AtBranch(cv.nc.BranchName)
+	if cv.nc.Level == CtxProject {
+		return NewBuildsView(t, c, s, nc, NewProjectBuildsProvider(c, s, nc))
+	}
+	return NewBuildsView(t, c, s, nc, NewBranchBuildsProvider(c, s, nc))
 }

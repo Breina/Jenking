@@ -876,6 +876,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updateBreadcrumb()
 		return a, swap.View.Init()
 	}
+	if pvm, ok := msg.(view.PushViewsMsg); ok {
+		if len(pvm.Views) == 0 {
+			return a, nil
+		}
+		if a.currentView != nil {
+			a.navStack = append(a.navStack, a.currentView)
+		}
+		for _, v := range pvm.Views[:len(pvm.Views)-1] {
+			a.navStack = append(a.navStack, v)
+		}
+		a.currentView = pvm.Views[len(pvm.Views)-1]
+		a.updateBreadcrumb()
+		return a, a.currentView.Init()
+	}
 	if otb, ok := msg.(view.OpenTriggeredBuildMsg); ok {
 		sv := view.NewPendingStageView(a.theme, a.client, a.store, otb.NC, otb.LastKnownBuild)
 		a.replaceView(sv)

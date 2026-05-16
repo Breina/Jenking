@@ -7,14 +7,21 @@ import (
 )
 
 // navHierarchy defines the canonical left-to-right order of navigation tags.
-var navHierarchy = []string{"jobs", "builds", "stages", "log"}
+var navHierarchy = []string{"jobs", "builds", "stages", "stagelog"}
 
 // navAlternates maps view types that share a position with a canonical entry.
 var navAlternates = map[string]string{
 	"tests":     "stages",
 	"artifacts": "stages",
-	"matrix":    "log",
+	"matrix":    "stagelog",
 	"describe":  "stages",
+	"log":       "stages", // full console log sits at the same depth as stages
+}
+
+// navDisplayNames overrides the label shown in the active nav tag when the
+// internal key differs from what should be displayed to the user.
+var navDisplayNames = map[string]string{
+	"stagelog": "log",
 }
 
 // NavTags renders k9s-style navigation tags at the bottom of the TUI.
@@ -87,7 +94,11 @@ func (n NavTags) View() string {
 
 		var rendered string
 		if i == activeIdx {
-			rendered = n.theme.NavTag.Active.Render("<" + n.viewType + ">")
+			displayLabel := base
+			if dn, ok := navDisplayNames[base]; ok {
+				displayLabel = dn
+			}
+			rendered = n.theme.NavTag.Active.Render("<" + displayLabel + ">")
 		} else {
 			rendered = n.theme.NavTag.Ancestor.Render("<" + label + ">")
 		}

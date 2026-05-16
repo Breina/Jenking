@@ -319,7 +319,7 @@ func (sl *StageLogView) Title() string {
 }
 
 func (sl *StageLogView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("log", sl.nc)
+	return BreadcrumbFor("stagelog", sl.nc)
 }
 
 func (sl *StageLogView) ItemCount() int {

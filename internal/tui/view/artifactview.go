@@ -1,6 +1,7 @@
 package view
 
 import (
+	"fmt"
 	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,10 +22,12 @@ type ArtifactView struct {
 	build     jenkins.Build
 	width     int
 	height    int
+	client    jenkins.JenkinsClient
+	store     *cache.Store
 }
 
 // NewArtifactView creates an ArtifactView for the given build's artifacts.
-func NewArtifactView(t theme.Theme, artifacts []jenkins.Artifact, nc NavigationContext, build jenkins.Build) *ArtifactView {
+func NewArtifactView(t theme.Theme, artifacts []jenkins.Artifact, nc NavigationContext, build jenkins.Build, client jenkins.JenkinsClient, store *cache.Store) *ArtifactView {
 	columns := []component.Column{
 		{Title: "ARTIFACT", Width: 60},
 	}
@@ -34,6 +37,8 @@ func NewArtifactView(t theme.Theme, artifacts []jenkins.Artifact, nc NavigationC
 		artifacts: artifacts,
 		nc:        nc,
 		build:     build,
+		client:    client,
+		store:     store,
 	}
 	v.populateTable()
 	return v
@@ -81,6 +86,31 @@ func (v *ArtifactView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return nil
 				}
 			}
+		case "s":
+			return v, func() tea.Msg {
+				return SwapViewMsg{View: NewStageView(v.theme, v.client, v.store, v.nc, v.build)}
+			}
+		case "l":
+			nc := v.nc
+			build := v.build
+			return v, func() tea.Msg {
+				cv := NewConsoleView(v.theme, v.client, nc)
+				cv.build = build
+				cv.store = v.store
+				return SwapViewMsg{View: cv}
+			}
+		case "d":
+			return v, func() tea.Msg {
+				return SwapViewMsg{View: NewDescribeView(v.theme, v.client, v.store, v.nc, v.build)}
+			}
+		case "T":
+			if v.store != nil {
+				key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
+				if entry := v.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+					child := NewTestReportView(v.theme, *entry.Value, v.nc, v.build, v.client, v.store)
+					return v, func() tea.Msg { return SwapViewMsg{View: child} }
+				}
+			}
 		}
 	}
 	return v, nil
@@ -110,6 +140,18 @@ func (v *ArtifactView) Shortcuts() []component.Shortcut {
 	sc := []component.Shortcut{{Key: "esc", Action: "builds"}}
 	if v.table.Cursor() >= 0 && v.table.Cursor() < len(v.artifacts) {
 		sc = append(sc, component.Shortcut{Key: "enter", Action: "open"})
+	}
+	sc = append(sc,
+		component.Shortcut{Key: "s", Action: "stages"},
+		component.Shortcut{Key: "l", Action: "full log"},
+		component.Shortcut{Key: "d", Action: "describe"},
+	)
+	if v.store != nil {
+		key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
+		if entry := v.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+			badge := renderTestBadge(v.theme, entry.Value)
+			sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
+		}
 	}
 	return sc
 }

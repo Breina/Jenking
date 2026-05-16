@@ -32,10 +32,12 @@ type TestReportView struct {
 	showFailed bool // when true, only failed cases (and their suites) are shown
 	width      int
 	height     int
+	client     jenkins.JenkinsClient
+	store      *cache.Store
 }
 
 // NewTestReportView creates a TestReportView for the given build's test report.
-func NewTestReportView(t theme.Theme, report jenkins.TestReport, nc NavigationContext, build jenkins.Build) *TestReportView {
+func NewTestReportView(t theme.Theme, report jenkins.TestReport, nc NavigationContext, build jenkins.Build, client jenkins.JenkinsClient, store *cache.Store) *TestReportView {
 	columns := []component.Column{
 		{Title: "NAME", Width: 40},
 		{Title: "STATUS", Width: colTestStatusWidth},
@@ -47,6 +49,8 @@ func NewTestReportView(t theme.Theme, report jenkins.TestReport, nc NavigationCo
 		report: report,
 		nc:     nc,
 		build:  build,
+		client: client,
+		store:  store,
 	}
 	v.populateTable()
 	return v
@@ -126,6 +130,31 @@ func (v *TestReportView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "f":
 			v.showFailed = !v.showFailed
 			v.populateTable()
+		case "s":
+			return v, func() tea.Msg {
+				return SwapViewMsg{View: NewStageView(v.theme, v.client, v.store, v.nc, v.build)}
+			}
+		case "l":
+			nc := v.nc
+			build := v.build
+			return v, func() tea.Msg {
+				cv := NewConsoleView(v.theme, v.client, nc)
+				cv.build = build
+				cv.store = v.store
+				return SwapViewMsg{View: cv}
+			}
+		case "d":
+			return v, func() tea.Msg {
+				return SwapViewMsg{View: NewDescribeView(v.theme, v.client, v.store, v.nc, v.build)}
+			}
+		case "A":
+			if v.store != nil {
+				key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
+				if entry := v.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					child := NewArtifactView(v.theme, entry.Value, v.nc, v.build, v.client, v.store)
+					return v, func() tea.Msg { return SwapViewMsg{View: child} }
+				}
+			}
 		}
 	}
 	return v, nil
@@ -166,6 +195,17 @@ func (v *TestReportView) Shortcuts() []component.Shortcut {
 		sc = append(sc, component.Shortcut{Key: "f", Action: "all tests"})
 	} else {
 		sc = append(sc, component.Shortcut{Key: "f", Action: "failed only"})
+	}
+	sc = append(sc,
+		component.Shortcut{Key: "s", Action: "stages"},
+		component.Shortcut{Key: "l", Action: "full log"},
+		component.Shortcut{Key: "d", Action: "describe"},
+	)
+	if v.store != nil {
+		key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
+		if entry := v.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+			sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+		}
 	}
 	return sc
 }

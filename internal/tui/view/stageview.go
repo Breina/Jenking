@@ -854,12 +854,12 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			child := NewConsoleViewSeeded(sv.theme, sv.client, sv.nc, seedLines, seedNext, seedDone)
 			child.build = sv.build
 			child.store = sv.store
-			return sv, func() tea.Msg { return PushViewMsg{View: child} }
+			return sv, func() tea.Msg { return SwapViewMsg{View: child} }
 		case "d":
 			build := sv.build
 			nc := sv.nc
 			return sv, func() tea.Msg {
-				return PushViewMsg{View: NewDescribeView(sv.theme, sv.client, sv.store, nc, build)}
+				return SwapViewMsg{View: NewDescribeView(sv.theme, sv.client, sv.store, nc, build)}
 			}
 		case "t":
 			return sv, fetchJobParams(sv.client, sv.nc)
@@ -867,14 +867,14 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if sv.testResult != nil && len(sv.testResult.Suites) > 0 {
 				nc := sv.nc
 				build := sv.build
-				child := NewTestReportView(sv.theme, *sv.testResult, nc, build)
+				child := NewTestReportView(sv.theme, *sv.testResult, nc, build, sv.client, sv.store)
 				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
 			}
 		case "A":
 			if len(sv.artifacts) > 0 {
 				nc := sv.nc
 				build := sv.build
-				child := NewArtifactView(sv.theme, sv.artifacts, nc, build)
+				child := NewArtifactView(sv.theme, sv.artifacts, nc, build, sv.client, sv.store)
 				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
 			}
 		case "x":
@@ -1412,17 +1412,17 @@ func (sv *StageView) Shortcuts() []component.Shortcut {
 		component.Shortcut{Key: "/", Action: "search"},
 		component.Shortcut{Key: "l", Action: "full log"},
 		component.Shortcut{Key: "d", Action: "describe"},
-		component.Shortcut{Key: "t", Action: "trigger"},
 	)
-	if sv.build.Status == jenkins.BuildStatusRunning && !sv.pending {
-		sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
-	}
 	if sv.testResult != nil {
 		badge := renderTestBadge(sv.theme, sv.testResult)
 		sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
 	}
 	if len(sv.artifacts) > 0 {
 		sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(sv.artifacts))})
+	}
+	sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
+	if sv.build.Status == jenkins.BuildStatusRunning && !sv.pending {
+		sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
 	}
 	return sc
 }

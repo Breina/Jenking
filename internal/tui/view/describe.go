@@ -229,9 +229,38 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !dv.scriptLV.wrap {
 				dv.scriptLV.hOffset = max(0, dv.scriptLV.hOffset-8)
 			}
-		case "right", "l":
+		case "right":
 			if !dv.scriptLV.wrap {
 				dv.scriptLV.hOffset += 8
+			}
+		case "s":
+			return dv, func() tea.Msg {
+				return SwapViewMsg{View: NewStageView(dv.theme, dv.client, dv.store, dv.nc, dv.build)}
+			}
+		case "l":
+			nc := dv.nc
+			build := dv.build
+			return dv, func() tea.Msg {
+				cv := NewConsoleView(dv.theme, dv.client, nc)
+				cv.build = build
+				cv.store = dv.store
+				return SwapViewMsg{View: cv}
+			}
+		case "T":
+			if dv.store != nil {
+				key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
+				if entry := dv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+					child := NewTestReportView(dv.theme, *entry.Value, dv.nc, dv.build, dv.client, dv.store)
+					return dv, func() tea.Msg { return SwapViewMsg{View: child} }
+				}
+			}
+		case "A":
+			if dv.store != nil {
+				key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
+				if entry := dv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					child := NewArtifactView(dv.theme, entry.Value, dv.nc, dv.build, dv.client, dv.store)
+					return dv, func() tea.Msg { return SwapViewMsg{View: child} }
+				}
 			}
 		case "w", "W":
 			dv.scriptLV.wrap = !dv.scriptLV.wrap
@@ -400,10 +429,23 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 		{Key: "esc", Action: "back"},
 		{Key: "/", Action: "search"},
 		{Key: "w", Action: wrapLabel},
-		{Key: "e", Action: "edit"},
-		{Key: "t", Action: "trigger"},
-		{Key: "g/G", Action: "top/bottom"},
+		{Key: "s", Action: "stages"},
+		{Key: "l", Action: "full log"},
 	}
+	if dv.store != nil {
+		key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
+		if entry := dv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+			badge := renderTestBadge(dv.theme, entry.Value)
+			shortcuts = append(shortcuts, component.Shortcut{Key: "T", Action: "tests: " + badge})
+		}
+		if entry := dv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+		}
+	}
+	shortcuts = append(shortcuts,
+		component.Shortcut{Key: "e", Action: "edit"},
+		component.Shortcut{Key: "t", Action: "trigger"},
+	)
 	if !dv.scriptLV.wrap {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})
 	}

@@ -66,6 +66,12 @@ type PushViewMsg struct{ View View }
 // view should return to the parent of the replaced view, not back to it.
 type SwapViewMsg struct{ View View }
 
+// PushViewsMsg pushes a chain of views onto the nav stack in one step.
+// The current view is pushed first, then each view in Views except the last,
+// then the last becomes the active view. This gives the full ESC chain:
+// current → Views[0] → Views[1] → ... → Views[n-1] (active).
+type PushViewsMsg struct{ Views []View }
+
 // ErrorMsg is returned by views to surface errors to the status bar.
 type ErrorMsg struct{ Err error }
 

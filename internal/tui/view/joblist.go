@@ -77,6 +77,7 @@ type JobList struct {
 	searchRe          *regexp.Regexp
 	filteredJobs      []int // maps table row index → jl.jobs index
 	visualTickActive  bool  // true while a visual tick chain is in flight
+	lastFetchedKey    string
 }
 
 // fixed column widths (content area, excluding padding).
@@ -313,6 +314,35 @@ func countRunningForJob(builds []jenkins.UserBuild, jobFullPath string, jobType 
 	return count
 }
 
+// maybeFetchSelected fires test-report and artifact fetches for the selected
+// non-container job's last build if not already cached.
+func (jl *JobList) maybeFetchSelected() tea.Cmd {
+	if jl.store == nil {
+		return nil
+	}
+	di := jl.dataIndex(jl.table.Cursor())
+	if di < 0 || di >= len(jl.jobs) {
+		return nil
+	}
+	selected := jl.jobs[di]
+	if isContainer(selected.Type) || selected.LastBuild == nil {
+		return nil
+	}
+	key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
+	if key == jl.lastFetchedKey {
+		return nil
+	}
+	jl.lastFetchedKey = key
+	var cmds []tea.Cmd
+	if jl.store.TestReports.Get(key) == nil {
+		cmds = append(cmds, fetchTestReport(jl.client, jl.store, selected.FullPath, selected.LastBuild.Number))
+	}
+	if jl.store.Artifacts.Get(key) == nil {
+		cmds = append(cmds, fetchArtifacts(jl.client, jl.store, selected.FullPath, selected.LastBuild.Number))
+	}
+	return tea.Batch(cmds...)
+}
+
 func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ThemeChangedMsg:
@@ -399,7 +429,7 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			jl.table.SetCursor(jl.rowForJobPath(prevKey))
 		}
-		cmds := []tea.Cmd{jl.scheduleRefresh()}
+		cmds := []tea.Cmd{jl.scheduleRefresh(), jl.maybeFetchSelected()}
 		if jl.hasRunning() && !jl.visualTickActive {
 			jl.visualTickActive = true
 			cmds = append(cmds, jl.scheduleVisualTick())
@@ -550,8 +580,10 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						ProjectName: nc.ProjectName, BranchName: nc.BranchName,
 						Build: NavBuildRef{Number: selected.LastBuild.Number},
 					}
+					bv := NewBuildsView(jl.theme, jl.client, jl.store, nc, NewBranchBuildsProvider(jl.client, jl.store, nc))
 					child := NewConsoleView(jl.theme, jl.client, childNC)
-					return jl, func() tea.Msg { return PushViewMsg{View: child} }
+					child.store = jl.store
+					return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
 				}
 			}
 		case "s":
@@ -595,9 +627,54 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "d":
+			di := jl.dataIndex(jl.table.Cursor())
+			if di >= 0 && di < len(jl.jobs) {
+				selected := jl.jobs[di]
+				if !isContainer(selected.Type) && selected.LastBuild != nil {
+					branchNC := jl.jobNC(selected)
+					nc := branchNC.AtBuild(selected.LastBuild.Number)
+					build := jenkins.Build{Number: selected.LastBuild.Number}
+					bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
+					child := NewDescribeView(jl.theme, jl.client, jl.store, nc, build)
+					return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
+				}
+			}
+		case "T":
+			di := jl.dataIndex(jl.table.Cursor())
+			if di >= 0 && di < len(jl.jobs) && jl.store != nil {
+				selected := jl.jobs[di]
+				if !isContainer(selected.Type) && selected.LastBuild != nil {
+					key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
+					if entry := jl.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+						branchNC := jl.jobNC(selected)
+						nc := branchNC.AtBuild(selected.LastBuild.Number)
+						build := jenkins.Build{Number: selected.LastBuild.Number}
+						bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
+						child := NewTestReportView(jl.theme, *entry.Value, nc, build, jl.client, jl.store)
+						return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
+					}
+				}
+			}
+		case "A":
+			di := jl.dataIndex(jl.table.Cursor())
+			if di >= 0 && di < len(jl.jobs) && jl.store != nil {
+				selected := jl.jobs[di]
+				if !isContainer(selected.Type) && selected.LastBuild != nil {
+					key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
+					if entry := jl.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+						branchNC := jl.jobNC(selected)
+						nc := branchNC.AtBuild(selected.LastBuild.Number)
+						build := jenkins.Build{Number: selected.LastBuild.Number}
+						bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
+						child := NewArtifactView(jl.theme, entry.Value, nc, build, jl.client, jl.store)
+						return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
+					}
+				}
+			}
 		}
 	}
-	return jl, nil
+	return jl, jl.maybeFetchSelected()
 }
 
 func (jl *JobList) View() string {
@@ -675,9 +752,22 @@ func (jl *JobList) Shortcuts() []component.Shortcut {
 		// no extra shortcuts for folders
 	default:
 		sc = append(sc, component.Shortcut{Key: "s", Action: "stages"})
-		sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
 		if selected.LastBuild != nil {
 			sc = append(sc, component.Shortcut{Key: "l", Action: "log"})
+			sc = append(sc, component.Shortcut{Key: "d", Action: "describe"})
+			if jl.store != nil {
+				key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
+				if entry := jl.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+					badge := renderTestBadge(jl.theme, entry.Value)
+					sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
+				}
+				if entry := jl.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+				}
+			}
+		}
+		sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
+		if selected.LastBuild != nil {
 			bs := jenkins.ColorToBuildStatus(selected.Color)
 			if bs == jenkins.BuildStatusRunning {
 				sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
