@@ -35,7 +35,7 @@ func (c *Client) GetBuildScript(ctx context.Context, jobPath string, buildNumber
 		return "", fmt.Errorf("get build script: %w", err)
 	}
 	if m := replayScriptRe.FindStringSubmatch(string(data)); m != nil {
-		return html.UnescapeString(m[2]), nil
+		return strings.ReplaceAll(html.UnescapeString(m[2]), "\r\n", "\n"), nil
 	}
 	return "", fmt.Errorf("mainScript not found in replay page")
 }
