@@ -258,6 +258,9 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if dv.store != nil {
 				key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
 				if entry := dv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					if len(entry.Value) == 1 {
+						return dv, openURLCmd(entry.Value[0].URL)
+					}
 					child := NewArtifactView(dv.theme, entry.Value, dv.nc, dv.build, dv.client, dv.store)
 					return dv, func() tea.Msg { return SwapViewMsg{View: child} }
 				}
@@ -439,7 +442,7 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 			shortcuts = append(shortcuts, component.Shortcut{Key: "T", Action: "tests: " + badge})
 		}
 		if entry := dv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
 		}
 	}
 	shortcuts = append(shortcuts,

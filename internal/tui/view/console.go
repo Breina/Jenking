@@ -253,6 +253,9 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cv.store != nil {
 				key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
 				if entry := cv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					if len(entry.Value) == 1 {
+						return cv, openURLCmd(entry.Value[0].URL)
+					}
 					child := NewArtifactView(cv.lv.theme, entry.Value, cv.nc, cv.build, cv.client, cv.store)
 					return cv, func() tea.Msg { return SwapViewMsg{View: child} }
 				}
@@ -348,7 +351,7 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 			shortcuts = append(shortcuts, component.Shortcut{Key: "T", Action: "tests: " + badge})
 		}
 		if entry := cv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
 		}
 	}
 	shortcuts = append(shortcuts,

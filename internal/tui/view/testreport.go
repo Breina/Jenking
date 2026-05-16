@@ -151,6 +151,9 @@ func (v *TestReportView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if v.store != nil {
 				key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
 				if entry := v.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+					if len(entry.Value) == 1 {
+						return v, openURLCmd(entry.Value[0].URL)
+					}
 					child := NewArtifactView(v.theme, entry.Value, v.nc, v.build, v.client, v.store)
 					return v, func() tea.Msg { return SwapViewMsg{View: child} }
 				}
@@ -204,7 +207,7 @@ func (v *TestReportView) Shortcuts() []component.Shortcut {
 	if v.store != nil {
 		key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
 		if entry := v.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-			sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+			sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
 		}
 	}
 	return sc

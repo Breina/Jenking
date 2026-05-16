@@ -351,7 +351,9 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			di := bv.dataIndex(bv.table.Cursor())
 			if di >= 0 && di < len(builds) {
 				selected := builds[di]
-				if len(selected.Artifacts) > 0 {
+				if len(selected.Artifacts) == 1 {
+					return bv, openURLCmd(selected.Artifacts[0].URL)
+				} else if len(selected.Artifacts) > 1 {
 					child := NewArtifactView(bv.theme, selected.Artifacts, bv.nc.AtBuild(selected.Number), selected.Build, bv.client, bv.store)
 					return bv, func() tea.Msg { return PushViewMsg{View: child} }
 				}
@@ -448,7 +450,7 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 			sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
 		}
 		if len(builds[di].Artifacts) > 0 {
-			sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(builds[di].Artifacts))})
+			sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(builds[di].Artifacts)})
 		}
 	}
 	if cfg.CanTrigger {

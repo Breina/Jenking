@@ -663,6 +663,9 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !isContainer(selected.Type) && selected.LastBuild != nil {
 					key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
 					if entry := jl.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
+						if len(entry.Value) == 1 {
+							return jl, openURLCmd(entry.Value[0].URL)
+						}
 						branchNC := jl.jobNC(selected)
 						nc := branchNC.AtBuild(selected.LastBuild.Number)
 						build := jenkins.Build{Number: selected.LastBuild.Number}
@@ -762,7 +765,7 @@ func (jl *JobList) Shortcuts() []component.Shortcut {
 					sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
 				}
 				if entry := jl.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-					sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(entry.Value))})
+					sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
 				}
 			}
 		}

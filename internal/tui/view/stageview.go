@@ -871,7 +871,9 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
 			}
 		case "A":
-			if len(sv.artifacts) > 0 {
+			if len(sv.artifacts) == 1 {
+				return sv, openURLCmd(sv.artifacts[0].URL)
+			} else if len(sv.artifacts) > 1 {
 				nc := sv.nc
 				build := sv.build
 				child := NewArtifactView(sv.theme, sv.artifacts, nc, build, sv.client, sv.store)
@@ -1418,7 +1420,7 @@ func (sv *StageView) Shortcuts() []component.Shortcut {
 		sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
 	}
 	if len(sv.artifacts) > 0 {
-		sc = append(sc, component.Shortcut{Key: "A", Action: fmt.Sprintf("artifacts: %d", len(sv.artifacts))})
+		sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(sv.artifacts)})
 	}
 	sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
 	if sv.build.Status == jenkins.BuildStatusRunning && !sv.pending {

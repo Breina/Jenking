@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -413,6 +414,26 @@ func renderTestBadge(t theme.Theme, r *jenkins.TestReport) string {
 		parts = append(parts, t.BuildStatus.Aborted.Render(fmt.Sprintf("~%d", r.Skipped)))
 	}
 	return strings.Join(parts, " ")
+}
+
+func openURLCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		_ = exec.Command("xdg-open", url).Start()
+		return nil
+	}
+}
+
+// artifactShortcutAction returns the Action string for the <A> shortcut.
+// With a single artifact it shows the display name (truncated); otherwise "artifacts: N".
+func artifactShortcutAction(artifacts []jenkins.Artifact) string {
+	if len(artifacts) == 1 {
+		name := artifacts[0].DisplayPath
+		if len(name) > 20 {
+			name = name[:19] + "…"
+		}
+		return name
+	}
+	return fmt.Sprintf("artifacts: %d", len(artifacts))
 }
 
 // FullScreen is optionally implemented by views that bypass all app chrome
