@@ -172,7 +172,9 @@ func (v *TestReportView) Title() string {
 }
 
 func (v *TestReportView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("tests", v.nc)
+	seg := BreadcrumbFor("tests", v.nc)
+	seg.Failed = v.showFailed
+	return seg
 }
 
 func (v *TestReportView) ItemCount() int {
@@ -194,11 +196,7 @@ func (v *TestReportView) Commands() []command.Command {
 func (v *TestReportView) Shortcuts() []component.Shortcut {
 	// esc first for stable grid positioning
 	sc := []component.Shortcut{{Key: "esc", Action: "builds"}}
-	if v.showFailed {
-		sc = append(sc, component.Shortcut{Key: "f", Action: "all tests"})
-	} else {
-		sc = append(sc, component.Shortcut{Key: "f", Action: "failed only"})
-	}
+	sc = append(sc, component.Shortcut{Key: "f", Action: "failed only", Active: v.showFailed})
 	sc = append(sc,
 		component.Shortcut{Key: "s", Action: "stages"},
 		component.Shortcut{Key: "l", Action: "full log"},

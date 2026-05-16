@@ -1226,6 +1226,7 @@ func (a App) View() string {
 			Context:       seg.Context,
 			Running:       seg.Running,
 			Mine:          seg.Mine,
+			Failed:        seg.Failed,
 			ResolvedParts: seg.ResolvedParts,
 		})
 		if seg.NoTail {
@@ -1719,6 +1720,7 @@ func (a *App) updateBreadcrumb() {
 			Context:       seg.Context,
 			Running:       seg.Running,
 			Mine:          seg.Mine,
+			Failed:        seg.Failed,
 			ResolvedParts: seg.ResolvedParts,
 		})
 		navTag := seg.ViewType

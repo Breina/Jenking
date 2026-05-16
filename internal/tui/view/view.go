@@ -255,6 +255,7 @@ type BreadcrumbSegment struct {
 	Context       []component.BreadcrumbPart // parts joined by "/" (or ":" for the last separator)
 	Running       bool                       // filter active — rendered as "running " prefix
 	Mine          bool                       // filter active — rendered as "my " prefix
+	Failed        bool                       // filter active — rendered as "failed " prefix
 	ResolvedParts []component.BreadcrumbPart // resolved #last info, shown after " → " arrow
 	// NavTag, when non-empty, overrides ViewType for the bottom-left nav tag only.
 	// Use when the breadcrumb label and the nav position label should differ.

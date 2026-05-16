@@ -16,6 +16,7 @@ type BreadcrumbSegment struct {
 	Context       []BreadcrumbPart
 	Running       bool             // filter active — rendered as "running " prefix
 	Mine          bool             // filter active — rendered as "my " prefix
+	Failed        bool             // filter active — rendered as "failed " prefix
 	ResolvedParts []BreadcrumbPart // resolved #last info, shown after " → " arrow
 }
 
@@ -99,6 +100,9 @@ func (b Breadcrumb) renderSegment() string {
 	}
 	if s.Running {
 		prefix += filterStyle.Render("running") + " "
+	}
+	if s.Failed {
+		prefix += filterStyle.Render("failed") + " "
 	}
 	title := prefix + st.ViewType.Render(s.ViewType)
 
