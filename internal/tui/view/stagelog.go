@@ -353,9 +353,6 @@ func (sl *StageLogView) Shortcuts() []component.Shortcut {
 	if sl.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: sl.lv.selLabel(), Active: sl.copySelFlash})
 	}
-	if !sl.lv.wrap {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})
-	}
 	if sl.lv.searchRe != nil {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
 	} else if sl.lv.errCount+sl.lv.warnCount > 0 {

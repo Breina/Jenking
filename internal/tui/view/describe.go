@@ -449,9 +449,6 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 		component.Shortcut{Key: "e", Action: "edit"},
 		component.Shortcut{Key: "t", Action: "trigger"},
 	)
-	if !dv.scriptLV.wrap {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})
-	}
 	if dv.scriptLV.searchRe != nil {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
 	}

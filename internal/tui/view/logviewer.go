@@ -63,6 +63,7 @@ type displayLine struct {
 	srcOffset int      // byte offset of text within src (non-zero only in wrap mode)
 	dim       bool     // render with consoleDim instead of normal/URL styles
 	kind      lineKind // error/warning colouring (ignored when dim=true)
+	rawIdx    int      // index of the source entry in LogViewer.rawLines
 }
 
 // LogViewer holds all shared state and logic for rendering scrollable log output.
@@ -125,18 +126,28 @@ func (lv *LogViewer) recomputeLines() {
 		}
 	}
 
+	// Capture which raw line is at the top of the view so we can restore
+	// the visual position even when wrap-mode changes the display-line count.
+	savedRawIdx := -1
+	if !atBottom && lv.offset < len(lv.lines) {
+		savedRawIdx = lv.lines[lv.offset].rawIdx
+	}
+
 	lv.lines = nil
 	lv.errCount, lv.warnCount = 0, 0
 	lv.highlightedLines = lv.highlightedLines[:0]
 	lv.searchMatchLines = lv.searchMatchLines[:0]
 	lv.currentMatchLine = -1
 	prevKind := lineKindNormal
-	for _, raw := range lv.rawLines {
+	for rawIdx, raw := range lv.rawLines {
 		internal := isInternalLine(raw)
 		if !lv.showInternal && internal {
 			continue
 		}
 		dl := lv.toDisplayLines(raw)
+		for i := range dl {
+			dl[i].rawIdx = rawIdx
+		}
 		if lv.searchRe != nil && lv.searchRe.MatchString(raw) {
 			lv.searchMatchLines = append(lv.searchMatchLines, len(lv.lines))
 		}
@@ -170,6 +181,17 @@ func (lv *LogViewer) recomputeLines() {
 		lv.offset = min(lv.currentMatchLine, newMax)
 	} else if atBottom {
 		lv.offset = newMax
+	} else if savedRawIdx >= 0 {
+		// Translate offset to the new display space by finding the first
+		// display line that belongs to the same raw line.
+		newOff := 0
+		for i, dl := range lv.lines {
+			if dl.rawIdx == savedRawIdx {
+				newOff = i
+				break
+			}
+		}
+		lv.offset = min(newOff, newMax)
 	} else {
 		lv.offset = min(lv.offset, newMax)
 	}

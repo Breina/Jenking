@@ -362,9 +362,6 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 	if cv.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash})
 	}
-	if !cv.lv.wrap {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "←/→", Action: "scroll"})
-	}
 	if cv.lv.searchRe != nil {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
 	}
