@@ -56,7 +56,7 @@ func (cv *ConsoleView) SetScopedParent(scope NavigationContext, slowInterval tim
 func NewConsoleView(t theme.Theme, client jenkins.JenkinsClient, nc NavigationContext) *ConsoleView {
 	ctx, cancel := context.WithCancel(context.Background())
 	cv := &ConsoleView{
-		lv:      LogViewer{theme: t},
+		lv:      newLogViewer(t),
 		client:  client,
 		nc:      nc,
 		ctx:     ctx,
@@ -91,7 +91,7 @@ func (cv *ConsoleView) ApplySearch(pattern string) error {
 }
 
 func (cv *ConsoleView) SearchQuery() string {
-	return cv.lv.SearchQueryWithCount()
+	return cv.lv.SearchQuery()
 }
 
 func (cv *ConsoleView) Init() tea.Cmd {
@@ -218,6 +218,10 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !cv.lv.wrap {
 				cv.lv.hOffset += 8
 			}
+		case "e":
+			cv.lv.highlightErrors = !cv.lv.highlightErrors
+			cv.lv.currentHighlightLine = -1
+			cv.lv.recomputeLines()
 		case "f2", "n":
 			cv.lv.nextHighlight(true)
 		case "N":
@@ -329,8 +333,15 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 	if cv.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash, Group: component.GroupAction})
 	}
-	if cv.lv.searchRe != nil {
-		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev match"))
+	shortcuts = append(shortcuts, component.Filter("e", "errors", cv.lv.highlightErrors))
+	navActive := cv.lv.searchRe != nil || cv.lv.ErrorNavActive()
+	if navActive {
+		posInfo := cv.lv.NavigationPositionInfo()
+		nextLabel := "next"
+		if posInfo != "" {
+			nextLabel = "next " + posInfo
+		}
+		shortcuts = append(shortcuts, component.Nav("n/N", nextLabel))
 	}
 	return shortcuts
 }

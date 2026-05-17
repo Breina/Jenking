@@ -125,11 +125,12 @@ type ProgressBarStyles struct {
 
 // LogStyles controls how console/stage log lines are coloured.
 type LogStyles struct {
-	Normal  lipgloss.Style // regular log line
-	Dim     lipgloss.Style // Jenkins-internal [Pipeline] lines
-	Error   lipgloss.Style // lines matching error/fatal/exception keywords
-	Warning lipgloss.Style // lines matching warning/deprecated keywords
-	Trunc   lipgloss.Style // truncation indicator (»)
+	Normal           lipgloss.Style // regular log line
+	Dim              lipgloss.Style // Jenkins-internal [Pipeline] lines
+	Error            lipgloss.Style // lines matching error/fatal/exception keywords
+	Warning          lipgloss.Style // lines matching warning/deprecated keywords
+	Trunc            lipgloss.Style // truncation indicator (»)
+	CurrentHighlight lipgloss.Style // currently navigated error/warning line (n/N)
 }
 
 // StageStyles controls styles specific to the stage list view.
@@ -234,11 +235,12 @@ func Default() Theme {
 			SelOverrunText: lipgloss.NewStyle().Foreground(lipgloss.Color("232")).Background(lipgloss.Color("222")),
 		},
 		Log: LogStyles{
-			Normal:  lipgloss.NewStyle().Foreground(bright),
-			Dim:     lipgloss.NewStyle().Foreground(dim),
-			Error:   lipgloss.NewStyle().Foreground(lipgloss.Color("167")), // muted red
-			Warning: lipgloss.NewStyle().Foreground(lipgloss.Color("179")), // muted amber
-			Trunc:   lipgloss.NewStyle().Foreground(lipgloss.Color("240")), // dark gray
+			Normal:           lipgloss.NewStyle().Foreground(bright),
+			Dim:              lipgloss.NewStyle().Foreground(dim),
+			Error:            lipgloss.NewStyle().Foreground(lipgloss.Color("167")), // muted red
+			Warning:          lipgloss.NewStyle().Foreground(lipgloss.Color("179")), // muted amber
+			Trunc:            lipgloss.NewStyle().Foreground(lipgloss.Color("240")), // dark gray
+			CurrentHighlight: lipgloss.NewStyle().Foreground(lipgloss.Color("232")).Background(lipgloss.Color("167")).Bold(true),
 		},
 		Stage: StageStyles{
 			GhostDim: lipgloss.NewStyle().Foreground(lipgloss.Color("240")), // dark gray for predicted stages

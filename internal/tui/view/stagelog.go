@@ -60,7 +60,7 @@ func (sl *StageLogView) SetScopedParent(scope NavigationContext, slowInterval ti
 func NewStageLogView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool) *StageLogView {
 	ctx, cancel := context.WithCancel(context.Background())
 	sl := &StageLogView{
-		lv:           LogViewer{theme: t},
+		lv:           newLogViewer(t),
 		client:       client,
 		store:        store,
 		nc:           nc,
@@ -90,7 +90,7 @@ func (sl *StageLogView) ApplySearch(pattern string) error {
 }
 
 func (sl *StageLogView) SearchQuery() string {
-	return sl.lv.SearchQueryWithCount()
+	return sl.lv.SearchQuery()
 }
 
 func (sl *StageLogView) Init() tea.Cmd {
@@ -276,6 +276,10 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return sl, func() tea.Msg {
 				return PopSwapViewMsg{View: NewStageView(sl.lv.theme, sl.client, store, nc, build)}
 			}
+		case "e":
+			sl.lv.highlightErrors = !sl.lv.highlightErrors
+			sl.lv.currentHighlightLine = -1
+			sl.lv.recomputeLines()
 		case "f2", "n":
 			sl.lv.nextHighlight(true)
 		case "N":
@@ -369,10 +373,15 @@ func (sl *StageLogView) Shortcuts() []component.Shortcut {
 	if sl.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: sl.lv.selLabel(), Active: sl.copySelFlash, Group: component.GroupAction})
 	}
-	if sl.lv.searchRe != nil {
-		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev match"))
-	} else if sl.lv.errCount+sl.lv.warnCount > 0 {
-		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev issue"))
+	shortcuts = append(shortcuts, component.Filter("e", "errors", sl.lv.highlightErrors))
+	navActive := sl.lv.searchRe != nil || sl.lv.ErrorNavActive()
+	if navActive {
+		posInfo := sl.lv.NavigationPositionInfo()
+		nextLabel := "next"
+		if posInfo != "" {
+			nextLabel = "next " + posInfo
+		}
+		shortcuts = append(shortcuts, component.Nav("n/N", nextLabel))
 	}
 	return shortcuts
 }
