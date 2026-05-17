@@ -49,35 +49,31 @@ type jobListTickMsg struct{}
 type jobListVisualTickMsg struct{}
 
 // JobList is a view that lists jobs under a given folder path.
+// Cross-cutting concerns (trigger, cancel, test report, artifact) are owned by
+// behaviors registered on host with a row-aware access closure.
 type JobList struct {
-	theme             theme.Theme
-	table             component.Table
-	client            jenkins.JenkinsClient
-	store             *cache.Store
-	folderPath        string
-	title             string
-	jobs              []jenkins.Job
-	width             int
-	height            int
-	username          string   // authenticated user ID (propagated to child NavigationContexts)
-	gitUsernames      []string // git display names for mine-filter matching (propagated to child NavigationContexts)
-	branchContext     bool     // true when listing branches/MRs inside a MultiBranch project
-	confirmTrigger    bool     // show confirm dialog for non-parameterized jobs
-	triggerYes        bool
-	triggerNC         NavigationContext
-	paramForm         *component.ParamForm // non-nil when showing parameter form
-	confirmCancel     bool
-	confirmCancelYes  bool
-	confirmCancelPath string
-	confirmCancelNum  int
-	ctx               context.Context
-	cancel            context.CancelFunc
-	progressBar       component.ProgressBar
-	searchQuery       string
-	searchRe          *regexp.Regexp
-	filteredJobs      []int // maps table row index → jl.jobs index
-	visualTickActive  bool  // true while a visual tick chain is in flight
-	lastFetchedKey    string
+	theme            theme.Theme
+	table            component.Table
+	client           jenkins.JenkinsClient
+	store            *cache.Store
+	folderPath       string
+	title            string
+	jobs             []jenkins.Job
+	width            int
+	height           int
+	username         string   // authenticated user ID (propagated to child NavigationContexts)
+	gitUsernames     []string // git display names for mine-filter matching (propagated to child NavigationContexts)
+	branchContext    bool     // true when listing branches/MRs inside a MultiBranch project
+	ctx              context.Context
+	cancel           context.CancelFunc
+	progressBar      component.ProgressBar
+	searchQuery      string
+	searchRe         *regexp.Regexp
+	filteredJobs     []int // maps table row index → jl.jobs index
+	visualTickActive bool  // true while a visual tick chain is in flight
+	lastFetchedKey   string
+	trigger          triggerMixin
+	host             behaviorHost
 }
 
 // fixed column widths (content area, excluding padding).
@@ -117,7 +113,7 @@ func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store,
 			{Title: "STATUS", Width: colStatusWidth},
 		}
 	}
-	return &JobList{
+	jl := &JobList{
 		theme:         t,
 		table:         component.NewTable(t, columns),
 		client:        client,
@@ -131,6 +127,52 @@ func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store,
 		cancel:        cancel,
 		progressBar:   component.NewProgressBar(t),
 	}
+	// selectedJob returns the highlighted job, or ok=false for empty rows,
+	// containers, or rows without a last build. Used by all behaviors here.
+	selectedJob := func() (jenkins.Job, bool) {
+		di := jl.dataIndex(jl.table.Cursor())
+		if di < 0 || di >= len(jl.jobs) {
+			return jenkins.Job{}, false
+		}
+		j := jl.jobs[di]
+		if isContainer(j.Type) || j.LastBuild == nil {
+			return jenkins.Job{}, false
+		}
+		return j, true
+	}
+	access := func() (NavigationContext, jenkins.Build, bool) {
+		j, ok := selectedJob()
+		if !ok {
+			return NavigationContext{}, jenkins.Build{}, false
+		}
+		nc := jl.jobNC(j).AtBuild(j.LastBuild.Number)
+		return nc, jenkins.Build{
+			Number: j.LastBuild.Number,
+			Status: jenkins.ColorToBuildStatus(j.Color),
+		}, true
+	}
+	// navigate pushes the test/artifact child on top of a freshly-constructed
+	// BuildsView for the selected job so ESC lands the user on the build list
+	// they conceptually drilled into.
+	navigate := func(child View) tea.Cmd {
+		j, ok := selectedJob()
+		if !ok {
+			return pushTo(child)
+		}
+		branchNC := jl.jobNC(j)
+		bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
+		return func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
+	}
+	storeFn := func() *cache.Store { return jl.store }
+	jl.trigger = newTriggerMixin(t, client, NavigationContext{})
+	jl.host.Add(newTestReportBehavior(t, client, storeFn, access, navigate))
+	jl.host.Add(newArtifactBehavior(t, client, storeFn, access, navigate))
+	jl.host.Add(newCancelBehavior(t, client, access))
+	jl.host.Add(newTriggerBehavior(&jl.trigger).WithShortcutGate(func() bool {
+		_, ok := selectedJob()
+		return ok
+	}))
+	return jl
 }
 
 func (jl *JobList) ApplySearch(pattern string) error {
@@ -344,14 +386,15 @@ func (jl *JobList) maybeFetchSelected() tea.Cmd {
 }
 
 func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if handled, cmd := jl.host.HandleMsg(msg); handled {
+		return jl, cmd
+	}
 	switch msg := msg.(type) {
 	case ThemeChangedMsg:
 		jl.theme = msg.Theme
 		jl.table.SetTheme(msg.Theme)
 		jl.progressBar.SetTheme(msg.Theme)
-		if jl.paramForm != nil {
-			jl.paramForm.SetTheme(msg.Theme)
-		}
+		jl.host.SetTheme(msg.Theme)
 		jl.populateTable()
 		return jl, nil
 
@@ -445,98 +488,9 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return jl, tea.Batch(cmds...)
 
-	case JobParamsMsg:
-		if msg.Err != nil {
-			return jl, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
-		}
-		jl.triggerNC = msg.NC
-		if len(msg.Params) == 0 {
-			jl.confirmTrigger = true
-			jl.triggerYes = false
-			return jl, nil
-		}
-		form := component.NewParamForm(jl.theme, msg.Params)
-		form.SetSize(jl.width, jl.height-6)
-		jl.paramForm = &form
-		return jl, nil
-
-	case TriggerBuildResultMsg:
-		if msg.Err != nil {
-			return jl, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
-		}
-		lastKnown := 0
-		for _, j := range jl.jobs {
-			if j.FullPath == msg.NC.JobPath() && j.LastBuild != nil {
-				lastKnown = j.LastBuild.Number
-				break
-			}
-		}
-		nc := jl.triggerNC
-		return jl, func() tea.Msg {
-			return OpenTriggeredBuildMsg{
-				NC:             nc,
-				LastKnownBuild: lastKnown,
-			}
-		}
-
 	case tea.KeyMsg:
-		if jl.paramForm != nil {
-			result := jl.paramForm.Update(msg)
-			switch result.Status {
-			case component.ParamFormDone:
-				nc := jl.triggerNC
-				jl.paramForm = nil
-				return jl, triggerBuild(jl.client, nc, result.Values)
-			case component.ParamFormCancelled:
-				jl.paramForm = nil
-			}
-			return jl, nil
-		}
-
-		if jl.confirmTrigger {
-			switch msg.String() {
-			case "left", "right", "h":
-				jl.triggerYes = !jl.triggerYes
-			case "y":
-				jl.confirmTrigger = false
-				return jl, triggerBuild(jl.client, jl.triggerNC, nil)
-			case "enter":
-				if jl.triggerYes {
-					jl.confirmTrigger = false
-					return jl, triggerBuild(jl.client, jl.triggerNC, nil)
-				}
-				jl.confirmTrigger = false
-			default:
-				jl.confirmTrigger = false
-			}
-			return jl, nil
-		}
-
-		if jl.confirmCancel {
-			switch msg.String() {
-			case "left", "right", "h":
-				jl.confirmCancelYes = !jl.confirmCancelYes
-			case "y":
-				jl.confirmCancel = false
-				jobPath, number := jl.confirmCancelPath, jl.confirmCancelNum
-				return jl, func() tea.Msg {
-					err := jl.client.CancelBuild(context.Background(), jobPath, number)
-					return CancelBuildResultMsg{Err: err}
-				}
-			case "enter":
-				if jl.confirmCancelYes {
-					jl.confirmCancel = false
-					jobPath, number := jl.confirmCancelPath, jl.confirmCancelNum
-					return jl, func() tea.Msg {
-						err := jl.client.CancelBuild(context.Background(), jobPath, number)
-						return CancelBuildResultMsg{Err: err}
-					}
-				}
-				jl.confirmCancel = false
-			default:
-				jl.confirmCancel = false
-			}
-			return jl, nil
+		if handled, cmd := jl.host.HandleKey(msg); handled {
+			return jl, cmd
 		}
 
 		switch msg.String() {
@@ -610,21 +564,11 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if di >= 0 && di < len(jl.jobs) {
 				selected := jl.jobs[di]
 				if !isContainer(selected.Type) {
-					return jl, fetchJobParams(jl.client, jl.jobNC(selected))
-				}
-			}
-		case "x":
-			di := jl.dataIndex(jl.table.Cursor())
-			if di >= 0 && di < len(jl.jobs) {
-				selected := jl.jobs[di]
-				if !isContainer(selected.Type) && selected.LastBuild != nil {
-					bs := jenkins.ColorToBuildStatus(selected.Color)
-					if bs == jenkins.BuildStatusRunning {
-						jl.confirmCancel = true
-						jl.confirmCancelYes = false
-						jl.confirmCancelPath = selected.FullPath
-						jl.confirmCancelNum = selected.LastBuild.Number
+					lastKnown := 0
+					if selected.LastBuild != nil {
+						lastKnown = selected.LastBuild.Number
 					}
+					return jl, jl.trigger.startTriggerFor(jl.jobNC(selected), lastKnown)
 				}
 			}
 		case "d":
@@ -640,41 +584,6 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
 				}
 			}
-		case "T":
-			di := jl.dataIndex(jl.table.Cursor())
-			if di >= 0 && di < len(jl.jobs) && jl.store != nil {
-				selected := jl.jobs[di]
-				if !isContainer(selected.Type) && selected.LastBuild != nil {
-					key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
-					if entry := jl.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-						branchNC := jl.jobNC(selected)
-						nc := branchNC.AtBuild(selected.LastBuild.Number)
-						build := jenkins.Build{Number: selected.LastBuild.Number}
-						bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
-						child := NewTestReportView(jl.theme, *entry.Value, nc, build, jl.client, jl.store)
-						return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
-					}
-				}
-			}
-		case "A":
-			di := jl.dataIndex(jl.table.Cursor())
-			if di >= 0 && di < len(jl.jobs) && jl.store != nil {
-				selected := jl.jobs[di]
-				if !isContainer(selected.Type) && selected.LastBuild != nil {
-					key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
-					if entry := jl.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-						if len(entry.Value) == 1 {
-							return jl, openURLCmd(entry.Value[0].URL)
-						}
-						branchNC := jl.jobNC(selected)
-						nc := branchNC.AtBuild(selected.LastBuild.Number)
-						build := jenkins.Build{Number: selected.LastBuild.Number}
-						bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
-						child := NewArtifactView(jl.theme, entry.Value, nc, build, jl.client, jl.store)
-						return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
-					}
-				}
-			}
 		}
 	}
 	return jl, jl.maybeFetchSelected()
@@ -685,24 +594,7 @@ func (jl *JobList) View() string {
 }
 
 func (jl *JobList) PopupView() string {
-	if jl.paramForm != nil {
-		return jl.paramForm.View()
-	}
-	if jl.confirmTrigger {
-		return renderConfirmBox(jl.theme,
-			"Trigger Build",
-			"Start a new build of "+decodeName(jl.triggerNC.ProjectName)+"?",
-			jl.triggerYes,
-		)
-	}
-	if jl.confirmCancel {
-		return renderConfirmBox(jl.theme,
-			"Cancel Build",
-			fmt.Sprintf("Stop build #%d?", jl.confirmCancelNum),
-			jl.confirmCancelYes,
-		)
-	}
-	return ""
+	return jl.host.PopupView()
 }
 
 func (jl *JobList) Title() string {
@@ -758,30 +650,16 @@ func (jl *JobList) Shortcuts() []component.Shortcut {
 		if selected.LastBuild != nil {
 			sc = append(sc, component.Shortcut{Key: "l", Action: "log"})
 			sc = append(sc, component.Shortcut{Key: "d", Action: "describe"})
-			if jl.store != nil {
-				key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
-				if entry := jl.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-					badge := renderTestBadge(jl.theme, entry.Value)
-					sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
-				}
-				if entry := jl.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-					sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
-				}
-			}
 		}
-		sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
-		if selected.LastBuild != nil {
-			bs := jenkins.ColorToBuildStatus(selected.Color)
-			if bs == jenkins.BuildStatusRunning {
-				sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
-			}
-		}
+		// T/A/t/x come from behaviors; their shortcut gates already check
+		// container/LastBuild/cache presence and running status.
+		sc = jl.host.AppendShortcuts(sc)
 	}
 	return sc
 }
 
 func (jl *JobList) HasPopup() bool {
-	return jl.confirmTrigger || jl.confirmCancel || jl.paramForm != nil
+	return jl.host.HasPopup()
 }
 
 func (jl *JobList) Close() error {
@@ -812,6 +690,7 @@ func (jl *JobList) SetSize(width, height int) {
 	}
 	jl.table.SetColumnWidth(0, nameWidth)
 	jl.table.SetSize(width, height)
+	jl.host.SetSize(width, height-6)
 }
 
 // NC returns the NavigationContext for this job list. Used by app.go to

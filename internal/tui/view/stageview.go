@@ -63,19 +63,17 @@ type buildDetailMsg struct {
 
 // StageView shows the pipeline stages of a single build.
 type StageView struct {
-	theme         theme.Theme
-	table         component.Table
-	client        jenkins.JenkinsClient
-	nc            NavigationContext
-	build         jenkins.Build
-	stages        []jenkins.Stage
-	confirmCancel bool
-	confirmYes    bool
-	width         int
-	height        int
-	ctx           context.Context
-	cancel        context.CancelFunc
-	progressBar   component.ProgressBar
+	theme       theme.Theme
+	table       component.Table
+	client      jenkins.JenkinsClient
+	nc          NavigationContext
+	build       jenkins.Build
+	stages      []jenkins.Stage
+	width       int
+	height      int
+	ctx         context.Context
+	cancel      context.CancelFunc
+	progressBar component.ProgressBar
 
 	// Inline log preview panel (stage-specific logs + console fallback).
 	preview *PreviewPanel
@@ -129,15 +127,11 @@ type StageView struct {
 
 	store *cache.Store
 
-	// Test results and artifacts for the current build. Fetched after build completes.
-	testResult      *jenkins.TestReport
-	artifacts       []jenkins.Artifact
-	artifactsLoaded bool
-
-	// Trigger build dialog state.
-	confirmTrigger bool
-	triggerYes     bool
-	paramForm      *component.ParamForm
+	// Cross-cutting concerns (trigger / cancel / test-open / artifact-open)
+	// are owned by behaviors registered on host. The trigger machinery lives
+	// in triggerMixin; the behavior wrapper delegates host-callable parts.
+	trigger triggerMixin
+	host    behaviorHost
 }
 
 func NewStageView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, nc NavigationContext, build jenkins.Build) *StageView {
@@ -147,7 +141,7 @@ func NewStageView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Stor
 		{Title: "STATUS", Width: colStageStatusWidth},
 		{Title: "DURATION", Width: colStageDurationWidth},
 	}
-	return &StageView{
+	sv := &StageView{
 		theme:         t,
 		table:         component.NewTable(t, columns),
 		client:        client,
@@ -159,7 +153,17 @@ func NewStageView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Stor
 		progressBar:   component.NewProgressBar(t),
 		preview:       NewPreviewPanel(t, client, store, ctx, nc),
 		autoFollowing: true,
+		trigger:       newTriggerMixin(t, client, nc),
 	}
+	sv.registerBehaviors()
+	return sv
+}
+
+// registerBehaviors wires the four fixed-build cross-cutting concerns
+// (artifact, test, cancel, trigger) onto this view's host. Called by both
+// stage-view constructors so the wiring lives in one place.
+func (sv *StageView) registerBehaviors() {
+	addFixedBuildActions(&sv.host, sv.theme, sv.client, &sv.nc, &sv.build, &sv.store, &sv.trigger)
 }
 
 // NewPendingStageView creates a StageView that waits for Jenkins to create
@@ -174,7 +178,7 @@ func NewPendingStageView(t theme.Theme, client jenkins.JenkinsClient, store *cac
 	}
 	pendingNC := nc
 	pendingNC.Build = NavBuildRef{}
-	return &StageView{
+	sv := &StageView{
 		theme:          t,
 		table:          component.NewTable(t, columns),
 		client:         client,
@@ -188,7 +192,10 @@ func NewPendingStageView(t theme.Theme, client jenkins.JenkinsClient, store *cac
 		autoFollowing:  true,
 		pending:        true,
 		lastKnownBuild: lastKnownBuild,
+		trigger:        newTriggerMixin(t, client, pendingNC),
 	}
+	sv.registerBehaviors()
+	return sv
 }
 
 // SetStages pre-populates stages without fetching, used when stages
@@ -474,6 +481,10 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if handled, cmd := sv.preview.HandleMsg(msg); handled {
 		return sv, cmd
 	}
+	// Behaviors process trigger / artifact / test / cancel messages.
+	if handled, cmd := sv.host.HandleMsg(msg); handled {
+		return sv, cmd
+	}
 
 	switch msg := msg.(type) {
 	case ThemeChangedMsg:
@@ -481,9 +492,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sv.table.SetTheme(msg.Theme)
 		sv.progressBar.SetTheme(msg.Theme)
 		sv.preview.SetTheme(msg.Theme)
-		if sv.paramForm != nil {
-			sv.paramForm.SetTheme(msg.Theme)
-		}
+		sv.host.SetTheme(msg.Theme)
 		sv.populateTable()
 		return sv, nil
 
@@ -676,19 +685,6 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sv.populateTable()
 		return sv, nil
 
-	case TestReportMsg:
-		if msg.Err == nil && msg.JobPath == sv.nc.JobPath() && msg.BuildNum == sv.build.Number {
-			sv.testResult = msg.Report
-		}
-		return sv, nil
-
-	case ArtifactsMsg:
-		if msg.Err == nil && msg.JobPath == sv.nc.JobPath() && msg.BuildNum == sv.build.Number {
-			sv.artifacts = msg.Artifacts
-			sv.artifactsLoaded = true
-		}
-		return sv, nil
-
 	case buildDetailMsg:
 		if msg.err != nil {
 			return sv, nil
@@ -713,30 +709,6 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// smoothly instead of disappearing and reappearing.
 		return sv, sv.scheduleRefresh()
 
-	case JobParamsMsg:
-		if msg.Err != nil {
-			return sv, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
-		}
-		if len(msg.Params) == 0 {
-			sv.confirmTrigger = true
-			sv.triggerYes = false
-			return sv, nil
-		}
-		form := component.NewParamForm(sv.theme, msg.Params)
-		form.SetSize(sv.width, sv.height-6)
-		sv.paramForm = &form
-		return sv, nil
-
-	case TriggerBuildResultMsg:
-		if msg.Err != nil {
-			return sv, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
-		}
-		lastKnown := sv.build.Number
-		nc := sv.nc.AtScope()
-		return sv, func() tea.Msg {
-			return OpenTriggeredBuildMsg{NC: nc, LastKnownBuild: lastKnown}
-		}
-
 	case BuildCompletedMsg:
 		// The RunningBuildsMonitor delivers this within ~1s of the build
 		// leaving the running set. It's a defence-in-depth signal so the
@@ -753,62 +725,10 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return sv, nil
 
 	case tea.KeyMsg:
-		if sv.paramForm != nil {
-			result := sv.paramForm.Update(msg)
-			switch result.Status {
-			case component.ParamFormDone:
-				sv.paramForm = nil
-				return sv, triggerBuild(sv.client, sv.nc, result.Values)
-			case component.ParamFormCancelled:
-				sv.paramForm = nil
-			}
-			return sv, nil
-		}
-
-		if sv.confirmTrigger {
-			switch msg.String() {
-			case "left", "right", "h":
-				sv.triggerYes = !sv.triggerYes
-			case "y":
-				sv.confirmTrigger = false
-				return sv, triggerBuild(sv.client, sv.nc, nil)
-			case "enter":
-				if sv.triggerYes {
-					sv.confirmTrigger = false
-					return sv, triggerBuild(sv.client, sv.nc, nil)
-				}
-				sv.confirmTrigger = false
-			default:
-				sv.confirmTrigger = false
-			}
-			return sv, nil
-		}
-
-		if sv.confirmCancel {
-			switch msg.String() {
-			case "left", "right", "h":
-				sv.confirmYes = !sv.confirmYes
-			case "y":
-				sv.confirmCancel = false
-				jobPath, number := sv.nc.JobPath(), sv.build.Number
-				return sv, func() tea.Msg {
-					err := sv.client.CancelBuild(context.Background(), jobPath, number)
-					return CancelBuildResultMsg{Err: err}
-				}
-			case "enter":
-				if sv.confirmYes {
-					sv.confirmCancel = false
-					jobPath, number := sv.nc.JobPath(), sv.build.Number
-					return sv, func() tea.Msg {
-						err := sv.client.CancelBuild(context.Background(), jobPath, number)
-						return CancelBuildResultMsg{Err: err}
-					}
-				}
-				sv.confirmCancel = false
-			default:
-				sv.confirmCancel = false
-			}
-			return sv, nil
+		// Behaviors handle trigger param form, trigger confirm, cancel confirm,
+		// and the T/A/x/t shortcuts before falling through to view-local keys.
+		if handled, cmd := sv.host.HandleKey(msg); handled {
+			return sv, cmd
 		}
 
 		prevCursor := sv.table.Cursor()
@@ -862,28 +782,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return SwapViewMsg{View: NewDescribeView(sv.theme, sv.client, sv.store, nc, build)}
 			}
 		case "t":
-			return sv, fetchJobParams(sv.client, sv.nc)
-		case "T":
-			if sv.testResult != nil && len(sv.testResult.Suites) > 0 {
-				nc := sv.nc
-				build := sv.build
-				child := NewTestReportView(sv.theme, *sv.testResult, nc, build, sv.client, sv.store)
-				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
-			}
-		case "A":
-			if len(sv.artifacts) == 1 {
-				return sv, openURLCmd(sv.artifacts[0].URL)
-			} else if len(sv.artifacts) > 1 {
-				nc := sv.nc
-				build := sv.build
-				child := NewArtifactView(sv.theme, sv.artifacts, nc, build, sv.client, sv.store)
-				return sv, func() tea.Msg { return SwapViewMsg{View: child} }
-			}
-		case "x":
-			if sv.build.Status == jenkins.BuildStatusRunning {
-				sv.confirmCancel = true
-				sv.confirmYes = false
-			}
+			return sv, sv.trigger.startTrigger(sv.build.Number)
 		}
 		// If cursor moved by user input, update auto-follow state and preview.
 		// Auto-follow only stays on when the user lands on the exact stage
@@ -1333,24 +1232,7 @@ func (sv *StageView) View() string {
 }
 
 func (sv *StageView) PopupView() string {
-	if sv.paramForm != nil {
-		return sv.paramForm.View()
-	}
-	if sv.confirmTrigger {
-		return renderConfirmBox(sv.theme,
-			"Trigger Build",
-			fmt.Sprintf("Start a new build of %s?", decodeName(sv.nc.ProjectName)),
-			sv.triggerYes,
-		)
-	}
-	if sv.confirmCancel {
-		return renderConfirmBox(sv.theme,
-			"Cancel Build",
-			fmt.Sprintf("Stop build #%d?", sv.build.Number),
-			sv.confirmYes,
-		)
-	}
-	return ""
+	return sv.host.PopupView()
 }
 
 // renderFinishedBar renders a static full-width bar for a completed build.
@@ -1415,17 +1297,10 @@ func (sv *StageView) Shortcuts() []component.Shortcut {
 		component.Shortcut{Key: "l", Action: "full log"},
 		component.Shortcut{Key: "d", Action: "describe"},
 	)
-	if sv.testResult != nil {
-		badge := renderTestBadge(sv.theme, sv.testResult)
-		sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
-	}
-	if len(sv.artifacts) > 0 {
-		sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(sv.artifacts)})
-	}
-	sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
-	if sv.build.Status == jenkins.BuildStatusRunning && !sv.pending {
-		sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
-	}
+	// Behaviors append: T (tests), A (artifacts), x (cancel — when running),
+	// t (trigger). cancelBehavior's canCancel() already gates on Running, so
+	// the previous `!sv.pending` guard is preserved implicitly.
+	sc = sv.host.AppendShortcuts(sc)
 	return sc
 }
 
@@ -1453,6 +1328,7 @@ func (sv *StageView) SetSize(width, height int) {
 		tableHeight = 1
 	}
 	sv.table.SetSize(width, tableHeight)
+	sv.host.SetSize(width, height-6)
 }
 
 // SetPreviewSize implements PreviewProvider.
@@ -1569,7 +1445,7 @@ func (sv *StageView) PreviewBadge() string {
 }
 
 func (sv *StageView) HasPopup() bool {
-	return sv.confirmCancel || sv.confirmTrigger || sv.paramForm != nil
+	return sv.host.HasPopup()
 }
 
 func (sv *StageView) NC() NavigationContext { return sv.nc }

@@ -56,6 +56,7 @@ type DescribeView struct {
 	scriptLV LogViewer
 
 	trigger triggerMixin
+	host    behaviorHost
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
@@ -64,7 +65,7 @@ type DescribeView struct {
 // Script and parameters are always fetched fresh from the Jenkins API.
 func NewDescribeView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, nc NavigationContext, build jenkins.Build) *DescribeView {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &DescribeView{
+	dv := &DescribeView{
 		theme:       t,
 		client:      client,
 		store:       store,
@@ -76,6 +77,12 @@ func NewDescribeView(t theme.Theme, client jenkins.JenkinsClient, store *cache.S
 		ctx:         ctx,
 		cancel:      cancel,
 	}
+	access := fixedBuildAccessor(&dv.nc, &dv.build)
+	storeFn := func() *cache.Store { return dv.store }
+	dv.host.Add(newTestReportBehavior(t, client, storeFn, access, swapTo))
+	dv.host.Add(newArtifactBehavior(t, client, storeFn, access, swapTo))
+	dv.host.Add(newTriggerBehavior(&dv.trigger))
+	return dv
 }
 
 func (dv *DescribeView) Init() tea.Cmd {
@@ -163,14 +170,14 @@ func (dv *DescribeView) SearchQuery() string {
 }
 
 func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if handled, cmd := dv.trigger.handleMsg(msg); handled {
+	if handled, cmd := dv.host.HandleMsg(msg); handled {
 		return dv, cmd
 	}
 
 	switch msg := msg.(type) {
 	case ThemeChangedMsg:
 		dv.theme = msg.Theme
-		dv.trigger.setTheme(msg.Theme)
+		dv.host.SetTheme(msg.Theme)
 		dv.scriptLV.theme = msg.Theme
 		dv.buildParamLines()
 		dv.buildScriptLines()
@@ -207,7 +214,7 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return dv, dv.trigger.startTrigger(msg.latestBuild)
 
 	case tea.KeyMsg:
-		if handled, cmd := dv.trigger.handleKey(msg); handled {
+		if handled, cmd := dv.host.HandleKey(msg); handled {
 			return dv, cmd
 		}
 		maxOffset := max(0, len(dv.scriptLV.lines)-dv.scriptLV.contentHeight())
@@ -245,25 +252,6 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cv.build = build
 				cv.store = dv.store
 				return SwapViewMsg{View: cv}
-			}
-		case "T":
-			if dv.store != nil {
-				key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
-				if entry := dv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-					child := NewTestReportView(dv.theme, *entry.Value, dv.nc, dv.build, dv.client, dv.store)
-					return dv, func() tea.Msg { return SwapViewMsg{View: child} }
-				}
-			}
-		case "A":
-			if dv.store != nil {
-				key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
-				if entry := dv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-					if len(entry.Value) == 1 {
-						return dv, openURLCmd(entry.Value[0].URL)
-					}
-					child := NewArtifactView(dv.theme, entry.Value, dv.nc, dv.build, dv.client, dv.store)
-					return dv, func() tea.Msg { return SwapViewMsg{View: child} }
-				}
 			}
 		case "w", "W":
 			dv.scriptLV.wrap = !dv.scriptLV.wrap
@@ -374,7 +362,7 @@ func (dv *DescribeView) PreviewView() string {
 }
 
 func (dv *DescribeView) PopupView() string {
-	return dv.trigger.popupView()
+	return dv.host.PopupView()
 }
 
 // SetPreviewSize implements PreviewProvider.
@@ -435,20 +423,8 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 		{Key: "s", Action: "stages"},
 		{Key: "l", Action: "full log"},
 	}
-	if dv.store != nil {
-		key := fmt.Sprintf("%s:%d", dv.nc.JobPath(), dv.build.Number)
-		if entry := dv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-			badge := renderTestBadge(dv.theme, entry.Value)
-			shortcuts = append(shortcuts, component.Shortcut{Key: "T", Action: "tests: " + badge})
-		}
-		if entry := dv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
-		}
-	}
-	shortcuts = append(shortcuts,
-		component.Shortcut{Key: "e", Action: "edit"},
-		component.Shortcut{Key: "t", Action: "trigger"},
-	)
+	shortcuts = append(shortcuts, component.Shortcut{Key: "e", Action: "edit"})
+	shortcuts = dv.host.AppendShortcuts(shortcuts)
 	if dv.scriptLV.searchRe != nil {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
 	}
@@ -458,7 +434,7 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 func (dv *DescribeView) SetSize(w, h int) {
 	dv.width = w
 	dv.height = h
-	dv.trigger.setSize(w, h-6)
+	dv.host.SetSize(w, h-6)
 	if maxOff := max(0, len(dv.paramLines)-dv.height); dv.paramOffset > maxOff {
 		dv.paramOffset = maxOff
 	}
@@ -477,7 +453,7 @@ func (dv *DescribeView) Close() error {
 func (dv *DescribeView) NC() NavigationContext { return dv.nc }
 
 func (dv *DescribeView) HasPopup() bool {
-	return dv.trigger.hasPopup()
+	return dv.host.HasPopup()
 }
 
 func (dv *DescribeView) ParentView(t theme.Theme, c jenkins.JenkinsClient, s *cache.Store) View {

@@ -39,6 +39,7 @@ type StageLogView struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	trigger      triggerMixin
+	host         behaviorHost
 	copyLogFlash bool
 	copySelFlash bool
 	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
@@ -58,7 +59,7 @@ func (sl *StageLogView) SetScopedParent(scope NavigationContext, slowInterval ti
 
 func NewStageLogView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool) *StageLogView {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &StageLogView{
+	sl := &StageLogView{
 		lv:           LogViewer{theme: t},
 		client:       client,
 		store:        store,
@@ -70,6 +71,8 @@ func NewStageLogView(t theme.Theme, client jenkins.JenkinsClient, store *cache.S
 		cancel:       cancel,
 		trigger:      newTriggerMixin(t, client, nc),
 	}
+	sl.host.Add(newTriggerBehavior(&sl.trigger))
+	return sl
 }
 
 // NewStageLogViewWithBuild is like NewStageLogView but also stores the build
@@ -152,7 +155,7 @@ func (sl *StageLogView) pollLogs() tea.Cmd {
 }
 
 func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if handled, cmd := sl.trigger.handleMsg(msg); handled {
+	if handled, cmd := sl.host.HandleMsg(msg); handled {
 		return sl, cmd
 	}
 
@@ -181,7 +184,7 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ThemeChangedMsg:
 		sl.lv.theme = msg.Theme
-		sl.trigger.setTheme(msg.Theme)
+		sl.host.SetTheme(msg.Theme)
 		return sl, nil
 
 	case ConnectionRestoredMsg:
@@ -230,7 +233,7 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return sl, nil
 
 	case tea.KeyMsg:
-		if handled, cmd := sl.trigger.handleKey(msg); handled {
+		if handled, cmd := sl.host.HandleKey(msg); handled {
 			return sl, cmd
 		}
 		maxOffset := max(0, len(sl.lv.lines)-sl.lv.contentHeight())
@@ -311,7 +314,7 @@ func (sl *StageLogView) View() string {
 }
 
 func (sl *StageLogView) PopupView() string {
-	return sl.trigger.popupView()
+	return sl.host.PopupView()
 }
 
 func (sl *StageLogView) Title() string {
@@ -328,7 +331,7 @@ func (sl *StageLogView) ItemCount() int {
 
 func (sl *StageLogView) SetSize(w, h int) {
 	sl.lv.SetSize(w, h)
-	sl.trigger.setSize(w, h-6)
+	sl.host.SetSize(w, h-6)
 }
 
 func (sl *StageLogView) Commands() []command.Command {
@@ -347,9 +350,9 @@ func (sl *StageLogView) Shortcuts() []component.Shortcut {
 		{Key: "w", Action: wrapLabel},
 		{Key: "c", Action: sl.lv.logLabel(), Active: sl.copyLogFlash},
 		{Key: "d", Action: "describe"},
-		{Key: "t", Action: "trigger"},
-		{Key: "g/G", Action: "top/bottom"},
 	}
+	shortcuts = sl.host.AppendShortcuts(shortcuts)
+	shortcuts = append(shortcuts, component.Shortcut{Key: "g/G", Action: "top/bottom"})
 	if sl.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: sl.lv.selLabel(), Active: sl.copySelFlash})
 	}
@@ -362,7 +365,7 @@ func (sl *StageLogView) Shortcuts() []component.Shortcut {
 }
 
 func (sl *StageLogView) HasPopup() bool {
-	return sl.trigger.hasPopup()
+	return sl.host.HasPopup()
 }
 
 func (sl *StageLogView) NC() NavigationContext { return sl.nc }

@@ -35,6 +35,7 @@ type ConsoleView struct {
 	build        jenkins.Build
 	store        *cache.Store
 	trigger      triggerMixin
+	host         behaviorHost
 	copyLogFlash bool
 	copySelFlash bool
 	// scopedParent, when set, overrides ParentView to return a fresh MyBuildsView
@@ -54,7 +55,7 @@ func (cv *ConsoleView) SetScopedParent(scope NavigationContext, slowInterval tim
 
 func NewConsoleView(t theme.Theme, client jenkins.JenkinsClient, nc NavigationContext) *ConsoleView {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &ConsoleView{
+	cv := &ConsoleView{
 		lv:      LogViewer{theme: t},
 		client:  client,
 		nc:      nc,
@@ -62,6 +63,13 @@ func NewConsoleView(t theme.Theme, client jenkins.JenkinsClient, nc NavigationCo
 		cancel:  cancel,
 		trigger: newTriggerMixin(t, client, nc),
 	}
+	// build is set lazily by callers; fixedBuildAccessor falls back to nc.Build.Number.
+	access := fixedBuildAccessor(&cv.nc, &cv.build)
+	storeFn := func() *cache.Store { return cv.store }
+	cv.host.Add(newTestReportBehavior(t, client, storeFn, access, swapTo))
+	cv.host.Add(newArtifactBehavior(t, client, storeFn, access, swapTo))
+	cv.host.Add(newTriggerBehavior(&cv.trigger))
+	return cv
 }
 
 // NewConsoleViewSeeded creates a ConsoleView pre-populated with lines already
@@ -128,7 +136,7 @@ func (cv *ConsoleView) appendRawLines(newLines []string) {
 }
 
 func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if handled, cmd := cv.trigger.handleMsg(msg); handled {
+	if handled, cmd := cv.host.HandleMsg(msg); handled {
 		return cv, cmd
 	}
 
@@ -157,7 +165,7 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ThemeChangedMsg:
 		cv.lv.theme = msg.Theme
-		cv.trigger.setTheme(msg.Theme)
+		cv.host.SetTheme(msg.Theme)
 		return cv, nil
 
 	case consoleChunkMsg:
@@ -184,7 +192,7 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return cv, nil
 
 	case tea.KeyMsg:
-		if handled, cmd := cv.trigger.handleKey(msg); handled {
+		if handled, cmd := cv.host.HandleKey(msg); handled {
 			return cv, cmd
 		}
 		maxOffset := max(0, len(cv.lv.lines)-cv.lv.contentHeight())
@@ -241,25 +249,6 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return cv, func() tea.Msg {
 				return SwapViewMsg{View: NewDescribeView(cv.lv.theme, cv.client, cv.store, nc, build)}
 			}
-		case "T":
-			if cv.store != nil {
-				key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
-				if entry := cv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-					child := NewTestReportView(cv.lv.theme, *entry.Value, cv.nc, cv.build, cv.client, cv.store)
-					return cv, func() tea.Msg { return SwapViewMsg{View: child} }
-				}
-			}
-		case "A":
-			if cv.store != nil {
-				key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
-				if entry := cv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-					if len(entry.Value) == 1 {
-						return cv, openURLCmd(entry.Value[0].URL)
-					}
-					child := NewArtifactView(cv.lv.theme, entry.Value, cv.nc, cv.build, cv.client, cv.store)
-					return cv, func() tea.Msg { return SwapViewMsg{View: child} }
-				}
-			}
 		case "t":
 			buildNum := cv.build.Number
 			if buildNum == 0 {
@@ -303,7 +292,7 @@ func (cv *ConsoleView) View() string {
 }
 
 func (cv *ConsoleView) PopupView() string {
-	return cv.trigger.popupView()
+	return cv.host.PopupView()
 }
 
 func (cv *ConsoleView) Title() string {
@@ -320,7 +309,7 @@ func (cv *ConsoleView) ItemCount() int {
 
 func (cv *ConsoleView) SetSize(w, h int) {
 	cv.lv.SetSize(w, h)
-	cv.trigger.setSize(w, h-6)
+	cv.host.SetSize(w, h-6)
 }
 
 func (cv *ConsoleView) Commands() []command.Command {
@@ -344,21 +333,11 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 		{Key: "s", Action: "stages"},
 		{Key: "d", Action: "describe"},
 	}
-	if cv.store != nil {
-		key := fmt.Sprintf("%s:%d", cv.nc.JobPath(), cv.nc.Build.Number)
-		if entry := cv.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-			badge := renderTestBadge(cv.lv.theme, entry.Value)
-			shortcuts = append(shortcuts, component.Shortcut{Key: "T", Action: "tests: " + badge})
-		}
-		if entry := cv.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-			shortcuts = append(shortcuts, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
-		}
-	}
 	shortcuts = append(shortcuts,
 		component.Shortcut{Key: "p", Action: pipelineLabel},
 		component.Shortcut{Key: "c", Action: cv.lv.logLabel(), Active: cv.copyLogFlash},
-		component.Shortcut{Key: "t", Action: "trigger"},
 	)
+	shortcuts = cv.host.AppendShortcuts(shortcuts)
 	if cv.lv.selectionInLog {
 		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash})
 	}
@@ -371,7 +350,7 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 func (cv *ConsoleView) NC() NavigationContext { return cv.nc }
 
 func (cv *ConsoleView) HasPopup() bool {
-	return cv.trigger.hasPopup()
+	return cv.host.HasPopup()
 }
 
 func (cv *ConsoleView) Close() error {

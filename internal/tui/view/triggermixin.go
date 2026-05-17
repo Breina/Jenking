@@ -12,12 +12,16 @@ import (
 
 // triggerMixin encapsulates trigger-dialog state for views that support 't' to trigger.
 // Embed this struct and delegate JobParamsMsg / TriggerBuildResultMsg / key events to it.
+//
+// The confirm dialog is owned by the shared confirmDialog helper. The mixin updates
+// its `nc` from each incoming JobParamsMsg, so list-style views (joblist) whose target
+// changes per row work without any extra wiring beyond calling fetchJobParams with the
+// row-aware NC.
 type triggerMixin struct {
 	client         jenkins.JenkinsClient
 	nc             NavigationContext
 	paramForm      *component.ParamForm
-	confirmDialog  bool
-	confirmYes     bool
+	dialog         confirmDialog
 	theme          theme.Theme
 	maxWidth       int
 	maxHeight      int
@@ -55,33 +59,41 @@ func (tm *triggerMixin) startTrigger(lastKnownBuild int) tea.Cmd {
 	return fetchJobParams(tm.client, tm.nc)
 }
 
+// startTriggerFor is like startTrigger but updates the target NC first. Use this
+// from list-style views where the target job depends on the current cursor row.
+func (tm *triggerMixin) startTriggerFor(nc NavigationContext, lastKnownBuild int) tea.Cmd {
+	tm.nc = nc
+	return tm.startTrigger(lastKnownBuild)
+}
+
 // startReplay opens a confirm dialog to replay sourceBuild using script.
-// lastKnown is the current latest build number used for pending-build polling.
 func (tm *triggerMixin) startReplay(lastKnown, sourceBuild int, script string) tea.Cmd {
 	tm.lastKnownBuild = lastKnown
 	tm.replaySourceBuild = sourceBuild
 	tm.replayScript = script
-	tm.confirmDialog = true
-	tm.confirmYes = false
+	tm.dialog.Open()
 	return nil
 }
 
 // hasPopup reports whether a trigger dialog or param form is currently shown.
 func (tm *triggerMixin) hasPopup() bool {
-	return tm.paramForm != nil || tm.confirmDialog
+	return tm.paramForm != nil || tm.dialog.IsOpen()
 }
 
 // handleMsg processes JobParamsMsg and TriggerBuildResultMsg.
-// Returns (handled, cmd); if handled is false the caller must process msg itself.
 func (tm *triggerMixin) handleMsg(msg tea.Msg) (bool, tea.Cmd) {
 	switch msg := msg.(type) {
 	case JobParamsMsg:
 		if msg.Err != nil {
 			return true, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
 		}
+		// Sync nc to whichever job the params actually came from. For fixed-NC
+		// views this is a no-op; for list views it makes the confirm/trigger
+		// target the right row even if the user moved the cursor while the
+		// fetch was in flight.
+		tm.nc = msg.NC
 		if len(msg.Params) == 0 {
-			tm.confirmDialog = true
-			tm.confirmYes = false
+			tm.dialog.Open()
 			return true, nil
 		}
 		form := component.NewParamForm(tm.theme, msg.Params)
@@ -105,7 +117,6 @@ func (tm *triggerMixin) handleMsg(msg tea.Msg) (bool, tea.Cmd) {
 }
 
 // handleKey handles key events while a dialog is active.
-// Returns (handled, cmd); if handled is false the caller must process the key.
 func (tm *triggerMixin) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	if tm.paramForm != nil {
 		result := tm.paramForm.Update(msg)
@@ -118,21 +129,9 @@ func (tm *triggerMixin) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		return true, nil
 	}
-	if tm.confirmDialog {
-		switch msg.String() {
-		case "left", "right", "h":
-			tm.confirmYes = !tm.confirmYes
-		case "y":
-			tm.confirmDialog = false
+	if tm.dialog.IsOpen() {
+		if tm.dialog.Update(msg) {
 			return true, tm.confirmAction()
-		case "enter":
-			if tm.confirmYes {
-				tm.confirmDialog = false
-				return true, tm.confirmAction()
-			}
-			tm.confirmDialog = false
-		default:
-			tm.confirmDialog = false
 		}
 		return true, nil
 	}
@@ -150,17 +149,13 @@ func (tm *triggerMixin) confirmAction() tea.Cmd {
 	return triggerBuild(tm.client, tm.nc, nil)
 }
 
-// popupView returns the rendered popup box (unpositioned), or "" when no popup is active.
+// popupView returns the rendered popup body (unpositioned), or "" when no popup is active.
 func (tm *triggerMixin) popupView() string {
 	if tm.paramForm != nil {
 		return tm.paramForm.View()
 	}
-	if tm.confirmDialog {
-		return renderConfirmBox(tm.theme,
-			"Trigger Build",
-			fmt.Sprintf("Start a new build of %s?", decodeName(tm.nc.ProjectName)),
-			tm.confirmYes,
-		)
-	}
-	return ""
+	return tm.dialog.View(tm.theme,
+		"Trigger Build",
+		fmt.Sprintf("Start a new build of %s?", decodeName(tm.nc.ProjectName)),
+	)
 }

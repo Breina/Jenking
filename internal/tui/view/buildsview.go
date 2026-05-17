@@ -35,13 +35,8 @@ type BuildsView struct {
 	searchRe       *regexp.Regexp
 	flexColIdx     int // index of the flexible (JOB) column, or -1 if none
 	fixedColsWidth int // sum of all non-flexible col widths + padding for all cols
-	// dialog state
-	confirmCancel  bool
-	confirmYes     bool
-	confirmBuild   UnifiedBuild
-	confirmTrigger bool
-	triggerYes     bool
-	paramForm      *component.ParamForm
+	trigger        triggerMixin
+	host           behaviorHost
 	// lazy fetch tracking
 	lastFetchedKey string
 }
@@ -68,7 +63,7 @@ func NewBuildsView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Sto
 		fixedColsWidth += col.Width + 2
 	}
 	fixedColsWidth += 2 // padding for REF column itself
-	return &BuildsView{
+	bv := &BuildsView{
 		theme:          t,
 		table:          component.NewTable(t, columns),
 		provider:       provider,
@@ -81,6 +76,25 @@ func NewBuildsView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Sto
 		flexColIdx:     0,
 		fixedColsWidth: fixedColsWidth,
 	}
+	// Row-aware accessor: returns the currently selected build's NC + Build.
+	access := func() (NavigationContext, jenkins.Build, bool) {
+		builds := bv.provider.Builds()
+		di := bv.dataIndex(bv.table.Cursor())
+		if di < 0 || di >= len(builds) {
+			return NavigationContext{}, jenkins.Build{}, false
+		}
+		selected := builds[di]
+		return bv.ncForSelected(selected).AtBuild(selected.Number), selected.Build, true
+	}
+	storeFn := func() *cache.Store { return bv.store }
+	bv.trigger = newTriggerMixin(t, client, nc)
+	bv.host.Add(newTestReportBehavior(t, client, storeFn, access, pushTo))
+	bv.host.Add(newArtifactBehavior(t, client, storeFn, access, pushTo))
+	bv.host.Add(newCancelBehavior(t, client, access))
+	bv.host.Add(newTriggerBehavior(&bv.trigger).WithShortcutGate(func() bool {
+		return bv.provider.Config().CanTrigger
+	}))
+	return bv
 }
 
 func (bv *BuildsView) ApplySearch(pattern string) error {
@@ -192,14 +206,32 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return bv, tea.Batch(append(cmds, bv.maybeFetchSelected())...)
 	}
 
+	// TriggerBuildResultMsg is intercepted before the host's triggerBehavior
+	// can emit OpenTriggeredBuildMsg, because BuildsView pushes its own
+	// PendingStageView instead of going through the app-level open flow.
+	if tr, ok := msg.(TriggerBuildResultMsg); ok {
+		if tr.Err != nil {
+			return bv, func() tea.Msg { return ErrorMsg{Err: tr.Err} }
+		}
+		builds := bv.provider.Builds()
+		lastKnown := 0
+		if len(builds) > 0 {
+			lastKnown = builds[0].Number
+		}
+		sv := NewPendingStageView(bv.theme, bv.client, bv.store, bv.nc, lastKnown)
+		return bv, func() tea.Msg { return PushViewMsg{View: sv} }
+	}
+
+	if handled, cmd := bv.host.HandleMsg(msg); handled {
+		return bv, cmd
+	}
+
 	switch msg := msg.(type) {
 	case ThemeChangedMsg:
 		bv.theme = msg.Theme
 		bv.table.SetTheme(msg.Theme)
 		bv.progressBar.SetTheme(msg.Theme)
-		if bv.paramForm != nil {
-			bv.paramForm.SetTheme(msg.Theme)
-		}
+		bv.host.SetTheme(msg.Theme)
 		bv.populateTable()
 		return bv, nil
 
@@ -209,89 +241,9 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return bv, bv.provider.Refresh()
 
-	case JobParamsMsg:
-		if msg.Err != nil {
-			return bv, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
-		}
-		if len(msg.Params) == 0 {
-			bv.confirmTrigger = true
-			bv.triggerYes = false
-			return bv, nil
-		}
-		form := component.NewParamForm(bv.theme, msg.Params)
-		form.SetSize(bv.width, bv.height-6)
-		bv.paramForm = &form
-		return bv, nil
-
-	case TriggerBuildResultMsg:
-		if msg.Err != nil {
-			return bv, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
-		}
-		builds := bv.provider.Builds()
-		lastKnown := 0
-		if len(builds) > 0 {
-			lastKnown = builds[0].Number
-		}
-		sv := NewPendingStageView(bv.theme, bv.client, bv.store, bv.nc, lastKnown)
-		return bv, func() tea.Msg { return PushViewMsg{View: sv} }
-
 	case tea.KeyMsg:
-		if bv.paramForm != nil {
-			result := bv.paramForm.Update(msg)
-			switch result.Status {
-			case component.ParamFormDone:
-				bv.paramForm = nil
-				return bv, triggerBuild(bv.client, bv.nc, result.Values)
-			case component.ParamFormCancelled:
-				bv.paramForm = nil
-			}
-			return bv, nil
-		}
-
-		if bv.confirmTrigger {
-			switch msg.String() {
-			case "left", "right", "h":
-				bv.triggerYes = !bv.triggerYes
-			case "y":
-				bv.confirmTrigger = false
-				return bv, triggerBuild(bv.client, bv.nc, nil)
-			case "enter":
-				if bv.triggerYes {
-					bv.confirmTrigger = false
-					return bv, triggerBuild(bv.client, bv.nc, nil)
-				}
-				bv.confirmTrigger = false
-			default:
-				bv.confirmTrigger = false
-			}
-			return bv, nil
-		}
-
-		if bv.confirmCancel {
-			switch msg.String() {
-			case "left", "right", "h":
-				bv.confirmYes = !bv.confirmYes
-			case "y":
-				bv.confirmCancel = false
-				jobPath, number := bv.confirmBuild.JobPath, bv.confirmBuild.Number
-				return bv, func() tea.Msg {
-					err := bv.client.CancelBuild(context.Background(), jobPath, number)
-					return CancelBuildResultMsg{Err: err}
-				}
-			case "enter":
-				if bv.confirmYes {
-					bv.confirmCancel = false
-					jobPath, number := bv.confirmBuild.JobPath, bv.confirmBuild.Number
-					return bv, func() tea.Msg {
-						err := bv.client.CancelBuild(context.Background(), jobPath, number)
-						return CancelBuildResultMsg{Err: err}
-					}
-				}
-				bv.confirmCancel = false
-			default:
-				bv.confirmCancel = false
-			}
-			return bv, nil
+		if handled, cmd := bv.host.HandleKey(msg); handled {
+			return bv, cmd
 		}
 
 		cfg := bv.provider.Config()
@@ -336,36 +288,11 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "t":
 			if cfg.CanTrigger {
-				return bv, fetchJobParams(bv.client, bv.nc)
-			}
-		case "T":
-			di := bv.dataIndex(bv.table.Cursor())
-			if di >= 0 && di < len(builds) {
-				selected := builds[di]
-				if selected.TestResult != nil && len(selected.TestResult.Suites) > 0 {
-					child := NewTestReportView(bv.theme, *selected.TestResult, bv.nc.AtBuild(selected.Number), selected.Build, bv.client, bv.store)
-					return bv, func() tea.Msg { return PushViewMsg{View: child} }
+				lastKnown := 0
+				if len(builds) > 0 {
+					lastKnown = builds[0].Number
 				}
-			}
-		case "A":
-			di := bv.dataIndex(bv.table.Cursor())
-			if di >= 0 && di < len(builds) {
-				selected := builds[di]
-				if len(selected.Artifacts) == 1 {
-					return bv, openURLCmd(selected.Artifacts[0].URL)
-				} else if len(selected.Artifacts) > 1 {
-					child := NewArtifactView(bv.theme, selected.Artifacts, bv.nc.AtBuild(selected.Number), selected.Build, bv.client, bv.store)
-					return bv, func() tea.Msg { return PushViewMsg{View: child} }
-				}
-			}
-		case "x":
-			di := bv.dataIndex(bv.table.Cursor())
-			if di >= 0 && di < len(builds) {
-				if builds[di].Status == jenkins.BuildStatusRunning {
-					bv.confirmCancel = true
-					bv.confirmYes = false
-					bv.confirmBuild = builds[di]
-				}
+				return bv, bv.trigger.startTriggerFor(bv.nc, lastKnown)
 			}
 		case "m":
 			bv.ToggleMine()
@@ -381,24 +308,7 @@ func (bv *BuildsView) View() string {
 }
 
 func (bv *BuildsView) PopupView() string {
-	if bv.paramForm != nil {
-		return bv.paramForm.View()
-	}
-	if bv.confirmTrigger {
-		return renderConfirmBox(bv.theme,
-			"Trigger Build",
-			fmt.Sprintf("Start a new build of %s?", decodeName(bv.nc.ProjectName)),
-			bv.triggerYes,
-		)
-	}
-	if bv.confirmCancel {
-		return renderConfirmBox(bv.theme,
-			"Cancel Build",
-			fmt.Sprintf("Stop build %s?", renderBuildRef(bv.theme, bv.confirmBuild, bv.nc.Level)),
-			bv.confirmYes,
-		)
-	}
-	return ""
+	return bv.host.PopupView()
 }
 
 func (bv *BuildsView) Title() string {
@@ -443,33 +353,20 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 		component.Shortcut{Key: "l", Action: "log"},
 		component.Shortcut{Key: "d", Action: "describe"},
 	)
-	di := bv.dataIndex(bv.table.Cursor())
-	if di >= 0 && di < len(builds) {
-		if builds[di].TestResult != nil {
-			badge := renderTestBadge(bv.theme, builds[di].TestResult)
-			sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
-		}
-		if len(builds[di].Artifacts) > 0 {
-			sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(builds[di].Artifacts)})
-		}
-	}
-	if cfg.CanTrigger {
-		sc = append(sc, component.Shortcut{Key: "t", Action: "trigger"})
-	}
+	// T (tests), A (artifacts), x (cancel), t (trigger) come from the host —
+	// each behavior advertises its own shortcut, gated on resolvability of
+	// the currently selected row.
+	sc = bv.host.AppendShortcuts(sc)
+	_ = cfg
 	sc = append(sc,
 		component.Shortcut{Key: "m", Action: "mine", Active: bv.filters.Mine},
 		component.Shortcut{Key: "r", Action: "running", Active: bv.filters.Running},
 	)
-	if di >= 0 && di < len(builds) {
-		if builds[di].Status == jenkins.BuildStatusRunning {
-			sc = append(sc, component.Shortcut{Key: "x", Action: "cancel"})
-		}
-	}
 	return sc
 }
 
 func (bv *BuildsView) HasPopup() bool {
-	return bv.confirmTrigger || bv.confirmCancel || bv.paramForm != nil
+	return bv.host.HasPopup()
 }
 
 func (bv *BuildsView) Close() error {
@@ -506,6 +403,7 @@ func (bv *BuildsView) SetSize(width, height int) {
 		bv.table.SetColumnWidth(bv.flexColIdx, flex)
 	}
 	bv.table.SetSize(width, height)
+	bv.host.SetSize(width, height-6)
 }
 
 // NC returns the NavigationContext for this view. Used by app.go to distinguish

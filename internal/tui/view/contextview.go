@@ -32,8 +32,7 @@ type ContextView struct {
 	current    string
 	connStatus map[string]contextConnState
 
-	confirmDelete    bool
-	confirmDeleteYes bool
+	dialog confirmDialog
 
 	width, height int
 }
@@ -153,8 +152,12 @@ func (v *ContextView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case tea.KeyMsg:
-		if v.confirmDelete {
-			return v.updateConfirmDelete(msg)
+		if v.dialog.IsOpen() {
+			if v.dialog.Update(msg) && len(v.contexts) > 0 {
+				name := v.contexts[v.table.Cursor()].Name
+				return v, func() tea.Msg { return ContextDeleteRequestMsg{Name: name} }
+			}
+			return v, nil
 		}
 		switch msg.String() {
 		case "up", "k":
@@ -180,33 +183,11 @@ func (v *ContextView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		case "delete", "ctrl+d":
 			if len(v.contexts) > 0 {
-				v.confirmDelete = true
-				v.confirmDeleteYes = false
+				v.dialog.Open()
 			}
 		case "ctrl+n", "insert":
 			return v, func() tea.Msg { return OpenAddContextDialogMsg{} }
 		}
-	}
-	return v, nil
-}
-
-func (v *ContextView) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "left", "right", "h", "l":
-		v.confirmDeleteYes = !v.confirmDeleteYes
-	case "y":
-		name := v.contexts[v.table.Cursor()].Name
-		v.confirmDelete = false
-		return v, func() tea.Msg { return ContextDeleteRequestMsg{Name: name} }
-	case "enter":
-		if v.confirmDeleteYes {
-			name := v.contexts[v.table.Cursor()].Name
-			v.confirmDelete = false
-			return v, func() tea.Msg { return ContextDeleteRequestMsg{Name: name} }
-		}
-		v.confirmDelete = false
-	case "esc", "n":
-		v.confirmDelete = false
 	}
 	return v, nil
 }
@@ -216,15 +197,14 @@ func (v *ContextView) View() string {
 }
 
 func (v *ContextView) PopupView() string {
-	if v.confirmDelete && len(v.contexts) > 0 {
-		name := v.contexts[v.table.Cursor()].Name
-		return renderConfirmBox(v.theme,
-			"Delete Context",
-			fmt.Sprintf("Delete context %q?", name),
-			v.confirmDeleteYes,
-		)
+	if !v.dialog.IsOpen() || len(v.contexts) == 0 {
+		return ""
 	}
-	return ""
+	name := v.contexts[v.table.Cursor()].Name
+	return v.dialog.View(v.theme,
+		"Delete Context",
+		fmt.Sprintf("Delete context %q?", name),
+	)
 }
 
 func (v *ContextView) Title() string { return "context" }
@@ -246,7 +226,7 @@ func (v *ContextView) Shortcuts() []component.Shortcut {
 	}
 }
 
-func (v *ContextView) HasPopup() bool { return v.confirmDelete }
+func (v *ContextView) HasPopup() bool { return v.dialog.IsOpen() }
 
 func (v *ContextView) SetSize(width, height int) {
 	v.width = width

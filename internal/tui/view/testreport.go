@@ -34,6 +34,7 @@ type TestReportView struct {
 	height     int
 	client     jenkins.JenkinsClient
 	store      *cache.Store
+	host       behaviorHost
 }
 
 // NewTestReportView creates a TestReportView for the given build's test report.
@@ -53,6 +54,9 @@ func NewTestReportView(t theme.Theme, report jenkins.TestReport, nc NavigationCo
 		store:  store,
 	}
 	v.populateTable()
+	access := fixedBuildAccessor(&v.nc, &v.build)
+	storeFn := func() *cache.Store { return v.store }
+	v.host.Add(newArtifactBehavior(t, client, storeFn, access, swapTo))
 	return v
 }
 
@@ -110,10 +114,14 @@ func (v *TestReportView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ThemeChangedMsg:
 		v.theme = msg.Theme
 		v.table.SetTheme(msg.Theme)
+		v.host.SetTheme(msg.Theme)
 		v.populateTable()
 		return v, nil
 
 	case tea.KeyMsg:
+		if handled, cmd := v.host.HandleKey(msg); handled {
+			return v, cmd
+		}
 		switch msg.String() {
 		case "up", "k":
 			v.table.MoveUp()
@@ -146,17 +154,6 @@ func (v *TestReportView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			return v, func() tea.Msg {
 				return SwapViewMsg{View: NewDescribeView(v.theme, v.client, v.store, v.nc, v.build)}
-			}
-		case "A":
-			if v.store != nil {
-				key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
-				if entry := v.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-					if len(entry.Value) == 1 {
-						return v, openURLCmd(entry.Value[0].URL)
-					}
-					child := NewArtifactView(v.theme, entry.Value, v.nc, v.build, v.client, v.store)
-					return v, func() tea.Msg { return SwapViewMsg{View: child} }
-				}
 			}
 		}
 	}
@@ -202,12 +199,7 @@ func (v *TestReportView) Shortcuts() []component.Shortcut {
 		component.Shortcut{Key: "l", Action: "full log"},
 		component.Shortcut{Key: "d", Action: "describe"},
 	)
-	if v.store != nil {
-		key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
-		if entry := v.store.Artifacts.Get(key); entry != nil && len(entry.Value) > 0 {
-			sc = append(sc, component.Shortcut{Key: "A", Action: artifactShortcutAction(entry.Value)})
-		}
-	}
+	sc = v.host.AppendShortcuts(sc)
 	return sc
 }
 
