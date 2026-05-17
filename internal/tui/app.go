@@ -876,6 +876,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.updateBreadcrumb()
 		return a, swap.View.Init()
 	}
+	if ps, ok := msg.(view.PopSwapViewMsg); ok {
+		// Discard the top navStack entry (the parent that pushed the current
+		// sub-view) so ESC from the new view reaches the grandparent.
+		if len(a.navStack) > 0 {
+			top := a.navStack[len(a.navStack)-1]
+			a.navStack = a.navStack[:len(a.navStack)-1]
+			top.Close()
+		}
+		if a.currentView != nil {
+			a.currentView.Close()
+		}
+		a.currentView = ps.View
+		a.updateBreadcrumb()
+		return a, ps.View.Init()
+	}
 	if pvm, ok := msg.(view.PushViewsMsg); ok {
 		if len(pvm.Views) == 0 {
 			return a, nil
@@ -950,7 +965,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if fsm.FailedStage != nil && len(fsm.FailedStage.NodeIDs) > 0 {
 			sv := view.NewStageView(a.theme, a.client, a.store, buildNC, fsm.Build)
 			sv.SetStages(fsm.Stages, fsm.FailedIdx)
-			sl := view.NewStageLogView(a.theme, a.client, a.store, buildNC.AtStage(fsm.FailedStage.Name), fsm.FailedStage.NodeIDs, fsm.Build.Status == jenkins.BuildStatusRunning)
+			sl := view.NewStageLogViewWithBuild(a.theme, a.client, a.store, buildNC.AtStage(fsm.FailedStage.Name), fsm.FailedStage.NodeIDs, fsm.Build.Status == jenkins.BuildStatusRunning, fsm.Build)
 			a.replaceView(sl)
 			a.updateBreadcrumb()
 			return a, sl.Init()
@@ -1063,7 +1078,23 @@ func (a App) View() string {
 
 	// Set view shortcuts before rendering the header so they appear this frame.
 	if v := a.activeView(); v != nil {
-		a.header.SetViewShortcuts(v.Shortcuts())
+		sc := v.Shortcuts()
+		inSearch := a.statusBar.Mode() == component.ModeSearch
+		if !inSearch {
+			if s, ok := v.(view.Searchable); ok && s.SearchQuery() != "" {
+				inSearch = true
+			}
+		}
+		if inSearch {
+			for i := range sc {
+				if sc[i].Key == "/" {
+					sc[i].Active = true
+				} else if sc[i].Key == "esc" {
+					sc[i].Action = "exit search"
+				}
+			}
+		}
+		a.header.SetViewShortcuts(sc)
 	}
 
 	// Push debug counters into the header (shows stats from the previous frame).

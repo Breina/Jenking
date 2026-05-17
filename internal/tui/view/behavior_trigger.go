@@ -45,7 +45,7 @@ func (b *triggerBehavior) Shortcut() (component.Shortcut, bool) {
 	if b.canShortcut != nil && !b.canShortcut() {
 		return component.Shortcut{}, false
 	}
-	return component.Shortcut{Key: "t", Action: "trigger"}, true
+	return component.Action("t", "trigger"), true
 }
 
 func (b *triggerBehavior) PopupView() string { return b.tm.popupView() }

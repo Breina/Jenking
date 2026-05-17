@@ -47,6 +47,12 @@ func pushTo(child View) tea.Cmd {
 	return func() tea.Msg { return PushViewMsg{View: child} }
 }
 
+// popSwapTo returns a navigateCmd that emits PopSwapViewMsg. Use for views
+// that were pushed onto the stack and navigate sideways to a sibling.
+func popSwapTo(child View) tea.Cmd {
+	return func() tea.Msg { return PopSwapViewMsg{View: child} }
+}
+
 // artifactBehavior encapsulates the "A" shortcut: look up the cached
 // artifacts for the current build and either open the single URL or push an
 // ArtifactView listing all of them. Pre-extraction this snippet was
@@ -114,5 +120,5 @@ func (b *artifactBehavior) Shortcut() (component.Shortcut, bool) {
 	if !ok {
 		return component.Shortcut{}, false
 	}
-	return component.Shortcut{Key: "A", Action: artifactShortcutAction(arts)}, true
+	return component.ViewSC("A", artifactShortcutAction(arts), false), true
 }

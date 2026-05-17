@@ -163,7 +163,7 @@ func NewStageView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Stor
 // (artifact, test, cancel, trigger) onto this view's host. Called by both
 // stage-view constructors so the wiring lives in one place.
 func (sv *StageView) registerBehaviors() {
-	addFixedBuildActions(&sv.host, sv.theme, sv.client, &sv.nc, &sv.build, &sv.store, &sv.trigger)
+	addFixedBuildActions(&sv.host, sv.theme, sv.client, &sv.nc, &sv.build, &sv.store, &sv.trigger, swapTo)
 }
 
 // NewPendingStageView creates a StageView that waits for Jenkins to create
@@ -761,8 +761,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if realIdx >= 0 && realIdx < len(sv.stages) {
 				stage := sv.stages[realIdx]
 				if len(stage.NodeIDs) > 0 {
-					child := NewStageLogView(sv.theme, sv.client, sv.store, sv.nc.AtStage(stage.Name), stage.NodeIDs, sv.build.Status == jenkins.BuildStatusRunning)
-					child.build = sv.build
+					child := NewStageLogViewWithBuild(sv.theme, sv.client, sv.store, sv.nc.AtStage(stage.Name), stage.NodeIDs, sv.build.Status == jenkins.BuildStatusRunning, sv.build)
 					return sv, func() tea.Msg { return PushViewMsg{View: child} }
 				}
 			}
@@ -1283,20 +1282,18 @@ func (sv *StageView) Commands() []command.Command {
 }
 
 func (sv *StageView) Shortcuts() []component.Shortcut {
-	// enter and esc first for stable grid positioning
 	var sc []component.Shortcut
 	realIdx := sv.realStageIdx(sv.table.Cursor())
 	if realIdx == -1 {
-		sc = append(sc, component.Shortcut{Key: "enter", Action: "full log"})
+		sc = append(sc, component.Nav("enter", "full log"))
 	} else if realIdx >= 0 && realIdx < len(sv.stages) && len(sv.stages[realIdx].NodeIDs) > 0 {
-		sc = append(sc, component.Shortcut{Key: "enter", Action: "stage log"})
+		sc = append(sc, component.Nav("enter", "stage log"))
 	}
 	sc = append(sc,
-		component.Shortcut{Key: "esc", Action: "builds"},
-		component.Shortcut{Key: "/", Action: "search"},
-		component.Shortcut{Key: "l", Action: "full log"},
-		component.Shortcut{Key: "d", Action: "describe"},
+		component.Nav("esc", "builds"),
+		component.Filter("/", "search", false),
 	)
+	sc = append(sc, detailViewTabs("s")...)
 	// Behaviors append: T (tests), A (artifacts), x (cancel — when running),
 	// t (trigger). cancelBehavior's canCancel() already gates on Running, so
 	// the previous `!sv.pending` guard is preserved implicitly.

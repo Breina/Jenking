@@ -261,7 +261,7 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			bv.table.Home()
 		case "end":
 			bv.table.End()
-		case "enter":
+		case "enter", "s":
 			di := bv.dataIndex(bv.table.Cursor())
 			if di >= 0 && di < len(builds) {
 				selected := builds[di]
@@ -334,33 +334,32 @@ func (bv *BuildsView) Commands() []command.Command {
 }
 
 func (bv *BuildsView) Shortcuts() []component.Shortcut {
-	// enter and esc first for stable grid positioning
 	sc := []component.Shortcut{
-		{Key: "enter", Action: "stages"},
-		{Key: "esc", Action: "jobs"},
-		{Key: "/", Action: "search"},
+		component.Nav("enter", "stages"),
+		component.Nav("esc", "jobs"),
 	}
 	builds := bv.provider.Builds()
 	if len(builds) == 0 {
 		sc = append(sc,
-			component.Shortcut{Key: "m", Action: "mine", Active: bv.filters.Mine},
-			component.Shortcut{Key: "r", Action: "running", Active: bv.filters.Running},
+			component.Filter("/", "search", false),
+			component.Filter("m", "mine", bv.filters.Mine),
+			component.Filter("r", "running", bv.filters.Running),
 		)
 		return sc
 	}
-	cfg := bv.provider.Config()
 	sc = append(sc,
-		component.Shortcut{Key: "l", Action: "log"},
-		component.Shortcut{Key: "d", Action: "describe"},
+		component.Filter("/", "search", false),
+		component.ViewSC("l", "full log", false),
+		component.ViewSC("s", "stages", false),
+		component.ViewSC("d", "describe", false),
 	)
 	// T (tests), A (artifacts), x (cancel), t (trigger) come from the host —
 	// each behavior advertises its own shortcut, gated on resolvability of
 	// the currently selected row.
 	sc = bv.host.AppendShortcuts(sc)
-	_ = cfg
 	sc = append(sc,
-		component.Shortcut{Key: "m", Action: "mine", Active: bv.filters.Mine},
-		component.Shortcut{Key: "r", Action: "running", Active: bv.filters.Running},
+		component.Filter("m", "mine", bv.filters.Mine),
+		component.Filter("r", "running", bv.filters.Running),
 	)
 	return sc
 }

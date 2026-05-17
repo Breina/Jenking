@@ -85,8 +85,18 @@ func resolverParts(r *buildResolver) []component.BreadcrumbPart {
 // filterShortcuts returns the r/m shortcut hints for scoped views.
 func filterShortcuts(filterRunning, filterMine bool) []component.Shortcut {
 	return []component.Shortcut{
-		{Key: "r", Action: "filter running", Active: filterRunning},
-		{Key: "m", Action: "filter mine", Active: filterMine},
+		component.Filter("r", "filter running", filterRunning),
+		component.Filter("m", "filter mine", filterMine),
+	}
+}
+
+// detailViewTabs returns the standard l/s/d View shortcuts for build-detail views.
+// active is "l", "s", or "d" to mark that tab as currently open; pass "" for none.
+func detailViewTabs(active string) []component.Shortcut {
+	return []component.Shortcut{
+		component.ViewSC("l", "full log", active == "l"),
+		component.ViewSC("s", "stages", active == "s"),
+		component.ViewSC("d", "describe", active == "d"),
 	}
 }
 

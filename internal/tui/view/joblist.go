@@ -622,34 +622,34 @@ func (jl *JobList) Commands() []command.Command {
 func (jl *JobList) Shortcuts() []component.Shortcut {
 	di := jl.dataIndex(jl.table.Cursor())
 	if di < 0 || di >= len(jl.jobs) {
-		return []component.Shortcut{{Key: "/", Action: "search"}}
+		return []component.Shortcut{component.Filter("/", "search", false)}
 	}
 	selected := jl.jobs[di]
-	// enter and esc first for stable grid positioning
 	var sc []component.Shortcut
 	switch selected.Type {
 	case jenkins.JobTypeFolder:
-		sc = append(sc, component.Shortcut{Key: "enter", Action: "jobs"})
+		sc = append(sc, component.Nav("enter", "jobs"))
 	case jenkins.JobTypeMultiBranch:
-		sc = append(sc, component.Shortcut{Key: "enter", Action: "branches"})
+		sc = append(sc, component.Nav("enter", "branches"))
 	default:
-		sc = append(sc, component.Shortcut{Key: "enter", Action: "builds"})
+		sc = append(sc, component.Nav("enter", "builds"))
 	}
 	if jl.folderPath != "" || jl.branchContext {
-		sc = append(sc, component.Shortcut{Key: "esc", Action: "jobs"})
+		sc = append(sc, component.Nav("esc", "jobs"))
 	}
-	// remaining shortcuts
-	sc = append(sc, component.Shortcut{Key: "/", Action: "search"})
+	sc = append(sc, component.Filter("/", "search", false))
 	switch selected.Type {
 	case jenkins.JobTypeMultiBranch:
-		sc = append(sc, component.Shortcut{Key: "b", Action: "all builds"})
+		sc = append(sc, component.Nav("b", "all builds"))
 	case jenkins.JobTypeFolder:
 		// no extra shortcuts for folders
 	default:
-		sc = append(sc, component.Shortcut{Key: "s", Action: "stages"})
 		if selected.LastBuild != nil {
-			sc = append(sc, component.Shortcut{Key: "l", Action: "log"})
-			sc = append(sc, component.Shortcut{Key: "d", Action: "describe"})
+			sc = append(sc, component.ViewSC("l", "full log", false))
+		}
+		sc = append(sc, component.ViewSC("s", "stages", false))
+		if selected.LastBuild != nil {
+			sc = append(sc, component.ViewSC("d", "describe", false))
 		}
 		// T/A/t/x come from behaviors; their shortcut gates already check
 		// container/LastBuild/cache presence and running status.

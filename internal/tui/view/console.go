@@ -317,32 +317,20 @@ func (cv *ConsoleView) Commands() []command.Command {
 }
 
 func (cv *ConsoleView) Shortcuts() []component.Shortcut {
-	wrapLabel := "wrap"
-	if cv.lv.wrap {
-		wrapLabel = "no wrap"
-	}
-	pipelineLabel := "[Pipeline] show"
-	if cv.lv.showInternal {
-		pipelineLabel = "[Pipeline] hide"
-	}
-	// esc first for stable grid positioning
 	shortcuts := []component.Shortcut{
-		{Key: "esc", Action: "builds"},
-		{Key: "/", Action: "search"},
-		{Key: "w", Action: wrapLabel},
-		{Key: "s", Action: "stages"},
-		{Key: "d", Action: "describe"},
+		component.Nav("esc", "builds"),
+		component.Filter("/", "search", false),
+		component.Filter("w", "wrap", cv.lv.wrap),
+		component.Filter("p", "[Pipeline]", cv.lv.showInternal),
+		{Key: "c", Action: cv.lv.logLabel(), Active: cv.copyLogFlash, Group: component.GroupAction},
 	}
-	shortcuts = append(shortcuts,
-		component.Shortcut{Key: "p", Action: pipelineLabel},
-		component.Shortcut{Key: "c", Action: cv.lv.logLabel(), Active: cv.copyLogFlash},
-	)
+	shortcuts = append(shortcuts, detailViewTabs("l")...)
 	shortcuts = cv.host.AppendShortcuts(shortcuts)
 	if cv.lv.selectionInLog {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash})
+		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: cv.lv.selLabel(), Active: cv.copySelFlash, Group: component.GroupAction})
 	}
 	if cv.lv.searchRe != nil {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
+		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev match"))
 	}
 	return shortcuts
 }

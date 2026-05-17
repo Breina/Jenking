@@ -219,10 +219,10 @@ func (v *ContextView) Commands() []command.Command { return nil }
 
 func (v *ContextView) Shortcuts() []component.Shortcut {
 	return []component.Shortcut{
-		{Key: "enter", Action: "switch"},
-		{Key: "esc", Action: "cancel"},
-		{Key: "del", Action: "delete"},
-		{Key: "ctrl+n", Action: "add"},
+		component.Nav("enter", "switch"),
+		component.Nav("esc", "cancel"),
+		component.Action("del", "delete"),
+		component.Action("ctrl+n", "add"),
 	}
 }
 

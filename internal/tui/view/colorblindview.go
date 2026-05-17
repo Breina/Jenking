@@ -114,8 +114,8 @@ func (v *ColorblindView) Commands() []command.Command { return nil }
 
 func (v *ColorblindView) Shortcuts() []component.Shortcut {
 	return []component.Shortcut{
-		{Key: "enter", Action: "select"},
-		{Key: "esc", Action: "cancel"},
+		component.Nav("enter", "select"),
+		component.Nav("esc", "cancel"),
 	}
 }
 

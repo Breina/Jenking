@@ -66,6 +66,13 @@ type PushViewMsg struct{ View View }
 // view should return to the parent of the replaced view, not back to it.
 type SwapViewMsg struct{ View View }
 
+// PopSwapViewMsg pops one entry from the nav stack and then makes View active.
+// Use when navigating sideways from a pushed sub-view: discards the stale
+// parent stack entry so ESC from the new view reaches the grandparent instead.
+// Example: stagelog (pushed from stageview) → full log; ESC should reach
+// builds, not stageview.
+type PopSwapViewMsg struct{ View View }
+
 // PushViewsMsg pushes a chain of views onto the nav stack in one step.
 // The current view is pushed first, then each view in Views except the last,
 // then the last becomes the active view. This gives the full ESC chain:

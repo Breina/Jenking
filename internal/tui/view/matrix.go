@@ -798,7 +798,7 @@ func (mv *MatrixView) ItemCount() int { return len(mv.columns) }
 func (mv *MatrixView) Commands() []command.Command { return nil }
 
 func (mv *MatrixView) Shortcuts() []component.Shortcut {
-	return []component.Shortcut{{Key: "esc", Action: "back"}}
+	return []component.Shortcut{component.Nav("esc", "back")}
 }
 
 func (mv *MatrixView) SetSize(w, h int) {

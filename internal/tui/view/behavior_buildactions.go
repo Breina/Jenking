@@ -26,11 +26,12 @@ func addFixedBuildActions(
 	build *jenkins.Build,
 	store **cache.Store,
 	trigger *triggerMixin,
+	navigate navigateCmd,
 ) {
 	access := fixedBuildAccessor(nc, build)
 	storeFn := func() *cache.Store { return *store }
-	h.Add(newTestReportBehavior(t, client, storeFn, access, swapTo))
-	h.Add(newArtifactBehavior(t, client, storeFn, access, swapTo))
+	h.Add(newTestReportBehavior(t, client, storeFn, access, navigate))
+	h.Add(newArtifactBehavior(t, client, storeFn, access, navigate))
 	h.Add(newCancelBehavior(t, client, access))
 	h.Add(newTriggerBehavior(trigger))
 }

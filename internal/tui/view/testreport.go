@@ -191,15 +191,14 @@ func (v *TestReportView) Commands() []command.Command {
 }
 
 func (v *TestReportView) Shortcuts() []component.Shortcut {
-	// esc first for stable grid positioning
-	sc := []component.Shortcut{{Key: "esc", Action: "builds"}}
-	sc = append(sc, component.Shortcut{Key: "f", Action: "failed only", Active: v.showFailed})
-	sc = append(sc,
-		component.Shortcut{Key: "s", Action: "stages"},
-		component.Shortcut{Key: "l", Action: "full log"},
-		component.Shortcut{Key: "d", Action: "describe"},
-	)
-	sc = v.host.AppendShortcuts(sc)
+	sc := []component.Shortcut{
+		component.Nav("esc", "builds"),
+		component.Filter("f", "failed", v.showFailed),
+	}
+	badge := renderTestBadge(v.theme, &v.report)
+	sc = append(sc, detailViewTabs("")...)
+	sc = append(sc, component.ViewSC("T", "tests: "+badge, true))
+	sc = v.host.AppendShortcuts(sc) // adds A if available
 	return sc
 }
 

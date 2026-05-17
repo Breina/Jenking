@@ -412,21 +412,16 @@ func (dv *DescribeView) Commands() []command.Command {
 }
 
 func (dv *DescribeView) Shortcuts() []component.Shortcut {
-	wrapLabel := "wrap"
-	if dv.scriptLV.wrap {
-		wrapLabel = "no wrap"
-	}
 	shortcuts := []component.Shortcut{
-		{Key: "esc", Action: "back"},
-		{Key: "/", Action: "search"},
-		{Key: "w", Action: wrapLabel},
-		{Key: "s", Action: "stages"},
-		{Key: "l", Action: "full log"},
+		component.Nav("esc", "back"),
+		component.Filter("/", "search", false),
+		component.Filter("w", "wrap", dv.scriptLV.wrap),
+		component.Action("e", "edit"),
 	}
-	shortcuts = append(shortcuts, component.Shortcut{Key: "e", Action: "edit"})
+	shortcuts = append(shortcuts, detailViewTabs("d")...)
 	shortcuts = dv.host.AppendShortcuts(shortcuts)
 	if dv.scriptLV.searchRe != nil {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
+		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev match"))
 	}
 	return shortcuts
 }

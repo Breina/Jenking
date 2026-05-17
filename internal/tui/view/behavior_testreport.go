@@ -65,5 +65,5 @@ func (b *testReportBehavior) Shortcut() (component.Shortcut, bool) {
 		return component.Shortcut{}, false
 	}
 	badge := renderTestBadge(b.theme, report)
-	return component.Shortcut{Key: "T", Action: "tests: " + badge}, true
+	return component.ViewSC("T", "tests: "+badge, false), true
 }

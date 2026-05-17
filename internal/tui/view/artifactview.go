@@ -137,22 +137,19 @@ func (v *ArtifactView) Commands() []command.Command {
 }
 
 func (v *ArtifactView) Shortcuts() []component.Shortcut {
-	sc := []component.Shortcut{{Key: "esc", Action: "builds"}}
+	sc := []component.Shortcut{component.Nav("esc", "builds")}
 	if v.table.Cursor() >= 0 && v.table.Cursor() < len(v.artifacts) {
-		sc = append(sc, component.Shortcut{Key: "enter", Action: "open"})
+		sc = append(sc, component.Nav("enter", "open"))
 	}
-	sc = append(sc,
-		component.Shortcut{Key: "s", Action: "stages"},
-		component.Shortcut{Key: "l", Action: "full log"},
-		component.Shortcut{Key: "d", Action: "describe"},
-	)
+	sc = append(sc, detailViewTabs("")...)
 	if v.store != nil {
 		key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
 		if entry := v.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
 			badge := renderTestBadge(v.theme, entry.Value)
-			sc = append(sc, component.Shortcut{Key: "T", Action: "tests: " + badge})
+			sc = append(sc, component.ViewSC("T", "tests: "+badge, false))
 		}
 	}
+	sc = append(sc, component.ViewSC("A", "artifacts", true))
 	return sc
 }
 

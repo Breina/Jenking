@@ -133,8 +133,8 @@ func (v *ThemeView) Commands() []command.Command { return nil }
 
 func (v *ThemeView) Shortcuts() []component.Shortcut {
 	return []component.Shortcut{
-		{Key: "enter", Action: "select"},
-		{Key: "esc", Action: "cancel"},
+		component.Nav("enter", "select"),
+		component.Nav("esc", "cancel"),
 	}
 }
 

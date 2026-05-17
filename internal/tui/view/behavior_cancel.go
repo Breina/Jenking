@@ -80,7 +80,7 @@ func (b *cancelBehavior) Shortcut() (component.Shortcut, bool) {
 	if _, _, ok := b.canCancel(); !ok {
 		return component.Shortcut{}, false
 	}
-	return component.Shortcut{Key: "x", Action: "cancel"}, true
+	return component.Action("x", "cancel"), true
 }
 
 func (b *cancelBehavior) PopupView() string {

@@ -71,15 +71,15 @@ func NewStageLogView(t theme.Theme, client jenkins.JenkinsClient, store *cache.S
 		cancel:       cancel,
 		trigger:      newTriggerMixin(t, client, nc),
 	}
-	sl.host.Add(newTriggerBehavior(&sl.trigger))
 	return sl
 }
 
-// NewStageLogViewWithBuild is like NewStageLogView but also stores the build
-// so 'd' (describe) and 't' (trigger) can use it.
+// NewStageLogViewWithBuild is like NewStageLogView but also stores the build,
+// enabling the full set of view tabs (l/s/d/T/A) and build actions (x/t).
 func NewStageLogViewWithBuild(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool, build jenkins.Build) *StageLogView {
 	sl := NewStageLogView(t, client, store, nc, nodeIDs, buildRunning)
 	sl.build = build
+	addFixedBuildActions(&sl.host, t, client, &sl.nc, &sl.build, &sl.store, &sl.trigger, popSwapTo)
 	return sl
 }
 
@@ -255,9 +255,26 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !sl.lv.wrap {
 				sl.lv.hOffset = max(0, sl.lv.hOffset-8)
 			}
-		case "right", "l":
+		case "right":
 			if !sl.lv.wrap {
 				sl.lv.hOffset += 8
+			}
+		case "l":
+			nc := sl.nc
+			build := sl.build
+			store := sl.store
+			return sl, func() tea.Msg {
+				child := NewConsoleView(sl.lv.theme, sl.client, nc)
+				child.build = build
+				child.store = store
+				return PopSwapViewMsg{View: child}
+			}
+		case "s":
+			nc := sl.nc
+			build := sl.build
+			store := sl.store
+			return sl, func() tea.Msg {
+				return PopSwapViewMsg{View: NewStageView(sl.lv.theme, sl.client, store, nc, build)}
 			}
 		case "f2", "n":
 			sl.lv.nextHighlight(true)
@@ -273,7 +290,7 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			build := sl.build
 			nc := sl.nc
 			return sl, func() tea.Msg {
-				return PushViewMsg{View: NewDescribeView(sl.lv.theme, sl.client, sl.store, nc, build)}
+				return PopSwapViewMsg{View: NewDescribeView(sl.lv.theme, sl.client, sl.store, nc, build)}
 			}
 		case "t":
 			return sl, sl.trigger.startTrigger(sl.build.Number)
@@ -339,27 +356,23 @@ func (sl *StageLogView) Commands() []command.Command {
 }
 
 func (sl *StageLogView) Shortcuts() []component.Shortcut {
-	wrapLabel := "wrap"
-	if sl.lv.wrap {
-		wrapLabel = "no wrap"
-	}
-	// esc first for stable grid positioning
 	shortcuts := []component.Shortcut{
-		{Key: "esc", Action: "stages"},
-		{Key: "/", Action: "search"},
-		{Key: "w", Action: wrapLabel},
-		{Key: "c", Action: sl.lv.logLabel(), Active: sl.copyLogFlash},
-		{Key: "d", Action: "describe"},
+		component.Nav("esc", "stages"),
+		component.Filter("/", "search", false),
+		component.Filter("w", "wrap", sl.lv.wrap),
+		{Key: "c", Action: sl.lv.logLabel(), Active: sl.copyLogFlash, Group: component.GroupAction},
+		component.ViewSC("l", "full log", false),
+		component.ViewSC("s", "stages", false),
+		component.ViewSC("d", "describe", false),
 	}
-	shortcuts = sl.host.AppendShortcuts(shortcuts)
-	shortcuts = append(shortcuts, component.Shortcut{Key: "g/G", Action: "top/bottom"})
+	shortcuts = sl.host.AppendShortcuts(shortcuts) // adds T, A, x, t
 	if sl.lv.selectionInLog {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: sl.lv.selLabel(), Active: sl.copySelFlash})
+		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: sl.lv.selLabel(), Active: sl.copySelFlash, Group: component.GroupAction})
 	}
 	if sl.lv.searchRe != nil {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev match"})
+		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev match"))
 	} else if sl.lv.errCount+sl.lv.warnCount > 0 {
-		shortcuts = append(shortcuts, component.Shortcut{Key: "n/N", Action: "next/prev issue"})
+		shortcuts = append(shortcuts, component.Nav("n/N", "next/prev issue"))
 	}
 	return shortcuts
 }

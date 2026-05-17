@@ -3,6 +3,7 @@ package component
 import (
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -31,11 +32,40 @@ const headerArtPeasant = `
               \/     \/     \/       \//_____/  
 `
 
+// Shortcut group labels.
+const (
+	GroupNav    = "Navigate"
+	GroupFilter = "Filter"
+	GroupView   = "View"
+	GroupAction = "Actions"
+)
+
 // Shortcut is a key/action pair.
 type Shortcut struct {
 	Key    string
 	Action string
-	Active bool // when true, action text is highlighted with the search match style
+	Active bool   // when true, key+action are highlighted with the active-filter style
+	Group  string // GroupNav | GroupFilter | GroupView | GroupAction | ""
+}
+
+// Nav returns a Navigate-group shortcut.
+func Nav(key, action string) Shortcut {
+	return Shortcut{Key: key, Action: action, Group: GroupNav}
+}
+
+// Filter returns a Filter-group shortcut. active highlights the entry when the filter is on.
+func Filter(key, action string, active bool) Shortcut {
+	return Shortcut{Key: key, Action: action, Active: active, Group: GroupFilter}
+}
+
+// ViewSC returns a View-group shortcut. active highlights the entry when this view is open.
+func ViewSC(key, action string, active bool) Shortcut {
+	return Shortcut{Key: key, Action: action, Active: active, Group: GroupView}
+}
+
+// Action returns an Actions-group shortcut.
+func Action(key, action string) Shortcut {
+	return Shortcut{Key: key, Action: action, Group: GroupAction}
 }
 
 // Header renders the top panel with connection info and shortcuts.
@@ -70,7 +100,7 @@ func NewHeader(t theme.Theme, url, user, jenkinsVersion string, debug bool) Head
 		jenkinsVersion: jenkinsVersion,
 		connected:      true,
 		shortcuts: []Shortcut{
-			{Key: ":", Action: "command"},
+			Action(":", "command"),
 		},
 		width: 80,
 		debug: debug,
@@ -182,11 +212,12 @@ func (h Header) View() string {
 	}
 
 	infoCol := strings.Join(infoLines, "\n")
-	shortcuts := h.renderShortcutColumns()
+	infoRendered := lipgloss.NewStyle().MarginRight(4).Render(infoCol)
+	shortcuts := h.renderShortcutColumns(h.width - lipgloss.Width(infoRendered))
 
 	left := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		lipgloss.NewStyle().MarginRight(4).Render(infoCol),
+		infoRendered,
 		shortcuts,
 	)
 
@@ -252,20 +283,55 @@ func (h Header) jenkingVersionLine(t theme.Theme) string {
 	return fmt.Sprintf("%s %s %s %s %s", label, cur, arrow, badge, hint)
 }
 
-func (h Header) renderShortcutColumns() string {
+// groupOrder defines the canonical left-to-right display order of shortcut groups.
+var groupOrder = map[string]int{
+	GroupNav:    0,
+	GroupView:   1,
+	GroupFilter: 2,
+	GroupAction: 3,
+	"":          4,
+}
+
+// canonicalGroups is the ordered list of groups that get fixed column positions.
+var canonicalGroups = []string{GroupNav, GroupView, GroupFilter, GroupAction}
+
+// groupMinWidth is the reserved visual width (chars) for each group's column in
+// the fixed layout. Sacrificed when the available header space is too narrow.
+var groupMinWidth = map[string]int{
+	GroupNav:    21,
+	GroupFilter: 14,
+	GroupView:   22,
+	GroupAction: 16,
+}
+
+// maxItemsPerCol is the max number of shortcut items per column before wrapping.
+// Header info column is 6 lines tall; 1 line is used for the group label.
+const maxItemsPerCol = 5
+
+func (h Header) renderShortcutColumns(available int) string {
 	t := h.theme
-	colSize := 4
-	var cols []string
 
+	// Collect shortcuts by group.
+	groupItems := map[string][]Shortcut{}
 	all := append(h.shortcuts, h.viewShortcuts...) //nolint:gocritic
-	for i := 0; i < len(all); i += colSize {
-		end := i + colSize
-		if end > len(all) {
-			end = len(all)
-		}
+	for _, sc := range all {
+		groupItems[sc.Group] = append(groupItems[sc.Group], sc)
+	}
 
+	type colContent struct {
+		content   string
+		groupName string
+	}
+
+	const colMargin = 3
+
+	// buildChunk renders one column's worth of shortcuts (with label on first chunk).
+	buildChunk := func(name string, items []Shortcut, first bool) colContent {
 		var lines []string
-		for _, sc := range all[i:end] {
+		if first && name != "" {
+			lines = append(lines, t.StatusBar.Help.Faint(true).Render(name))
+		}
+		for _, sc := range items {
 			keyStyle := t.StatusBar.Key
 			actionStyle := t.StatusBar.Help
 			if sc.Active {
@@ -278,12 +344,84 @@ func (h Header) renderShortcutColumns() string {
 					actionStyle.Render(" "+sc.Action),
 			)
 		}
-		// Pad short columns to match height
-		for len(lines) < colSize {
-			lines = append(lines, "")
-		}
+		return colContent{content: strings.Join(lines, "\n"), groupName: name}
+	}
 
-		col := lipgloss.NewStyle().MarginRight(3).Render(strings.Join(lines, "\n"))
+	appendChunked := func(dst []colContent, name string, items []Shortcut) []colContent {
+		for chunkStart := 0; chunkStart < len(items); chunkStart += maxItemsPerCol {
+			end := chunkStart + maxItemsPerCol
+			if end > len(items) {
+				end = len(items)
+			}
+			dst = append(dst, buildChunk(name, items[chunkStart:end], chunkStart == 0))
+		}
+		return dst
+	}
+
+	// Fixed layout: all canonical groups hold reserved positions even when empty.
+	// Total reserved width determines whether we can use the fixed layout.
+	fixedTotal := 0
+	for _, name := range canonicalGroups {
+		fixedTotal += groupMinWidth[name] + colMargin
+	}
+	useFixed := fixedTotal <= available
+
+	var colContents []colContent
+
+	if useFixed {
+		for _, name := range canonicalGroups {
+			items := groupItems[name]
+			if len(items) == 0 {
+				// Empty placeholder keeps the column position reserved.
+				colContents = append(colContents, colContent{groupName: name})
+				continue
+			}
+			// First chunk gets the reserved slot; overflow chunks are appended after.
+			end := len(items)
+			if end > maxItemsPerCol {
+				end = maxItemsPerCol
+			}
+			colContents = append(colContents, buildChunk(name, items[:end], true))
+			for chunkStart := maxItemsPerCol; chunkStart < len(items); chunkStart += maxItemsPerCol {
+				chunkEnd := chunkStart + maxItemsPerCol
+				if chunkEnd > len(items) {
+					chunkEnd = len(items)
+				}
+				colContents = append(colContents, buildChunk(name, items[chunkStart:chunkEnd], false))
+			}
+		}
+		// Ungrouped shortcuts appended compactly after the fixed block.
+		colContents = appendChunked(colContents, "", groupItems[""])
+	} else {
+		// Compact fallback: only render groups that have items, in canonical order.
+		type namedGroup struct {
+			name  string
+			items []Shortcut
+		}
+		var present []namedGroup
+		for name, items := range groupItems {
+			if len(items) > 0 {
+				present = append(present, namedGroup{name, items})
+			}
+		}
+		sort.SliceStable(present, func(i, j int) bool {
+			return groupOrder[present[i].name] < groupOrder[present[j].name]
+		})
+		for _, g := range present {
+			colContents = appendChunked(colContents, g.name, g.items)
+		}
+	}
+
+	// Render each column, applying the reserved min-width in fixed mode.
+	var cols []string
+	for _, c := range colContents {
+		w := lipgloss.Width(c.content)
+		if useFixed {
+			if mw := groupMinWidth[c.groupName]; mw > w {
+				w = mw
+			}
+		}
+		col := lipgloss.NewStyle().Width(w).MarginRight(colMargin).Render(c.content)
 		cols = append(cols, col)
 	}
 
