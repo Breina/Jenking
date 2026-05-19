@@ -208,9 +208,14 @@ func fetchArtifacts(client jenkins.JenkinsClient, store *cache.Store, jobPath st
 			if artifacts == nil {
 				artifacts = []jenkins.Artifact{}
 			}
-			store.Artifacts.Put(cacheKey, artifacts)
-			if len(artifacts) > 0 && store.Disk != nil {
-				_ = store.Disk.SaveArtifacts(cacheKey, artifacts)
+			// Only cache non-empty results. An empty result during a running
+			// build would be stored and returned on the post-completion fetch,
+			// hiding artifacts that appeared after the first check.
+			if len(artifacts) > 0 {
+				store.Artifacts.Put(cacheKey, artifacts)
+				if store.Disk != nil {
+					_ = store.Disk.SaveArtifacts(cacheKey, artifacts)
+				}
 			}
 		}
 		return ArtifactsMsg{JobPath: jobPath, BuildNum: buildNum, Artifacts: artifacts, Err: err}

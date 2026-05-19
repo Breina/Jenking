@@ -97,7 +97,7 @@ func NewBuildsView(t theme.Theme, client jenkins.JenkinsClient, store *cache.Sto
 	return bv
 }
 
-func (bv *BuildsView) ApplySearch(pattern string) error {
+func (bv *BuildsView) ApplySearch(pattern string) tea.Cmd {
 	bv.searchQuery = pattern
 	bv.searchRe = compileSearchRegex(pattern)
 	bv.populateTable()

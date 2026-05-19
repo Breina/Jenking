@@ -569,6 +569,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.currentView = model.(view.View)
 				return a, cmd
 			}
+			// First Esc: deselect the active navigation match (keeps search/error highlights).
+			// Second Esc: clear the search query entirely.
+			if nc, ok := a.activeView().(view.NavigationClearable); ok && nc.HasActiveNavigation() {
+				nc.ClearActiveNavigation()
+				return a, nil
+			}
 			// Esc clears active search before navigating back
 			if s, ok := a.activeView().(view.Searchable); ok && s.SearchQuery() != "" {
 				s.ApplySearch("")
@@ -773,6 +779,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if cc, ok := msg.(view.ColorblindConfirmMsg); ok {
 		a.applyColorblindnessType(cc.Type, true)
+		return a, nil
+	}
+
+	// Background search result — route to the active view's LogViewer.
+	if sr, ok := msg.(view.SearchResultMsg); ok {
+		if h, ok := a.activeView().(view.SearchResultHandler); ok {
+			return a, h.HandleSearchResult(sr)
+		}
 		return a, nil
 	}
 
@@ -1085,12 +1099,22 @@ func (a App) View() string {
 				inSearch = true
 			}
 		}
-		if inSearch {
+		hasActiveNav := false
+		if nc, ok := v.(view.NavigationClearable); ok {
+			hasActiveNav = nc.HasActiveNavigation()
+		}
+		if inSearch || hasActiveNav {
 			for i := range sc {
 				if sc[i].Key == "/" {
-					sc[i].Active = true
+					if inSearch {
+						sc[i].Active = true
+					}
 				} else if sc[i].Key == "esc" {
-					sc[i].Action = "exit search"
+					if hasActiveNav {
+						sc[i].Action = "deselect"
+					} else {
+						sc[i].Action = "exit search"
+					}
 				}
 			}
 		}
@@ -1432,7 +1456,7 @@ func (a *App) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.statusBar.SetMode(component.ModeNormal)
 		a.searchInput = ""
 		if s, ok := a.activeView().(view.Searchable); ok {
-			s.ApplySearch("")
+			s.ApplySearch("") // always returns nil for empty pattern
 		}
 		return a, nil
 
@@ -1441,7 +1465,7 @@ func (a *App) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.searchInput = a.searchInput[:len(a.searchInput)-1]
 			a.statusBar.SetInput(a.searchInput)
 			if s, ok := a.activeView().(view.Searchable); ok {
-				s.ApplySearch(a.searchInput)
+				return a, s.ApplySearch(a.searchInput)
 			}
 		}
 		return a, nil
@@ -1451,7 +1475,7 @@ func (a *App) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.searchInput += msg.String()
 			a.statusBar.SetInput(a.searchInput)
 			if s, ok := a.activeView().(view.Searchable); ok {
-				s.ApplySearch(a.searchInput)
+				return a, s.ApplySearch(a.searchInput)
 			}
 		}
 		return a, nil

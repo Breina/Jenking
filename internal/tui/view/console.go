@@ -86,13 +86,21 @@ func NewConsoleViewSeeded(t theme.Theme, client jenkins.JenkinsClient, nc Naviga
 
 func (cv *ConsoleView) IsBuildRunning() bool { return !cv.done }
 
-func (cv *ConsoleView) ApplySearch(pattern string) error {
+func (cv *ConsoleView) ApplySearch(pattern string) tea.Cmd {
 	return cv.lv.ApplySearch(pattern)
+}
+
+func (cv *ConsoleView) HandleSearchResult(msg SearchResultMsg) tea.Cmd {
+	cv.lv.applySearchResult(msg)
+	return nil
 }
 
 func (cv *ConsoleView) SearchQuery() string {
 	return cv.lv.SearchQuery()
 }
+
+func (cv *ConsoleView) HasActiveNavigation() bool { return cv.lv.HasActiveNavigation() }
+func (cv *ConsoleView) ClearActiveNavigation()    { cv.lv.ClearActiveNavigation() }
 
 func (cv *ConsoleView) Init() tea.Cmd {
 	// Populate display lines from any seed data (no-op when rawLines is empty).

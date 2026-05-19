@@ -175,7 +175,7 @@ func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store,
 	return jl
 }
 
-func (jl *JobList) ApplySearch(pattern string) error {
+func (jl *JobList) ApplySearch(pattern string) tea.Cmd {
 	jl.searchQuery = pattern
 	jl.searchRe = compileSearchRegex(pattern)
 	jl.populateTable()

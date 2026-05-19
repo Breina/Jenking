@@ -235,8 +235,22 @@ type View interface {
 
 // Searchable is optionally implemented by views that support regex filtering.
 type Searchable interface {
-	ApplySearch(pattern string) error
+	ApplySearch(pattern string) tea.Cmd
 	SearchQuery() string
+}
+
+// SearchResultHandler is optionally implemented by views that host a LogViewer.
+// The app routes SearchResultMsg to the active view so results reach the right LogViewer.
+type SearchResultHandler interface {
+	HandleSearchResult(SearchResultMsg) tea.Cmd
+}
+
+// NavigationClearable is optionally implemented by log views that support
+// dropping the active match selection via a first Esc press, before a second
+// Esc closes search entirely.
+type NavigationClearable interface {
+	HasActiveNavigation() bool
+	ClearActiveNavigation()
 }
 
 // PopupLayer is optionally implemented by views that can show overlaid popups
@@ -429,8 +443,8 @@ func openURLCmd(url string) tea.Cmd {
 func artifactShortcutAction(artifacts []jenkins.Artifact) string {
 	if len(artifacts) == 1 {
 		name := artifacts[0].DisplayPath
-		if len(name) > 20 {
-			name = name[:19] + "…"
+		if len(name) > 19 {
+			name = name[:18] + "…"
 		}
 		return name
 	}

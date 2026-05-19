@@ -300,7 +300,7 @@ var canonicalGroups = []string{GroupNav, GroupView, GroupFilter, GroupAction}
 var groupMinWidth = map[string]int{
 	GroupNav:    21,
 	GroupFilter: 14,
-	GroupView:   22,
+	GroupView:   23,
 	GroupAction: 16,
 }
 

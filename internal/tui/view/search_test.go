@@ -16,7 +16,7 @@ func TestCompileSearchRegex(t *testing.T) {
 		{"valid pattern", "foo", false},
 		{"case insensitive", "FOO", false},
 		{"regex pattern", "foo.*bar", false},
-		{"invalid regex", "[unclosed", true},
+		{"invalid regex falls back to literal", "[unclosed", false},
 		{"single char", "a", false},
 	}
 	for _, tt := range tests {

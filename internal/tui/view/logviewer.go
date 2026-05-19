@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -66,6 +67,15 @@ type displayLine struct {
 	rawIdx    int      // index of the source entry in LogViewer.rawLines
 }
 
+// SearchResultMsg carries results of a background search scan.
+// Only the LogViewer that initiated the search will apply it (pointer + version check).
+type SearchResultMsg struct {
+	lv          *LogViewer
+	version     int
+	snapshotLen int // len(rawLines) when the goroutine launched; used to preserve AppendRawLines matches
+	indices     []int
+}
+
 // LogViewer holds all shared state and logic for rendering scrollable log output.
 // It is embedded by ConsoleView and StageLogView.
 type LogViewer struct {
@@ -80,6 +90,9 @@ type LogViewer struct {
 	searchRe             *regexp.Regexp
 	searchMatchLines     []int // lines[] indices of first chunk per search-matching raw line
 	currentMatchLine     int   // lines[] index of the actively-selected search match (-1 = none)
+	searchVersion        int
+	searchCancel         context.CancelFunc
+	searching            bool // true while a background search goroutine is in flight
 	errCount             int
 	warnCount            int
 	highlightedLines     []int    // lines[] index of first chunk per error/warn raw line
@@ -89,6 +102,7 @@ type LogViewer struct {
 	selectionText        string   // cleaned primary selection text from last poll
 	selectionLineCount   int      // non-empty lines in selectionText
 	selectionInLog       bool     // true when selectionText matches content in this log
+	lastNavWrapped       bool     // true when the last n/N navigation wrapped around
 	theme                theme.Theme
 	// renderFn, when non-nil, overrides the default renderLogLine used in
 	// renderLine/renderLineAt. Set by callers that need custom line rendering
@@ -130,6 +144,13 @@ func (lv *LogViewer) ScrollInfo() ScrollInfo {
 // Preserves bottom-pin: if we were at the bottom, stay at the bottom.
 // Preserves the active search match position by match-list index.
 func (lv *LogViewer) recomputeLines() {
+	// Invalidate any in-flight search goroutine; we rebuild searchMatchLines here synchronously.
+	if lv.searchCancel != nil {
+		lv.searchCancel()
+		lv.searchCancel = nil
+		lv.searchVersion++
+		lv.searching = false // recomputeLines rebuilds searchMatchLines synchronously
+	}
 	atBottom := len(lv.lines) == 0 || lv.offset >= max(0, len(lv.lines)-lv.contentHeight())
 
 	// Save active match index (position in searchMatchLines, not lines[] index)
@@ -203,12 +224,16 @@ func (lv *LogViewer) recomputeLines() {
 
 	// Restore the active search match. Clamp to the new match list in case
 	// matches were removed (e.g. content replaced, not just appended).
+	// When a search is active but savedMatchIdx was -1 (goroutine was cancelled
+	// by this recomputeLines call), auto-navigate to the first match now.
 	if savedMatchIdx >= 0 && len(lv.searchMatchLines) > 0 {
 		if savedMatchIdx >= len(lv.searchMatchLines) {
 			savedMatchIdx = len(lv.searchMatchLines) - 1
 		}
 		lv.currentMatchLine = lv.searchMatchLines[savedMatchIdx]
 		lv.offset = min(lv.currentMatchLine, newMax)
+	} else if lv.searchRe != nil && len(lv.searchMatchLines) > 0 {
+		lv.nextSearchMatch(true)
 	} else if savedHighlightIdx >= 0 && len(lv.highlightedLines) > 0 {
 		if savedHighlightIdx >= len(lv.highlightedLines) {
 			savedHighlightIdx = len(lv.highlightedLines) - 1
@@ -416,6 +441,7 @@ func (lv *LogViewer) nextHighlight(forward bool) {
 	if !lv.highlightErrors || len(lv.highlightedLines) == 0 {
 		return
 	}
+	lv.lastNavWrapped = false
 	maxOff := max(0, len(lv.lines)-lv.contentHeight())
 	if forward {
 		threshold := lv.offset
@@ -429,6 +455,7 @@ func (lv *LogViewer) nextHighlight(forward bool) {
 				return
 			}
 		}
+		lv.lastNavWrapped = true
 		lv.currentHighlightLine = lv.highlightedLines[0]
 		lv.offset = min(lv.highlightedLines[0], maxOff) // wrap
 	} else {
@@ -439,6 +466,7 @@ func (lv *LogViewer) nextHighlight(forward bool) {
 				return
 			}
 		}
+		lv.lastNavWrapped = true
 		last := lv.highlightedLines[len(lv.highlightedLines)-1]
 		lv.currentHighlightLine = last
 		lv.offset = min(last, maxOff) // wrap
@@ -446,6 +474,7 @@ func (lv *LogViewer) nextHighlight(forward bool) {
 }
 
 func (lv *LogViewer) nextSearchMatch(forward bool) {
+	lv.lastNavWrapped = false
 	if len(lv.searchMatchLines) == 0 {
 		return
 	}
@@ -459,6 +488,7 @@ func (lv *LogViewer) nextSearchMatch(forward bool) {
 			}
 		}
 		// wrap around
+		lv.lastNavWrapped = true
 		lv.currentMatchLine = lv.searchMatchLines[0]
 		lv.offset = min(lv.searchMatchLines[0], maxOff)
 	} else {
@@ -470,6 +500,7 @@ func (lv *LogViewer) nextSearchMatch(forward bool) {
 			}
 		}
 		// wrap around
+		lv.lastNavWrapped = true
 		last := lv.searchMatchLines[len(lv.searchMatchLines)-1]
 		lv.currentMatchLine = last
 		lv.offset = min(last, maxOff)
@@ -500,16 +531,29 @@ func (lv *LogViewer) ErrorNavActive() bool {
 	return lv.highlightErrors && len(lv.highlightedLines) > 0
 }
 
-// NavigationPositionInfo returns "[i/total]" for the active navigation (search or
-// error/warning), or "" when no position has been navigated yet.
+// NavigationPositionInfo returns a position indicator for active navigation:
+//   - "[no matches]" when a search is active but has zero matches
+//   - "[N]" when a search has N matches but none is currently selected
+//   - "[i/N]" or "[i/N ↩]" (wrap indicator) during search navigation
+//   - "[i/N]" or "[i/N ↩]" during error/warning navigation
+//   - "" when no navigation is active
 func (lv *LogViewer) NavigationPositionInfo() string {
 	if lv.searchRe != nil {
 		total := len(lv.searchMatchLines)
-		if total == 0 || lv.currentMatchLine < 0 {
-			return ""
+		if total == 0 {
+			if lv.searching {
+				return "⟳"
+			}
+			return "[0]"
+		}
+		if lv.currentMatchLine < 0 {
+			return fmt.Sprintf("[%d]", total)
 		}
 		for i, line := range lv.searchMatchLines {
 			if line == lv.currentMatchLine {
+				if lv.lastNavWrapped {
+					return fmt.Sprintf("[%d/%d ↩]", i+1, total)
+				}
 				return fmt.Sprintf("[%d/%d]", i+1, total)
 			}
 		}
@@ -520,10 +564,28 @@ func (lv *LogViewer) NavigationPositionInfo() string {
 	}
 	for i, line := range lv.highlightedLines {
 		if line == lv.currentHighlightLine {
+			if lv.lastNavWrapped {
+				return fmt.Sprintf("[%d/%d ↩]", i+1, len(lv.highlightedLines))
+			}
 			return fmt.Sprintf("[%d/%d]", i+1, len(lv.highlightedLines))
 		}
 	}
 	return ""
+}
+
+// HasActiveNavigation reports whether a navigation match is currently selected
+// (search match or error/warning highlight). Used by the Esc handler to decide
+// whether to deselect before fully closing search.
+func (lv *LogViewer) HasActiveNavigation() bool {
+	return lv.currentMatchLine >= 0 || lv.currentHighlightLine >= 0
+}
+
+// ClearActiveNavigation drops the active match selection without clearing the
+// search query or error highlighting. A subsequent Esc will then close search.
+func (lv *LogViewer) ClearActiveNavigation() {
+	lv.currentMatchLine = -1
+	lv.currentHighlightLine = -1
+	lv.lastNavWrapped = false
 }
 
 func (lv *LogViewer) renderLine(dl displayLine) string {
@@ -586,13 +648,86 @@ func (lv *LogViewer) SetSize(w, h int) {
 	}
 }
 
-// ApplySearch compiles pattern into a search regex and recomputes display lines.
-func (lv *LogViewer) ApplySearch(pattern string) error {
+// ApplySearch sets the active search pattern and launches a background goroutine
+// to find matching lines. searchRe is updated immediately so visible lines are
+// highlighted right away; searchMatchLines (for navigation) is populated when
+// the goroutine result arrives via SearchResultMsg.
+func (lv *LogViewer) ApplySearch(pattern string) tea.Cmd {
 	lv.searchQuery = pattern
 	lv.searchRe = compileSearchRegex(pattern)
 	lv.currentMatchLine = -1
-	lv.recomputeLines()
-	return nil
+	lv.searchMatchLines = lv.searchMatchLines[:0]
+	lv.lastNavWrapped = false
+	if lv.searchCancel != nil {
+		lv.searchCancel()
+		lv.searchCancel = nil
+	}
+	if lv.searchRe == nil || len(lv.rawLines) == 0 {
+		lv.searching = false
+		return nil
+	}
+	lv.searching = true
+	lv.searchVersion++
+	ctx, cancel := context.WithCancel(context.Background())
+	lv.searchCancel = cancel
+	snapshot := lv.rawLines // slice header copy; goroutine reads [0, snapshotLen) safely
+	snapshotLen := len(snapshot)
+	re := lv.searchRe
+	version := lv.searchVersion
+	return func() tea.Msg {
+		var indices []int
+		for i, raw := range snapshot[:snapshotLen] {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
+			if re.MatchString(raw) {
+				indices = append(indices, i)
+			}
+		}
+		return SearchResultMsg{lv: lv, version: version, snapshotLen: snapshotLen, indices: indices}
+	}
+}
+
+// applySearchResult applies a completed background search scan to searchMatchLines.
+// Stale results (wrong version or wrong receiver) are silently discarded.
+// Matches added by AppendRawLines for lines beyond snapshotLen are preserved.
+func (lv *LogViewer) applySearchResult(msg SearchResultMsg) {
+	if msg.lv != lv || msg.version != lv.searchVersion {
+		return
+	}
+	// Preserve matches that AppendRawLines added for raw lines after the snapshot.
+	var tail []int
+	for _, idx := range lv.searchMatchLines {
+		if idx < len(lv.lines) && lv.lines[idx].rawIdx >= msg.snapshotLen {
+			tail = append(tail, idx)
+		}
+	}
+	// Translate raw match indices to display line indices (first chunk per raw line).
+	matchSet := make(map[int]struct{}, len(msg.indices))
+	for _, ri := range msg.indices {
+		matchSet[ri] = struct{}{}
+	}
+	seen := make(map[int]struct{}, len(msg.indices))
+	lv.searchMatchLines = lv.searchMatchLines[:0]
+	for i, dl := range lv.lines {
+		if dl.rawIdx >= msg.snapshotLen {
+			break
+		}
+		if _, ok := matchSet[dl.rawIdx]; ok {
+			if _, already := seen[dl.rawIdx]; !already {
+				lv.searchMatchLines = append(lv.searchMatchLines, i)
+				seen[dl.rawIdx] = struct{}{}
+			}
+		}
+	}
+	lv.searchMatchLines = append(lv.searchMatchLines, tail...)
+	lv.searching = false
+	lv.currentMatchLine = -1
+	if len(lv.searchMatchLines) > 0 {
+		lv.nextSearchMatch(true)
+	}
 }
 
 // SearchQuery returns the current search pattern string.
@@ -610,12 +745,16 @@ func (lv *LogViewer) ItemCount() int {
 func (lv *LogViewer) AppendRawLines(newLines []string) {
 	prevKind := lv.lastVisibleKind
 	for _, raw := range newLines {
+		rawIdx := len(lv.rawLines)
 		lv.rawLines = append(lv.rawLines, raw)
 		internal := isInternalLine(raw)
 		if !lv.showInternal && internal {
 			continue
 		}
 		dl := lv.toDisplayLines(raw)
+		for i := range dl {
+			dl[i].rawIdx = rawIdx
+		}
 		if lv.searchRe != nil && lv.searchRe.MatchString(raw) {
 			lv.searchMatchLines = append(lv.searchMatchLines, len(lv.lines))
 		}

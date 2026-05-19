@@ -125,13 +125,38 @@ func SelfUpdate(latestTag string) error {
 		return fmt.Errorf("resolve binary path: %w", err)
 	}
 
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("chmod: %w", err)
+	// Write a staging file next to the binary so the rename stays on the same
+	// filesystem (avoids "invalid cross-device link" when /tmp is a tmpfs).
+	stagePath := exe + ".update-tmp"
+	if err := copyFile(tmpPath, stagePath, 0755); err != nil {
+		os.Remove(stagePath)
+		return fmt.Errorf("stage binary: %w", err)
 	}
-	if err := os.Rename(tmpPath, exe); err != nil {
+	os.Remove(tmpPath)
+
+	if err := os.Rename(stagePath, exe); err != nil {
+		os.Remove(stagePath)
 		return fmt.Errorf("replace binary: %w", err)
 	}
 	return nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func fetchRelease(tag string) (*release, error) {

@@ -363,10 +363,19 @@ func (sv *ScopedView) PreviewItemCount() int {
 
 // Searchable delegation.
 
-func (sv *ScopedView) ApplySearch(pattern string) error {
+func (sv *ScopedView) ApplySearch(pattern string) tea.Cmd {
 	if sv.inner != nil {
 		if s, ok := sv.inner.(Searchable); ok {
 			return s.ApplySearch(pattern)
+		}
+	}
+	return nil
+}
+
+func (sv *ScopedView) HandleSearchResult(msg SearchResultMsg) tea.Cmd {
+	if sv.inner != nil {
+		if h, ok := sv.inner.(SearchResultHandler); ok {
+			return h.HandleSearchResult(msg)
 		}
 	}
 	return nil

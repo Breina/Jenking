@@ -1,4 +1,4 @@
 package version
 
-// App is the current application version.
-const App = "0.1.0"
+// App is injected at build time via -ldflags; falls back to "dev" for local builds.
+var App = "dev"

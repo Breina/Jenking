@@ -209,7 +209,7 @@ func (sv *StageView) SetStages(stages []jenkins.Stage, selectIdx int) {
 	}
 }
 
-func (sv *StageView) ApplySearch(pattern string) error {
+func (sv *StageView) ApplySearch(pattern string) tea.Cmd {
 	sv.searchQuery = pattern
 	sv.preview.SetSearch(compileSearchRegex(pattern))
 	return nil

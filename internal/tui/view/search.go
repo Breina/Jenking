@@ -8,14 +8,15 @@ import (
 )
 
 // compileSearchRegex compiles a search pattern into a regexp.
-// Returns nil for empty or invalid patterns (graceful degradation while typing).
+// Falls back to literal string matching when the pattern is not a valid regex
+// (e.g. bare `\` while the user is still typing an escape sequence).
 func compileSearchRegex(pattern string) *regexp.Regexp {
 	if pattern == "" {
 		return nil
 	}
 	re, err := regexp.Compile("(?i)" + pattern)
 	if err != nil {
-		return nil
+		re = regexp.MustCompile("(?i)" + regexp.QuoteMeta(pattern))
 	}
 	return re
 }

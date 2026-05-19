@@ -161,8 +161,13 @@ func (dv *DescribeView) HasActivePreview() bool {
 	return dv.hasActivePreview()
 }
 
-func (dv *DescribeView) ApplySearch(pattern string) error {
+func (dv *DescribeView) ApplySearch(pattern string) tea.Cmd {
 	return dv.scriptLV.ApplySearch(pattern)
+}
+
+func (dv *DescribeView) HandleSearchResult(msg SearchResultMsg) tea.Cmd {
+	dv.scriptLV.applySearchResult(msg)
+	return nil
 }
 
 func (dv *DescribeView) SearchQuery() string {

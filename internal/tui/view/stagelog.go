@@ -85,13 +85,21 @@ func NewStageLogViewWithBuild(t theme.Theme, client jenkins.JenkinsClient, store
 
 func (sl *StageLogView) IsBuildRunning() bool { return sl.buildRunning }
 
-func (sl *StageLogView) ApplySearch(pattern string) error {
+func (sl *StageLogView) ApplySearch(pattern string) tea.Cmd {
 	return sl.lv.ApplySearch(pattern)
+}
+
+func (sl *StageLogView) HandleSearchResult(msg SearchResultMsg) tea.Cmd {
+	sl.lv.applySearchResult(msg)
+	return nil
 }
 
 func (sl *StageLogView) SearchQuery() string {
 	return sl.lv.SearchQuery()
 }
+
+func (sl *StageLogView) HasActiveNavigation() bool { return sl.lv.HasActiveNavigation() }
+func (sl *StageLogView) ClearActiveNavigation()    { sl.lv.ClearActiveNavigation() }
 
 func (sl *StageLogView) Init() tea.Cmd {
 	slog.Debug("stagelog.Init", "stage", sl.nc.StageName, "nodes", len(sl.nodeIDs), "buildRunning", sl.buildRunning)
