@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
 )
 
 // JenkinsClient defines the API boundary for testability.
@@ -26,6 +28,8 @@ type JenkinsClient interface {
 	GetNodeLogProgressive(ctx context.Context, jobPath string, buildNumber, nodeID, start int) (*NodeLog, error)
 	GetJobParameters(ctx context.Context, jobPath string) ([]ParameterDefinition, error)
 	GetBuildScript(ctx context.Context, jobPath string, buildNumber int) (string, error)
+	FetchPipelineSyntax(ctx context.Context, jobPath string, buildNumber int) (*pipelinesyntax.Symbols, error)
+	ValidateJenkinsfile(ctx context.Context, content string) (ValidationResult, error)
 	GetBuildParameters(ctx context.Context, jobPath string, buildNumber int) (map[string]string, error)
 	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*TestReport, error)
 	GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]Artifact, error)

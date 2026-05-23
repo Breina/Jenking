@@ -346,9 +346,15 @@ func recolorForSelection(s string, th theme.Theme) string {
 	// Replace all 256-color backgrounds with the selected background.
 	s = bgColorRe.ReplaceAllString(s, "48;5;"+selBg)
 
-	// Replace dark foregrounds that would be invisible on the selected bg.
-	// These are the progress bar's dark text (232) and empty fill (238).
-	for _, dark := range []string{"232", "238"} {
+	// Replace foregrounds that would be invisible on the selected bg:
+	// the progress bar's dark text (232) and empty fill (238), plus any
+	// foreground that exactly matches the selected background (e.g. the
+	// Matrix theme's dim green is both the dim fg and the selected bg).
+	invisible := []string{"232", "238"}
+	if selBg != "" {
+		invisible = append(invisible, selBg)
+	}
+	for _, dark := range invisible {
 		s = strings.ReplaceAll(s, "38;5;"+dark, "38;5;"+selFg)
 	}
 

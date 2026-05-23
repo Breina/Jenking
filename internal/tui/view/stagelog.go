@@ -286,7 +286,7 @@ func (sl *StageLogView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			sl.lv.highlightErrors = !sl.lv.highlightErrors
-			sl.lv.currentHighlightLine = -1
+			sl.lv.currentNavIdx = -1
 			sl.lv.recomputeLines()
 		case "f2", "n":
 			sl.lv.nextHighlight(true)

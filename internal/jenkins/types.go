@@ -79,6 +79,7 @@ type Job struct {
 	LastAnyBuild *BuildRef // most recently built branch across all branches
 	LastAnyColor string    // color of the most recently built branch
 	RunningCount int       // number of currently running builds/branches
+	Disabled     bool      // true when the job is disabled in Jenkins
 }
 
 // Build represents a Jenkins build.
@@ -370,6 +371,7 @@ func (j *jsonJob) toDomain(parentPath string) Job {
 		Type:       ParseJobType(j.Class),
 		BranchType: BranchTypeNone,
 		Color:      j.Color,
+		Disabled:   j.Color == "disabled",
 	}
 	if parentPath == "" {
 		job.FullPath = j.Name

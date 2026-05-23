@@ -8,6 +8,7 @@ import (
 
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
 )
 
 // DiskStore persists immutable build data to disk using gob encoding.
@@ -33,6 +34,7 @@ func (d *DiskStore) testReportsPath() string { return filepath.Join(d.dir, "test
 func (d *DiskStore) artifactsPath() string   { return filepath.Join(d.dir, "artifacts.gob") }
 func (d *DiskStore) jobsPath() string        { return filepath.Join(d.dir, "jobs.gob") }
 func (d *DiskStore) registryPath() string    { return filepath.Join(d.dir, "registry.gob") }
+func (d *DiskStore) symbolsPath() string     { return filepath.Join(d.dir, "symbols.gob") }
 
 // LoadRegistry returns the persisted registry records, or os.ErrNotExist if absent.
 func (d *DiskStore) LoadRegistry() ([]buildregistry.Record, error) {
@@ -206,6 +208,42 @@ func (d *DiskStore) loadAllJobsLocked() (map[string][]jenkins.Job, error) {
 	return readGob[map[string][]jenkins.Job](d.jobsPath())
 }
 
+// LoadSymbols returns the cached Symbols for the given key ("jobPath#buildNum").
+func (d *DiskStore) LoadSymbols(key string) (*pipelinesyntax.Symbols, error) {
+	m, err := d.loadAllSymbols()
+	if err != nil {
+		return nil, err
+	}
+	v, ok := m[key]
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return v, nil
+}
+
+// SaveSymbols persists Symbols for a single build (read-modify-write on the
+// shared map file). Builds are immutable, so entries effectively never expire.
+func (d *DiskStore) SaveSymbols(key string, sym *pipelinesyntax.Symbols) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	m, _ := d.loadAllSymbolsLocked()
+	if m == nil {
+		m = make(map[string]*pipelinesyntax.Symbols)
+	}
+	m[key] = sym
+	return writeGob(d.symbolsPath(), m)
+}
+
+func (d *DiskStore) loadAllSymbols() (map[string]*pipelinesyntax.Symbols, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.loadAllSymbolsLocked()
+}
+
+func (d *DiskStore) loadAllSymbolsLocked() (map[string]*pipelinesyntax.Symbols, error) {
+	return readGob[map[string]*pipelinesyntax.Symbols](d.symbolsPath())
+}
+
 // readGob reads and decodes a gob file into T.
 func readGob[T any](path string) (T, error) {
 	var v T
@@ -244,6 +282,7 @@ func (d *DiskStore) populate(
 	stages *Cache[string, []jenkins.Stage],
 	testReports *Cache[string, *jenkins.TestReport],
 	artifacts *Cache[string, []jenkins.Artifact],
+	symbols *Cache[string, *pipelinesyntax.Symbols],
 ) {
 	if jm, err := d.loadAllJobs(); err == nil {
 		for fp, j := range jm {
@@ -266,6 +305,12 @@ func (d *DiskStore) populate(
 	if am, err := d.loadAllArtifacts(); err == nil {
 		for key, a := range am {
 			artifacts.Put(key, a)
+		}
+	}
+
+	if sm, err := d.loadAllSymbols(); err == nil {
+		for key, s := range sm {
+			symbols.Put(key, s)
 		}
 	}
 }

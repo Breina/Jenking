@@ -8,6 +8,7 @@ import (
 
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
 )
 
 func newTestDiskStore(t *testing.T) *DiskStore {
@@ -214,7 +215,8 @@ func TestDiskStore_Populate(t *testing.T) {
 	stagesCache := New[string, []jenkins.Stage](0)
 	reportsCache := New[string, *jenkins.TestReport](100)
 	artifactsCache := New[string, []jenkins.Artifact](100)
-	d.populate(jobsCache, stagesCache, reportsCache, artifactsCache)
+	symbolsCache := New[string, *pipelinesyntax.Symbols](100)
+	d.populate(jobsCache, stagesCache, reportsCache, artifactsCache, symbolsCache)
 
 	if e := jobsCache.Get("Code"); e == nil || len(e.Value) != 1 {
 		t.Errorf("Jobs not populated: %v", e)

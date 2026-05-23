@@ -70,6 +70,12 @@ func main() {
 	}
 	activeTheme := theme.ApplyColorblindFilter(baseTheme, cbType)
 
+	view.SetVimPolicy(view.VimPolicy{
+		Enabled:         cfg.Preferences.VimIntegration.Enabled,
+		PrefetchSymbols: cfg.Preferences.VimIntegration.PrefetchSymbols,
+		ValidateOnSave:  cfg.Preferences.VimIntegration.ValidateOnSave,
+	})
+
 	keys := tui.DefaultKeyMap()
 	debug := logging.ParseLevel(cfg.Preferences.LogLevel) == logging.LevelDebug
 	header := component.NewHeader(activeTheme, active.URL, user.FullName, user.JenkinsVersion, debug)

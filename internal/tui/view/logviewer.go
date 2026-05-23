@@ -79,40 +79,70 @@ type SearchResultMsg struct {
 // LogViewer holds all shared state and logic for rendering scrollable log output.
 // It is embedded by ConsoleView and StageLogView.
 type LogViewer struct {
-	rawLines             []string
-	lines                []displayLine
-	offset               int
-	hOffset              int // rune columns; only active when !wrap
-	width, height        int
-	wrap                 bool
-	showInternal         bool
-	searchQuery          string
-	searchRe             *regexp.Regexp
-	searchMatchLines     []int // lines[] indices of first chunk per search-matching raw line
-	currentMatchLine     int   // lines[] index of the actively-selected search match (-1 = none)
-	searchVersion        int
-	searchCancel         context.CancelFunc
-	searching            bool // true while a background search goroutine is in flight
-	errCount             int
-	warnCount            int
-	highlightedLines     []int    // lines[] index of first chunk per error/warn raw line
-	highlightErrors      bool     // when false, error/warning classification and navigation are suppressed
-	currentHighlightLine int      // lines[] index of the actively-navigated error/warn line (-1 = none)
-	lastVisibleKind      lineKind // kind of the last visible (non-filtered) line
-	selectionText        string   // cleaned primary selection text from last poll
-	selectionLineCount   int      // non-empty lines in selectionText
-	selectionInLog       bool     // true when selectionText matches content in this log
-	lastNavWrapped       bool     // true when the last n/N navigation wrapped around
-	theme                theme.Theme
+	rawLines           []string
+	lines              []displayLine
+	offset             int
+	hOffset            int // rune columns; only active when !wrap
+	width, height      int
+	wrap               bool
+	showInternal       bool
+	searchQuery        string
+	searchRe           *regexp.Regexp
+	searchMatchLines   []int // lines[] indices of first chunk per search-matching raw line
+	currentMatchLine   int   // lines[] index of the actively-selected search match (-1 = none)
+	searchVersion      int
+	searchCancel       context.CancelFunc
+	searching          bool // true while a background search goroutine is in flight
+	errCount           int
+	warnCount          int
+	highlightedLines   []int    // lines[] indices in nav order. Duplicates allowed when navItemsFn supplies them — multiple items can target the same line. Scrollbar/marker emission dedups.
+	highlightErrors    bool     // when false, error/warning classification and navigation are suppressed
+	currentNavIdx      int      // index into highlightedLines of the actively-navigated item (-1 = none)
+	lastVisibleKind    lineKind // kind of the last visible (non-filtered) line
+	selectionText      string   // cleaned primary selection text from last poll
+	selectionLineCount int      // non-empty lines in selectionText
+	selectionInLog     bool     // true when selectionText matches content in this log
+	lastNavWrapped     bool     // true when the last n/N navigation wrapped around
+	theme              theme.Theme
 	// renderFn, when non-nil, overrides the default renderLogLine used in
 	// renderLine/renderLineAt. Set by callers that need custom line rendering
 	// (e.g. Groovy syntax highlighting in the describe script pane).
 	renderFn func(dl displayLine, wrap bool, hOffset, width int, searchRe *regexp.Regexp, t theme.Theme, isCurrent bool) string
+	// classifyFn, when non-nil, overrides the default content-regex classifyLine
+	// used to assign lineKind. Callers supply this when classification comes from
+	// external data (e.g. Jenkinsfile validation issues keyed by line number)
+	// rather than from log-line content.
+	classifyFn func(rawIdx int, raw string) lineKind
+	// navItemsFn, when non-nil, supplies the n/N navigation sequence as a slice
+	// of rawIdx values in display order. Duplicates allowed — multiple items can
+	// target the same line (e.g. multiple validation issues on line 7) so each
+	// gets its own step. When nil, navigation falls back to "one item per
+	// classifyFn-flagged line" (preserves console/stagelog log-view behavior).
+	navItemsFn func() []int
+}
+
+// classify returns the lineKind for a raw line, using classifyFn when set and
+// falling back to the package-level content-regex classifier otherwise.
+func (lv *LogViewer) classify(rawIdx int, raw string) lineKind {
+	if lv.classifyFn != nil {
+		return lv.classifyFn(rawIdx, raw)
+	}
+	return classifyLine(raw)
 }
 
 func newLogViewer(t theme.Theme) LogViewer {
-	return LogViewer{theme: t, highlightErrors: true, currentMatchLine: -1, currentHighlightLine: -1}
+	return LogViewer{theme: t, highlightErrors: true, currentMatchLine: -1, currentNavIdx: -1}
 }
+
+// CurrentNavIdx returns the active n/N navigation index, or -1 when none is
+// selected. Used by consumers (e.g. DescribeView) to look up the corresponding
+// caller-side item (validation issue, etc.) without maintaining a parallel
+// counter.
+func (lv *LogViewer) CurrentNavIdx() int { return lv.currentNavIdx }
+
+// NavItemsCount returns the number of n/N navigation targets currently
+// resolved (one entry per item, including duplicates).
+func (lv *LogViewer) NavItemsCount() int { return len(lv.highlightedLines) }
 
 // contentHeight returns the number of log lines that fit in the view.
 func (lv *LogViewer) contentHeight() int {
@@ -125,7 +155,15 @@ func (lv *LogViewer) ScrollInfo() ScrollInfo {
 	for _, idx := range lv.searchMatchLines {
 		markers = append(markers, ScrollMarker{Line: idx, Kind: ScrollMarkerSearch})
 	}
+	// Dedup highlighted lines so duplicate items on one line don't stack
+	// markers at the same scrollbar Y position (navItemsFn may produce
+	// duplicates for multi-issue-per-line cases).
+	seenMarker := make(map[int]struct{}, len(lv.highlightedLines))
 	for _, idx := range lv.highlightedLines {
+		if _, ok := seenMarker[idx]; ok {
+			continue
+		}
+		seenMarker[idx] = struct{}{}
 		kind := ScrollMarkerWarning
 		if idx < len(lv.lines) && lv.lines[idx].kind == lineKindError {
 			kind = ScrollMarkerError
@@ -165,16 +203,10 @@ func (lv *LogViewer) recomputeLines() {
 		}
 	}
 
-	// Save active highlight index similarly.
-	savedHighlightIdx := -1
-	if lv.currentHighlightLine >= 0 {
-		for i, line := range lv.highlightedLines {
-			if line == lv.currentHighlightLine {
-				savedHighlightIdx = i
-				break
-			}
-		}
-	}
+	// Save active highlight index — already an index into highlightedLines,
+	// so no lookup needed. Clamped after the rebuild in case the new list
+	// is shorter (e.g. fewer validation issues after a fix).
+	savedHighlightIdx := lv.currentNavIdx
 
 	// Capture which raw line is at the top of the view so we can restore
 	// the visual position even when wrap-mode changes the display-line count.
@@ -188,30 +220,45 @@ func (lv *LogViewer) recomputeLines() {
 	lv.highlightedLines = lv.highlightedLines[:0]
 	lv.searchMatchLines = lv.searchMatchLines[:0]
 	lv.currentMatchLine = -1
-	lv.currentHighlightLine = -1
+	lv.currentNavIdx = -1
+	// firstDisplayIdx maps rawIdx -> first display-line index. Populated as we
+	// build lv.lines so navItemsFn can resolve rawIdx values without an O(N*M)
+	// second pass.
+	firstDisplayIdx := map[int]int{}
 	prevKind := lineKindNormal
+	useNavItems := lv.navItemsFn != nil
 	for rawIdx, raw := range lv.rawLines {
 		internal := isInternalLine(raw)
 		if !lv.showInternal && internal {
 			continue
 		}
-		dl := lv.toDisplayLines(raw)
+		dl := lv.toDisplayLines(rawIdx, raw)
 		for i := range dl {
 			dl[i].rawIdx = rawIdx
 		}
+		firstDisplayIdx[rawIdx] = len(lv.lines)
 		if lv.searchRe != nil && lv.searchRe.MatchString(raw) {
 			lv.searchMatchLines = append(lv.searchMatchLines, len(lv.lines))
 		}
 		if !internal {
-			kind := classifyLine(raw)
-			if lv.highlightErrors && kind != lineKindNormal && kind != prevKind {
+			kind := lv.classify(rawIdx, raw)
+			// When navItemsFn is set the caller owns the navigation order, so
+			// don't auto-append per-line entries here (we'd double-count or get
+			// out-of-order targets). Counts still come from classification so
+			// the badge reflects every flagged line. The prevKind dedup
+			// collapses runs of similar content-classified log lines for
+			// log-view ergonomics; bypassed in the classifyFn case where each
+			// flagged line is meaningful on its own.
+			if lv.highlightErrors && kind != lineKindNormal && (lv.classifyFn != nil || kind != prevKind) {
 				switch kind {
 				case lineKindError:
 					lv.errCount++
 				case lineKindWarning:
 					lv.warnCount++
 				}
-				lv.highlightedLines = append(lv.highlightedLines, len(lv.lines))
+				if !useNavItems {
+					lv.highlightedLines = append(lv.highlightedLines, len(lv.lines))
+				}
 			}
 			prevKind = kind
 		} else {
@@ -220,6 +267,17 @@ func (lv *LogViewer) recomputeLines() {
 		lv.lines = append(lv.lines, dl...)
 	}
 	lv.lastVisibleKind = prevKind
+	if useNavItems {
+		// Resolve caller-supplied rawIdx sequence into display-line indices.
+		// Duplicates are preserved so n/N visits every item even when several
+		// share a line.
+		items := lv.navItemsFn()
+		for _, rawIdx := range items {
+			if disp, ok := firstDisplayIdx[rawIdx]; ok {
+				lv.highlightedLines = append(lv.highlightedLines, disp)
+			}
+		}
+	}
 	newMax := max(0, len(lv.lines)-lv.contentHeight())
 
 	// Restore the active search match. Clamp to the new match list in case
@@ -238,8 +296,8 @@ func (lv *LogViewer) recomputeLines() {
 		if savedHighlightIdx >= len(lv.highlightedLines) {
 			savedHighlightIdx = len(lv.highlightedLines) - 1
 		}
-		lv.currentHighlightLine = lv.highlightedLines[savedHighlightIdx]
-		lv.offset = min(lv.currentHighlightLine, newMax)
+		lv.currentNavIdx = savedHighlightIdx
+		lv.offset = min(lv.highlightedLines[savedHighlightIdx], newMax)
 	} else if atBottom {
 		lv.offset = newMax
 	} else if savedRawIdx >= 0 {
@@ -261,11 +319,11 @@ func (lv *LogViewer) recomputeLines() {
 // toDisplayLines converts one raw log line to one or more display rows.
 // In wrap mode long lines are split into lv.width-column chunks.
 // All chunks share the dim and kind of the source line.
-func (lv *LogViewer) toDisplayLines(raw string) []displayLine {
+func (lv *LogViewer) toDisplayLines(rawIdx int, raw string) []displayLine {
 	dim := isInternalLine(raw)
 	kind := lineKindNormal
 	if !dim {
-		kind = classifyLine(raw)
+		kind = lv.classify(rawIdx, raw)
 	}
 	if !lv.wrap || lv.width <= 0 {
 		return []displayLine{{text: raw, src: raw, dim: dim, kind: kind}}
@@ -443,34 +501,55 @@ func (lv *LogViewer) nextHighlight(forward bool) {
 	}
 	lv.lastNavWrapped = false
 	maxOff := max(0, len(lv.lines)-lv.contentHeight())
+	var next int
 	if forward {
-		threshold := lv.offset
-		if lv.currentHighlightLine >= 0 {
-			threshold = lv.currentHighlightLine
-		}
-		for _, idx := range lv.highlightedLines {
-			if idx > threshold {
-				lv.currentHighlightLine = idx
-				lv.offset = min(idx, maxOff)
-				return
+		// If an item is already selected, step to the next index. Otherwise
+		// scan for the first item below the current scroll position so the
+		// user's manual scrolling carries into n/N navigation.
+		switch {
+		case lv.currentNavIdx >= 0:
+			next = lv.currentNavIdx + 1
+			if next >= len(lv.highlightedLines) {
+				lv.lastNavWrapped = true
+				next = 0
+			}
+		default:
+			next = -1
+			for i, idx := range lv.highlightedLines {
+				if idx > lv.offset {
+					next = i
+					break
+				}
+			}
+			if next < 0 {
+				lv.lastNavWrapped = true
+				next = 0
 			}
 		}
-		lv.lastNavWrapped = true
-		lv.currentHighlightLine = lv.highlightedLines[0]
-		lv.offset = min(lv.highlightedLines[0], maxOff) // wrap
 	} else {
-		for i := len(lv.highlightedLines) - 1; i >= 0; i-- {
-			if lv.highlightedLines[i] < lv.offset {
-				lv.currentHighlightLine = lv.highlightedLines[i]
-				lv.offset = lv.highlightedLines[i]
-				return
+		switch {
+		case lv.currentNavIdx >= 0:
+			next = lv.currentNavIdx - 1
+			if next < 0 {
+				lv.lastNavWrapped = true
+				next = len(lv.highlightedLines) - 1
+			}
+		default:
+			next = -1
+			for i := len(lv.highlightedLines) - 1; i >= 0; i-- {
+				if lv.highlightedLines[i] < lv.offset {
+					next = i
+					break
+				}
+			}
+			if next < 0 {
+				lv.lastNavWrapped = true
+				next = len(lv.highlightedLines) - 1
 			}
 		}
-		lv.lastNavWrapped = true
-		last := lv.highlightedLines[len(lv.highlightedLines)-1]
-		lv.currentHighlightLine = last
-		lv.offset = min(last, maxOff) // wrap
 	}
+	lv.currentNavIdx = next
+	lv.offset = min(lv.highlightedLines[next], maxOff)
 }
 
 func (lv *LogViewer) nextSearchMatch(forward bool) {
@@ -559,32 +638,27 @@ func (lv *LogViewer) NavigationPositionInfo() string {
 		}
 		return ""
 	}
-	if !lv.highlightErrors || len(lv.highlightedLines) == 0 || lv.currentHighlightLine < 0 {
+	if !lv.highlightErrors || len(lv.highlightedLines) == 0 || lv.currentNavIdx < 0 {
 		return ""
 	}
-	for i, line := range lv.highlightedLines {
-		if line == lv.currentHighlightLine {
-			if lv.lastNavWrapped {
-				return fmt.Sprintf("[%d/%d ↩]", i+1, len(lv.highlightedLines))
-			}
-			return fmt.Sprintf("[%d/%d]", i+1, len(lv.highlightedLines))
-		}
+	if lv.lastNavWrapped {
+		return fmt.Sprintf("[%d/%d ↩]", lv.currentNavIdx+1, len(lv.highlightedLines))
 	}
-	return ""
+	return fmt.Sprintf("[%d/%d]", lv.currentNavIdx+1, len(lv.highlightedLines))
 }
 
 // HasActiveNavigation reports whether a navigation match is currently selected
 // (search match or error/warning highlight). Used by the Esc handler to decide
 // whether to deselect before fully closing search.
 func (lv *LogViewer) HasActiveNavigation() bool {
-	return lv.currentMatchLine >= 0 || lv.currentHighlightLine >= 0
+	return lv.currentMatchLine >= 0 || lv.currentNavIdx >= 0
 }
 
 // ClearActiveNavigation drops the active match selection without clearing the
 // search query or error highlighting. A subsequent Esc will then close search.
 func (lv *LogViewer) ClearActiveNavigation() {
 	lv.currentMatchLine = -1
-	lv.currentHighlightLine = -1
+	lv.currentNavIdx = -1
 	lv.lastNavWrapped = false
 }
 
@@ -603,13 +677,16 @@ func (lv *LogViewer) renderLine(dl displayLine) string {
 func (lv *LogViewer) renderLineAt(dl displayLine, absIdx int) string {
 	isCurrent := lv.searchRe != nil && absIdx == lv.currentMatchLine
 	isCurrentHighlight := false
-	if lv.searchRe == nil && lv.highlightErrors && lv.currentHighlightLine >= 0 && lv.currentHighlightLine < len(lv.lines) {
-		selectedKind := lv.lines[lv.currentHighlightLine].kind
-		blockEnd := lv.currentHighlightLine + 1
-		for blockEnd < len(lv.lines) && lv.lines[blockEnd].kind == selectedKind {
-			blockEnd++
+	if lv.searchRe == nil && lv.highlightErrors && lv.currentNavIdx >= 0 && lv.currentNavIdx < len(lv.highlightedLines) {
+		activeLine := lv.highlightedLines[lv.currentNavIdx]
+		if activeLine >= 0 && activeLine < len(lv.lines) {
+			selectedKind := lv.lines[activeLine].kind
+			blockEnd := activeLine + 1
+			for blockEnd < len(lv.lines) && lv.lines[blockEnd].kind == selectedKind {
+				blockEnd++
+			}
+			isCurrentHighlight = absIdx >= activeLine && absIdx < blockEnd
 		}
-		isCurrentHighlight = absIdx >= lv.currentHighlightLine && absIdx < blockEnd
 	}
 	if !lv.highlightErrors {
 		dl.kind = lineKindNormal
@@ -751,7 +828,7 @@ func (lv *LogViewer) AppendRawLines(newLines []string) {
 		if !lv.showInternal && internal {
 			continue
 		}
-		dl := lv.toDisplayLines(raw)
+		dl := lv.toDisplayLines(rawIdx, raw)
 		for i := range dl {
 			dl[i].rawIdx = rawIdx
 		}
@@ -759,15 +836,19 @@ func (lv *LogViewer) AppendRawLines(newLines []string) {
 			lv.searchMatchLines = append(lv.searchMatchLines, len(lv.lines))
 		}
 		if !internal {
-			kind := classifyLine(raw)
-			if lv.highlightErrors && kind != lineKindNormal && kind != prevKind {
+			kind := lv.classify(rawIdx, raw)
+			if lv.highlightErrors && kind != lineKindNormal && (lv.classifyFn != nil || kind != prevKind) {
 				switch kind {
 				case lineKindError:
 					lv.errCount++
 				case lineKindWarning:
 					lv.warnCount++
 				}
-				lv.highlightedLines = append(lv.highlightedLines, len(lv.lines))
+				// Streaming appends only support the line-based nav model;
+				// navItemsFn-backed views (describe) rebuild via recomputeLines.
+				if lv.navItemsFn == nil {
+					lv.highlightedLines = append(lv.highlightedLines, len(lv.lines))
+				}
 			}
 			prevKind = kind
 		} else {

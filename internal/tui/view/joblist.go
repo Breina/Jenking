@@ -71,6 +71,8 @@ type JobList struct {
 	searchRe         *regexp.Regexp
 	filteredJobs     []int // maps table row index → jl.jobs index
 	visualTickActive bool  // true while a visual tick chain is in flight
+	showDisabled     bool  // when true, disabled jobs are shown (default: true)
+	showOnlyRunning  bool  // when true, only jobs with running builds are shown
 	lastFetchedKey   string
 	trigger          triggerMixin
 	host             behaviorHost
@@ -126,6 +128,7 @@ func NewJobList(t theme.Theme, client jenkins.JenkinsClient, store *cache.Store,
 		ctx:           ctx,
 		cancel:        cancel,
 		progressBar:   component.NewProgressBar(t),
+		showDisabled:  true,
 	}
 	// selectedJob returns the highlighted job, or ok=false for empty rows,
 	// containers, or rows without a last build. Used by all behaviors here.
@@ -185,6 +188,15 @@ func (jl *JobList) ApplySearch(pattern string) tea.Cmd {
 
 func (jl *JobList) SearchQuery() string {
 	return jl.searchQuery
+}
+
+// selectedJobPath returns the FullPath of the currently highlighted job, or "".
+func (jl *JobList) selectedJobPath() string {
+	di := jl.dataIndex(jl.table.Cursor())
+	if di >= 0 && di < len(jl.jobs) {
+		return jl.jobs[di].FullPath
+	}
+	return ""
 }
 
 // rowForJobPath returns the table row index of the job with the given FullPath,
@@ -283,7 +295,14 @@ func (jl *JobList) hasRunning() bool {
 func (jl *JobList) populateTable() {
 	jl.filteredJobs = nil
 	var rows []component.Row
+	dim := jl.theme.Breadcrumb.Paren
 	for i, j := range jl.jobs {
+		if !jl.showDisabled && j.Disabled {
+			continue
+		}
+		if jl.showOnlyRunning && j.RunningCount == 0 {
+			continue
+		}
 		decoded := decodeName(j.Name)
 		if jl.searchRe != nil && !jl.searchRe.MatchString(decoded) {
 			continue
@@ -328,13 +347,26 @@ func (jl *JobList) populateTable() {
 		}
 
 		if jl.branchContext {
-			rows = append(rows, component.Row{name, lastBuild, "", status})
-		} else {
-			main := renderWeatherIcon(jl.theme, jenkins.ColorToLastCompletedStatus(j.Color))
-			if isContainer(j.Type) && j.Color == "" {
-				main = "-"
+			if j.Disabled {
+				rows = append(rows, component.Row{dim.Render(name), dim.Render(lastBuild), "", dim.Render(status)})
+			} else {
+				rows = append(rows, component.Row{name, lastBuild, "", status})
 			}
-			rows = append(rows, component.Row{name, main, "", lastBuild, "", status})
+		} else {
+			var main string
+			if j.Disabled {
+				main = dim.Render("⊘")
+			} else {
+				main = renderWeatherIcon(jl.theme, jenkins.ColorToLastCompletedStatus(j.Color))
+				if isContainer(j.Type) && j.Color == "" {
+					main = "-"
+				}
+			}
+			if j.Disabled {
+				rows = append(rows, component.Row{dim.Render(name), main, "", dim.Render(lastBuild), "", dim.Render(status)})
+			} else {
+				rows = append(rows, component.Row{name, main, "", lastBuild, "", status})
+			}
 		}
 	}
 	jl.table.SetRows(rows)
@@ -584,6 +616,16 @@ func (jl *JobList) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return jl, func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
 				}
 			}
+		case "D":
+			prevKey := jl.selectedJobPath()
+			jl.showDisabled = !jl.showDisabled
+			jl.populateTable()
+			jl.table.SetCursor(jl.rowForJobPath(prevKey))
+		case "r":
+			prevKey := jl.selectedJobPath()
+			jl.showOnlyRunning = !jl.showOnlyRunning
+			jl.populateTable()
+			jl.table.SetCursor(jl.rowForJobPath(prevKey))
 		}
 	}
 	return jl, jl.maybeFetchSelected()
@@ -638,6 +680,8 @@ func (jl *JobList) Shortcuts() []component.Shortcut {
 		sc = append(sc, component.Nav("esc", "jobs"))
 	}
 	sc = append(sc, component.Filter("/", "search", false))
+	sc = append(sc, component.Filter("D", "disabled", jl.showDisabled))
+	sc = append(sc, component.Filter("r", "running", jl.showOnlyRunning))
 	switch selected.Type {
 	case jenkins.JobTypeMultiBranch:
 		sc = append(sc, component.Nav("b", "all builds"))

@@ -269,7 +269,8 @@ func Jenkins() Theme {
 func Matrix() Theme {
 	neon := c("46") // bright neon green
 	med := c("34")  // medium green
-	dim := c("22")  // dark green
+	mid := c("28")  // mid-dim green (labels, hints)
+	dim := c("22")  // dark green (borders, ghost stages)
 	lime := c("82") // lime green
 	bg := c("233")  // near-black
 	black := c("0") // black
@@ -299,7 +300,7 @@ func Matrix() Theme {
 		Header: HeaderStyles{
 			Title:        lipgloss.NewStyle().Bold(true).Foreground(neon),
 			URL:          lipgloss.NewStyle().Foreground(med),
-			Label:        lipgloss.NewStyle().Foreground(dim),
+			Label:        lipgloss.NewStyle().Foreground(mid),
 			Value:        lipgloss.NewStyle().Foreground(med),
 			Connected:    lipgloss.NewStyle().Foreground(med),
 			Disconnected: lipgloss.NewStyle().Foreground(neon).Bold(true),
@@ -320,7 +321,7 @@ func Matrix() Theme {
 		},
 		Search: SearchStyles{
 			Match:        lipgloss.NewStyle().Foreground(black).Background(med).Bold(true),
-			CurrentMatch: lipgloss.NewStyle().Foreground(black).Background(lipgloss.Color("255")).Bold(true),
+			CurrentMatch: lipgloss.NewStyle().Foreground(black).Background(neon).Bold(true),
 		},
 		Table: TableStyles{
 			Header:   lipgloss.NewStyle().Bold(true).Foreground(neon).Padding(0, 1),
@@ -330,7 +331,7 @@ func Matrix() Theme {
 		StatusBar: StatusBarStyles{
 			Bar:        lipgloss.NewStyle().Foreground(med),
 			Key:        lipgloss.NewStyle().Bold(true).Foreground(neon),
-			Help:       lipgloss.NewStyle().Foreground(dim),
+			Help:       lipgloss.NewStyle().Foreground(mid),
 			Input:      lipgloss.NewStyle().Foreground(neon),
 			Error:      lipgloss.NewStyle().Foreground(neon).Bold(true),
 			Command:    lipgloss.NewStyle().Foreground(neon),

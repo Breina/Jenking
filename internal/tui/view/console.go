@@ -228,7 +228,7 @@ func (cv *ConsoleView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "e":
 			cv.lv.highlightErrors = !cv.lv.highlightErrors
-			cv.lv.currentHighlightLine = -1
+			cv.lv.currentNavIdx = -1
 			cv.lv.recomputeLines()
 		case "f2", "n":
 			cv.lv.nextHighlight(true)

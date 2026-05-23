@@ -5,6 +5,7 @@ import (
 
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
 )
 
 // NodeLogSnapshot holds the progressive log state for a single flow node.
@@ -27,13 +28,14 @@ type StageLogKey struct {
 // The remaining Cache fields persist non-build-status data (jobs, stages,
 // test reports, artifacts) that has its own immutable-after-completion semantics.
 type Store struct {
-	Jobs        *Cache[string, []jenkins.Job]        // key: folderPath
-	Stages      *Cache[string, []jenkins.Stage]      // key: "jobPath:buildNum"
-	NodeLogs    *Cache[StageLogKey, NodeLogSnapshot] // LRU(200)
-	WhenSkipped *Cache[string, map[string][]bool]    // key: "jobPath:buildNum"
-	TestReports *Cache[string, *jenkins.TestReport]  // key: "jobPath:buildNum"
-	Artifacts   *Cache[string, []jenkins.Artifact]   // key: "jobPath:buildNum"
-	BuildDetail *Cache[string, jenkins.Build]        // key: "jobPath:buildNum"
+	Jobs        *Cache[string, []jenkins.Job]           // key: folderPath
+	Stages      *Cache[string, []jenkins.Stage]         // key: "jobPath:buildNum"
+	NodeLogs    *Cache[StageLogKey, NodeLogSnapshot]    // LRU(200)
+	WhenSkipped *Cache[string, map[string][]bool]       // key: "jobPath:buildNum"
+	TestReports *Cache[string, *jenkins.TestReport]     // key: "jobPath:buildNum"
+	Artifacts   *Cache[string, []jenkins.Artifact]      // key: "jobPath:buildNum"
+	BuildDetail *Cache[string, jenkins.Build]           // key: "jobPath:buildNum"
+	Symbols     *Cache[string, *pipelinesyntax.Symbols] // key: "jobPath#buildNum"
 
 	// Registry is the single source of truth for build status.
 	Registry *buildregistry.Registry
@@ -54,6 +56,7 @@ func NewStore(disk *DiskStore) *Store {
 		TestReports: New[string, *jenkins.TestReport](100),
 		Artifacts:   New[string, []jenkins.Artifact](100),
 		BuildDetail: New[string, jenkins.Build](100),
+		Symbols:     New[string, *pipelinesyntax.Symbols](200),
 		Disk:        disk,
 		dirtyJobs:   make(map[string]bool),
 		dirtyBuilds: make(map[string]bool),
@@ -69,7 +72,7 @@ func NewStore(disk *DiskStore) *Store {
 	s.Registry = buildregistry.New(buildregistry.Config{Persist: persist})
 	if disk != nil {
 		_ = disk.RemoveLegacyFiles()
-		disk.populate(s.Jobs, s.Stages, s.TestReports, s.Artifacts)
+		disk.populate(s.Jobs, s.Stages, s.TestReports, s.Artifacts, s.Symbols)
 		if records, err := disk.LoadRegistry(); err == nil && len(records) > 0 {
 			s.Registry.LoadFromDisk(records)
 		}
@@ -91,6 +94,7 @@ func (s *Store) TotalEntries() int {
 		s.TestReports.Size() +
 		s.Artifacts.Size() +
 		s.BuildDetail.Size() +
+		s.Symbols.Size() +
 		regSize
 }
 

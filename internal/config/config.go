@@ -36,15 +36,25 @@ type ServerConfig struct {
 
 // PreferencesConfig holds user preferences.
 type PreferencesConfig struct {
-	RefreshInterval     time.Duration `mapstructure:"refresh_interval"`
-	SlowRefreshInterval time.Duration `mapstructure:"slow_refresh_interval"`
-	Theme               string        `mapstructure:"theme"`
-	MaxLogLines         int           `mapstructure:"max_log_lines"`
-	ColorblindnessType  string        `mapstructure:"colorblindness_type"`
-	LogLevel            string        `mapstructure:"log_level"`
-	GitUsernames        []string      `mapstructure:"git_usernames"`
-	SponsorKey          string        `mapstructure:"sponsor_key"`
-	Notifications       bool          `mapstructure:"notifications"`
+	RefreshInterval     time.Duration        `mapstructure:"refresh_interval"`
+	SlowRefreshInterval time.Duration        `mapstructure:"slow_refresh_interval"`
+	Theme               string               `mapstructure:"theme"`
+	MaxLogLines         int                  `mapstructure:"max_log_lines"`
+	ColorblindnessType  string               `mapstructure:"colorblindness_type"`
+	LogLevel            string               `mapstructure:"log_level"`
+	GitUsernames        []string             `mapstructure:"git_usernames"`
+	SponsorKey          string               `mapstructure:"sponsor_key"`
+	Notifications       bool                 `mapstructure:"notifications"`
+	VimIntegration      VimIntegrationConfig `mapstructure:"vim_integration"`
+}
+
+// VimIntegrationConfig gates the per-build vim runtime and Jenkinsfile
+// validation features. All flags default to true — a missing block keeps
+// everything on so users get the richer editor experience out of the box.
+type VimIntegrationConfig struct {
+	Enabled         bool `mapstructure:"enabled"`
+	PrefetchSymbols bool `mapstructure:"prefetch_symbols"`
+	ValidateOnSave  bool `mapstructure:"validate_on_save"`
 }
 
 // Manager wraps Config and the underlying viper instance so preferences can
@@ -170,6 +180,9 @@ func Load() (*Manager, error) {
 	v.SetDefault("preferences.colorblindness_type", "none")
 	v.SetDefault("preferences.log_level", "off")
 	v.SetDefault("preferences.notifications", true)
+	v.SetDefault("preferences.vim_integration.enabled", true)
+	v.SetDefault("preferences.vim_integration.prefetch_symbols", true)
+	v.SetDefault("preferences.vim_integration.validate_on_save", true)
 
 	// Config file location
 	v.SetConfigName("config")
