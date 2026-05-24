@@ -7,6 +7,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 func TestJsonBuildToDomain_TriggeredBy(t *testing.T) {
@@ -107,7 +109,7 @@ func TestJsonBuildDetailToDomain_NonStringParameters(t *testing.T) {
 		t.Fatalf("decode failed (the bug): %v", err)
 	}
 	d := bd.toDomain()
-	if d.Status != BuildStatusSuccess {
+	if d.Status != jmodel.BuildStatusSuccess {
 		t.Errorf("Status = %v, want Success — parameter parsing must not block status decode", d.Status)
 	}
 	if d.Params["FAIL"] != "false" {
@@ -157,14 +159,14 @@ func TestJsonBuildDetailToDomain_ParameterTypes(t *testing.T) {
 }
 
 func TestParseFlowGraphTable_FailurePropagation(t *testing.T) {
-	// Stage "Build Maven" has a child "sh" that failed.
+	// jmodel.Stage "jmodel.Build Maven" has a child "sh" that failed.
 	// All stages at same depth (padding * 9).
 	html := `<table>
 <tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 10">stage - (5.1 sec in block)</a></td><td>Checkout SCM</td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 11">stage block (Checkout SCM) - (5 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 11)"><a tooltip="ID: 12">checkout - (5 sec in self)</a></td><td></td><td><a href="/node/12/log/">log</a></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 25">stage - (20 sec in block)</a></td><td>Build Maven</td><td><a href="/node/25/log/">log</a></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 26">stage block (Build Maven) - (19 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 25">stage - (20 sec in block)</a></td><td>jmodel.Build Maven</td><td><a href="/node/25/log/">log</a></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 26">stage block (jmodel.Build Maven) - (19 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 11)"><a tooltip="ID: 32">echo - (42 ms in self)</a></td><td>hello</td><td><a href="/node/32/log/">log</a></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 11)"><a tooltip="ID: 33">sh - (18 sec in self)</a></td><td>mvn package</td><td><a href="/node/33/log/">log</a></td><td>Failed</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 41">stage - (1.2 sec in block)</a></td><td>Quality</td><td><a href="/node/41/log/">log</a></td><td>Success</td></tr>
@@ -182,17 +184,17 @@ func TestParseFlowGraphTable_FailurePropagation(t *testing.T) {
 	if stages[0].Name != "Checkout SCM" {
 		t.Errorf("stage[0].Name = %q, want Checkout SCM", stages[0].Name)
 	}
-	if stages[0].Status != BuildStatusSuccess {
+	if stages[0].Status != jmodel.BuildStatusSuccess {
 		t.Errorf("stage[0].Status = %q, want success", stages[0].Status)
 	}
 	if stages[0].Depth != 0 {
 		t.Errorf("stage[0].Depth = %d, want 0", stages[0].Depth)
 	}
 
-	if stages[1].Name != "Build Maven" {
-		t.Errorf("stage[1].Name = %q, want Build Maven", stages[1].Name)
+	if stages[1].Name != "jmodel.Build Maven" {
+		t.Errorf("stage[1].Name = %q, want jmodel.Build Maven", stages[1].Name)
 	}
-	if stages[1].Status != BuildStatusFailed {
+	if stages[1].Status != jmodel.BuildStatusFailed {
 		t.Errorf("stage[1].Status = %q, want failed (child sh failed)", stages[1].Status)
 	}
 	if len(stages[1].NodeIDs) != 3 {
@@ -201,13 +203,13 @@ func TestParseFlowGraphTable_FailurePropagation(t *testing.T) {
 
 	// Quality remains SUCCESS from the AJAX table — skip detection is now
 	// log-based (earlier-failure skips are parsed from console output).
-	if stages[2].Status != BuildStatusSuccess {
+	if stages[2].Status != jmodel.BuildStatusSuccess {
 		t.Errorf("stage[2].Status = %q, want success (skip detection is log-based)", stages[2].Status)
 	}
 }
 
 func TestParseFlowGraphTable_NestingAndParallel(t *testing.T) {
-	// Simulates: Quality & Safety > parallel > Docker > Build Docker, Trivy scan
+	// Simulates: Quality & Safety > parallel > Docker > jmodel.Build Docker, Trivy scan
 	html := `<table>
 <tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 41">stage - (1.2 sec in block)</a></td><td>Quality &amp; Safety</td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 42">stage block (Quality &amp; Safety) - (1 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
@@ -215,8 +217,8 @@ func TestParseFlowGraphTable_NestingAndParallel(t *testing.T) {
 <tr><td style="padding-left: calc(var(--p) * 12)"><a tooltip="ID: 46">parallel block (Branch: Docker) - (9 ms in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 13)"><a tooltip="ID: 48">stage - (0.74 sec in block)</a></td><td>Docker</td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 14)"><a tooltip="ID: 49">stage block (Docker) - (0.67 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 15)"><a tooltip="ID: 57">stage - (0.23 sec in block)</a></td><td>Build Docker</td><td></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 16)"><a tooltip="ID: 58">stage block (Build Docker) - (77 ms in block)</a></td><td></td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 15)"><a tooltip="ID: 57">stage - (0.23 sec in block)</a></td><td>jmodel.Build Docker</td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 16)"><a tooltip="ID: 58">stage block (jmodel.Build Docker) - (77 ms in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 15)"><a tooltip="ID: 62">stage - (0.15 sec in block)</a></td><td>Trivy scan</td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 16)"><a tooltip="ID: 63">stage block (Trivy scan) - (80 ms in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 12)"><a tooltip="ID: 47">parallel block (Branch: Sonar scan) - (0.27 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
@@ -231,7 +233,7 @@ func TestParseFlowGraphTable_NestingAndParallel(t *testing.T) {
 		t.Fatalf("parseFlowGraphTable() error: %v", err)
 	}
 
-	// Expected stages: Quality & Safety, Docker, Build Docker, Trivy scan, Sonar scan, Push Docker image
+	// Expected stages: Quality & Safety, Docker, jmodel.Build Docker, Trivy scan, Sonar scan, Push Docker image
 	if len(stages) != 6 {
 		for i, s := range stages {
 			t.Logf("  stage[%d]: %q depth=%d parallel=%v", i, s.Name, s.Depth, s.Parallel)
@@ -246,7 +248,7 @@ func TestParseFlowGraphTable_NestingAndParallel(t *testing.T) {
 	}{
 		{"Quality & Safety", 0, true},
 		{"Docker", 1, false},
-		{"Build Docker", 2, false},
+		{"jmodel.Build Docker", 2, false},
 		{"Trivy scan", 2, false},
 		{"Sonar scan", 1, false},
 		{"Push Docker image", 0, false},
@@ -266,8 +268,8 @@ func TestParseFlowGraphTable_NestingAndParallel(t *testing.T) {
 
 func TestParseFlowGraphTable_Duration(t *testing.T) {
 	html := `<table>
-<tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 10">stage - (4 min 13 sec in block)</a></td><td>Build</td><td></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 11">stage block (Build) - (4 min 12 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 10">stage - (4 min 13 sec in block)</a></td><td>jmodel.Build</td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 11">stage block (jmodel.Build) - (4 min 12 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
 </table>`
 
 	stages, err := parseFlowGraphTable(html)
@@ -284,12 +286,12 @@ func TestParseFlowGraphTable_Duration(t *testing.T) {
 }
 
 func TestParseFlowGraphTable_Matrix(t *testing.T) {
-	// Matrix pipeline: Build environments > parallel > Matrix branches > Render manifest
+	// Matrix pipeline: jmodel.Build environments > parallel > Matrix branches > Render manifest
 	html := `<table>
 <tr><td style="padding-left: calc(var(--p) * 9)"><a tooltip="ID: 10">stage - (1.8 sec in block)</a></td><td>Main</td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 10)"><a tooltip="ID: 11">stage block (Main) - (1.7 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 11)"><a tooltip="ID: 20">stage - (1.3 sec in block)</a></td><td>Build environments</td><td></td><td>Success</td></tr>
-<tr><td style="padding-left: calc(var(--p) * 12)"><a tooltip="ID: 21">stage block (Build environments) - (1.2 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 11)"><a tooltip="ID: 20">stage - (1.3 sec in block)</a></td><td>jmodel.Build environments</td><td></td><td>Success</td></tr>
+<tr><td style="padding-left: calc(var(--p) * 12)"><a tooltip="ID: 21">stage block (jmodel.Build environments) - (1.2 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 13)"><a tooltip="ID: 30">parallel - (1.1 sec in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 14)"><a tooltip="ID: 31">parallel block (Branch: Matrix - ENVIRONMENT_DIR = 'on') - (12 ms in block)</a></td><td></td><td></td><td>Success</td></tr>
 <tr><td style="padding-left: calc(var(--p) * 15)"><a tooltip="ID: 32">stage - (0.81 sec in block)</a></td><td>Matrix - ENVIRONMENT_DIR = 'on'</td><td></td><td>Success</td></tr>
@@ -310,7 +312,7 @@ func TestParseFlowGraphTable_Matrix(t *testing.T) {
 		t.Fatalf("parseFlowGraphTable() error: %v", err)
 	}
 
-	// Expected: Main, Build environments (parallel), Matrix on, Render manifest,
+	// Expected: Main, jmodel.Build environments (parallel), Matrix on, Render manifest,
 	//           Matrix oe, Render manifest, Publish changes
 	tests := []struct {
 		name     string
@@ -318,7 +320,7 @@ func TestParseFlowGraphTable_Matrix(t *testing.T) {
 		parallel bool
 	}{
 		{"Main", 0, false},
-		{"Build environments", 1, true},
+		{"jmodel.Build environments", 1, true},
 		{"Matrix - ENVIRONMENT_DIR = 'on'", 2, false},
 		{"Render manifest", 3, false},
 		{"Matrix - ENVIRONMENT_DIR = 'oe'", 2, false},
@@ -370,7 +372,7 @@ func TestParseDurationText(t *testing.T) {
 func TestParseSkippedStages_LeafSkip(t *testing.T) {
 	log := `[Pipeline] { (Maven deploy)
 [Pipeline] stage
-Stage "Maven deploy" skipped due to when conditional`
+jmodel.Stage "Maven deploy" skipped due to when conditional`
 
 	result := ParseSkippedStages(log)
 	occs := result["Maven deploy"]
@@ -383,13 +385,13 @@ func TestParseSkippedStages_ParentSkipWithChildren(t *testing.T) {
 	// When parent is skipped, children show the parent's name in the skip message.
 	// The current stage (from { (Name) lines) is what matters.
 	log := `[Pipeline] { (Primary branch)
-Stage "Primary branch" skipped due to when conditional
+jmodel.Stage "Primary branch" skipped due to when conditional
 [Pipeline] { (Validate tag)
-Stage "Primary branch" skipped due to when conditional
+jmodel.Stage "Primary branch" skipped due to when conditional
 [Pipeline] { (Sonar scan)
-Stage "Primary branch" skipped due to when conditional
+jmodel.Stage "Primary branch" skipped due to when conditional
 [Pipeline] { (Maven release)
-Stage "Primary branch" skipped due to when conditional`
+jmodel.Stage "Primary branch" skipped due to when conditional`
 
 	result := ParseSkippedStages(log)
 	for _, name := range []string{"Primary branch", "Validate tag", "Sonar scan", "Maven release"} {
@@ -409,9 +411,9 @@ func TestParseSkippedStages_OccurrenceDifferentiation(t *testing.T) {
 	log := `[Pipeline] { (Primary branch)
 [Pipeline] { (Maven deploy)
 [Pipeline] { (Non-primary branch)
-Stage "Non-primary branch" skipped due to when conditional
+jmodel.Stage "Non-primary branch" skipped due to when conditional
 [Pipeline] { (Maven deploy)
-Stage "Non-primary branch" skipped due to when conditional`
+jmodel.Stage "Non-primary branch" skipped due to when conditional`
 
 	result := ParseSkippedStages(log)
 	occs := result["Maven deploy"]
@@ -427,21 +429,21 @@ Stage "Non-primary branch" skipped due to when conditional`
 }
 
 func TestMarkSkipped_OnlyDowngradesSuccess(t *testing.T) {
-	stages := []Stage{
-		{Name: "Build", Status: BuildStatusSuccess},
-		{Name: "Test", Status: BuildStatusFailed},
-		{Name: "Deploy", Status: BuildStatusSuccess, NodeIDs: []int{42}},
+	stages := []jmodel.Stage{
+		{Name: "jmodel.Build", Status: jmodel.BuildStatusSuccess},
+		{Name: "Test", Status: jmodel.BuildStatusFailed},
+		{Name: "Deploy", Status: jmodel.BuildStatusSuccess, NodeIDs: []int{42}},
 	}
-	skippedOccs := map[string][]bool{"Build": {true}, "Test": {true}, "Deploy": {true}}
+	skippedOccs := map[string][]bool{"jmodel.Build": {true}, "Test": {true}, "Deploy": {true}}
 	MarkSkipped(stages, skippedOccs)
 
-	if stages[0].Status != BuildStatusSkipped {
+	if stages[0].Status != jmodel.BuildStatusSkipped {
 		t.Errorf("Build: expected SKIPPED, got %v", stages[0].Status)
 	}
-	if stages[1].Status != BuildStatusFailed {
+	if stages[1].Status != jmodel.BuildStatusFailed {
 		t.Errorf("Test: expected FAILED (unchanged), got %v", stages[1].Status)
 	}
-	if stages[2].Status != BuildStatusSkipped {
+	if stages[2].Status != jmodel.BuildStatusSkipped {
 		t.Errorf("Deploy: expected SKIPPED, got %v", stages[2].Status)
 	}
 	if len(stages[2].NodeIDs) != 0 {
@@ -452,17 +454,17 @@ func TestMarkSkipped_OnlyDowngradesSuccess(t *testing.T) {
 // TestMarkSkipped_OccurrenceAware verifies that duplicate stage names in
 // parallel branches are matched by occurrence order, not just name.
 func TestMarkSkipped_OccurrenceAware(t *testing.T) {
-	stages := []Stage{
-		{Name: "Maven deploy", Status: BuildStatusSuccess, NodeIDs: []int{1}},
-		{Name: "Maven deploy", Status: BuildStatusSuccess, NodeIDs: []int{2}},
+	stages := []jmodel.Stage{
+		{Name: "Maven deploy", Status: jmodel.BuildStatusSuccess, NodeIDs: []int{1}},
+		{Name: "Maven deploy", Status: jmodel.BuildStatusSuccess, NodeIDs: []int{2}},
 	}
 	skippedOccs := map[string][]bool{"Maven deploy": {false, true}}
 	MarkSkipped(stages, skippedOccs)
 
-	if stages[0].Status != BuildStatusSuccess {
+	if stages[0].Status != jmodel.BuildStatusSuccess {
 		t.Errorf("first Maven deploy should remain SUCCESS, got %v", stages[0].Status)
 	}
-	if stages[1].Status != BuildStatusSkipped {
+	if stages[1].Status != jmodel.BuildStatusSkipped {
 		t.Errorf("second Maven deploy should be SKIPPED, got %v", stages[1].Status)
 	}
 	if len(stages[1].NodeIDs) != 0 {
@@ -475,9 +477,9 @@ func TestMarkSkipped_OccurrenceAware(t *testing.T) {
 func TestParseSkippedStages_ProgressiveLogFormat(t *testing.T) {
 	// Jenkins embeds base64 metadata inside ANSI hidden blocks: \x1b[8m...data...\x1b[0m
 	log := "\x1b[8mha:////base64data=\x1b[0m[Pipeline] { (Non-primary branch)\n" +
-		"Stage \"Non-primary branch\" skipped due to when conditional\n" +
+		"jmodel.Stage \"Non-primary branch\" skipped due to when conditional\n" +
 		"\x1b[8mha:////morebase64=\x1b[0m[Pipeline] { (Maven deploy)\n" +
-		"Stage \"Non-primary branch\" skipped due to when conditional\n"
+		"jmodel.Stage \"Non-primary branch\" skipped due to when conditional\n"
 
 	result := ParseSkippedStages(log)
 	occs := result["Non-primary branch"]
@@ -491,17 +493,17 @@ func TestParseSkippedStages_ProgressiveLogFormat(t *testing.T) {
 }
 
 func TestParseSkippedStages_EarlierFailure(t *testing.T) {
-	log := `[Pipeline] { (Build Maven)
+	log := `[Pipeline] { (jmodel.Build Maven)
 [Pipeline] sh
 [Pipeline] { (Sonar scan)
-Stage "Sonar scan" skipped due to earlier failure(s)
+jmodel.Stage "Sonar scan" skipped due to earlier failure(s)
 [Pipeline] { (Maven deploy)
-Stage "Maven deploy" skipped due to earlier failure(s)`
+jmodel.Stage "Maven deploy" skipped due to earlier failure(s)`
 
 	result := ParseSkippedStages(log)
-	occs := result["Build Maven"]
+	occs := result["jmodel.Build Maven"]
 	if len(occs) != 1 || occs[0] {
-		t.Errorf("Build Maven should NOT be skipped, got %v", occs)
+		t.Errorf("jmodel.Build Maven should NOT be skipped, got %v", occs)
 	}
 	occs = result["Sonar scan"]
 	if len(occs) != 1 || !occs[0] {
@@ -519,7 +521,7 @@ Stage "Maven deploy" skipped due to earlier failure(s)`
 func TestParseSkippedStages_ParallelChildrenBatchedSkips(t *testing.T) {
 	log := `[Pipeline] stage
 [Pipeline] { (Non-primary branch)
-Stage "Non-primary branch" skipped due to when conditional
+jmodel.Stage "Non-primary branch" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] parallel
 [Pipeline] { (Branch: Trivy scan)
@@ -531,13 +533,13 @@ Stage "Non-primary branch" skipped due to when conditional
 [Pipeline] { (Maven verify)
 [Pipeline] stage
 [Pipeline] { (Maven deploy)
-Stage "Trivy scan" skipped due to when conditional
+jmodel.Stage "Trivy scan" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] }
-Stage "Maven verify" skipped due to when conditional
+jmodel.Stage "Maven verify" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] }
-Stage "Maven deploy" skipped due to when conditional
+jmodel.Stage "Maven deploy" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] }
 [Pipeline] // stage
@@ -599,11 +601,11 @@ Stage "Maven deploy" skipped due to when conditional
 }
 
 func TestMarkSkippedEmptyMap(t *testing.T) {
-	stages := []Stage{
-		{Name: "Build", Status: BuildStatusSuccess},
+	stages := []jmodel.Stage{
+		{Name: "jmodel.Build", Status: jmodel.BuildStatusSuccess},
 	}
 	MarkSkipped(stages, map[string][]bool{})
-	if stages[0].Status != BuildStatusSuccess {
+	if stages[0].Status != jmodel.BuildStatusSuccess {
 		t.Errorf("expected SUCCESS unchanged, got %v", stages[0].Status)
 	}
 }
@@ -699,7 +701,7 @@ func TestListProjectBuilds_ParseAndSort(t *testing.T) {
 	if builds[0].Number != 2 {
 		t.Errorf("builds[0].Number = %d, want 2", builds[0].Number)
 	}
-	if builds[0].Status != BuildStatusRunning {
+	if builds[0].Status != jmodel.BuildStatusRunning {
 		t.Errorf("builds[0].Status = %q, want running", builds[0].Status)
 	}
 	if builds[0].TriggeredBy != "alice" {
@@ -713,7 +715,7 @@ func TestListProjectBuilds_ParseAndSort(t *testing.T) {
 	if builds[1].BranchName != "feature-x" {
 		t.Errorf("builds[1].BranchName = %q, want feature-x", builds[1].BranchName)
 	}
-	if builds[1].Status != BuildStatusFailed {
+	if builds[1].Status != jmodel.BuildStatusFailed {
 		t.Errorf("builds[1].Status = %q, want failed", builds[1].Status)
 	}
 
@@ -724,7 +726,7 @@ func TestListProjectBuilds_ParseAndSort(t *testing.T) {
 	if builds[2].Number != 1 {
 		t.Errorf("builds[2].Number = %d, want 1", builds[2].Number)
 	}
-	if builds[2].Status != BuildStatusSuccess {
+	if builds[2].Status != jmodel.BuildStatusSuccess {
 		t.Errorf("builds[2].Status = %q, want success", builds[2].Status)
 	}
 }

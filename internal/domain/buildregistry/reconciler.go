@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // Reconciler is the production ReconcileFn implementation. It debounces
@@ -16,9 +16,9 @@ import (
 // also forward it as a BuildCompletedMsg to in-flight views (e.g. StageView)
 // that pattern-match on that message.
 type Reconciler struct {
-	client   jenkins.JenkinsClient
+	client   jmodel.JenkinsClient
 	registry *Registry
-	notify   func(key Key, build jenkins.Build, err error)
+	notify   func(key Key, build jmodel.Build, err error)
 
 	mu       sync.Mutex
 	inflight map[Key]time.Time
@@ -26,7 +26,7 @@ type Reconciler struct {
 }
 
 // NewReconciler wires a Reconciler. notify may be nil.
-func NewReconciler(client jenkins.JenkinsClient, registry *Registry, notify func(key Key, build jenkins.Build, err error)) *Reconciler {
+func NewReconciler(client jmodel.JenkinsClient, registry *Registry, notify func(key Key, build jmodel.Build, err error)) *Reconciler {
 	return &Reconciler{
 		client:   client,
 		registry: registry,
@@ -62,7 +62,7 @@ func (r *Reconciler) Reconcile(k Key) {
 		detail, err := r.client.GetBuild(ctx, k.JobPath, k.Number)
 		if err != nil {
 			if r.notify != nil {
-				r.notify(k, jenkins.Build{}, err)
+				r.notify(k, jmodel.Build{}, err)
 			}
 			return
 		}

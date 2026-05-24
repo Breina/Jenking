@@ -10,7 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
 )
 
 // UserGDSLDir is the directory scanned for user-authored GDSL files. Each
@@ -73,7 +74,7 @@ func (c *Client) ApplyJobParameters(ctx context.Context, sym *pipelinesyntax.Sym
 		}
 	}
 	sym.Globals = append(sym.Globals, pipelinesyntax.GlobalVar{
-		Name: "params", Doc: "Build parameters", Members: members,
+		Name: "params", Doc: "jmodel.Build parameters", Members: members,
 	})
 }
 
@@ -113,7 +114,7 @@ func ApplyUserGDSL(sym *pipelinesyntax.Symbols) {
 		}
 		sym.Globals = append(sym.Globals, pipelinesyntax.GlobalVar{
 			Name:    recv,
-			Doc:     "User-declared global (via " + UserGDSLDir + ").",
+			Doc:     "jmodel.User-declared global (via " + UserGDSLDir + ").",
 			Members: ms,
 		})
 		seen[recv] = true
@@ -145,7 +146,7 @@ func (c *Client) FetchPipelineSyntax(ctx context.Context, jobPath string, buildN
 	// Per-build does NOT exist (observed 404 on this Jenkins). Per-job is
 	// scoped to whichever libraries are loaded by that job; controller-level
 	// always exists once the plugin is installed.
-	jobURL := JobPathToURL(jobPath)
+	jobURL := jmodel.JobPathToURL(jobPath)
 	_ = buildNumber
 	gdslCandidates := []string{
 		jobURL + "/pipeline-syntax/gdsl",
@@ -201,7 +202,7 @@ func (c *Client) FetchPipelineSyntax(ctx context.Context, jobPath string, buildN
 		}
 	}
 
-	// User GDSL is NOT merged here — the result of this function is cached
+	// jmodel.User GDSL is NOT merged here — the result of this function is cached
 	// per build, and we want user-edits to a .gdsl file to take effect
 	// without busting that cache. The view layer calls ApplyUserGDSL after
 	// every cache lookup or fresh fetch.

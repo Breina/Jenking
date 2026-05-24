@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // GetJobParameters fetches the parameter definitions for a job.
 // Returns an empty slice (not nil) for non-parameterized jobs.
-func (c *Client) GetJobParameters(ctx context.Context, jobPath string) ([]ParameterDefinition, error) {
-	path := JobPathToURL(jobPath) + "/api/json?tree=property[parameterDefinitions[name,type,defaultParameterValue[value],description,choices]]"
+func (c *Client) GetJobParameters(ctx context.Context, jobPath string) ([]jmodel.ParameterDefinition, error) {
+	path := jmodel.JobPathToURL(jobPath) + "/api/json?tree=property[parameterDefinitions[name,type,defaultParameterValue[value],description,choices]]"
 
 	data, err := c.get(ctx, path)
 	if err != nil {
@@ -21,14 +23,14 @@ func (c *Client) GetJobParameters(ctx context.Context, jobPath string) ([]Parame
 		return nil, fmt.Errorf("parsing job parameters: %w", err)
 	}
 
-	var params []ParameterDefinition
+	var params []jmodel.ParameterDefinition
 	for _, prop := range resp.Property {
 		for _, pd := range prop.ParameterDefinitions {
 			def := ""
 			if pd.DefaultParameterValue != nil {
 				def = fmt.Sprintf("%v", pd.DefaultParameterValue.Value)
 			}
-			params = append(params, ParameterDefinition{
+			params = append(params, jmodel.ParameterDefinition{
 				Name:        pd.Name,
 				Type:        parseParamType(pd.Type),
 				Default:     def,
@@ -39,7 +41,7 @@ func (c *Client) GetJobParameters(ctx context.Context, jobPath string) ([]Parame
 	}
 
 	if params == nil {
-		params = []ParameterDefinition{}
+		params = []jmodel.ParameterDefinition{}
 	}
 	return params, nil
 }

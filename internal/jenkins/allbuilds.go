@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // allBuildFields is the set of build fields fetched during a full scan.
@@ -19,7 +21,7 @@ const allBuildFields = `number,result,building,timestamp,duration,estimatedDurat
 func allBuildsTree(maxPerJob int) string {
 	slice := fmt.Sprintf("{0,%d}", maxPerJob)
 	leaf := fmt.Sprintf("name,fullName,url,builds[%s]%s", allBuildFields, slice)
-	// Build 4 levels of nesting from inside out.
+	// jmodel.Build 4 levels of nesting from inside out.
 	query := "jobs[" + leaf + "]"
 	for i := 1; i < 4; i++ {
 		query = "jobs[" + leaf + "," + query + "]"
@@ -27,29 +29,12 @@ func allBuildsTree(maxPerJob int) string {
 	return query
 }
 
-// buildKey returns a stable string key for deduplicating builds across sources.
-func BuildKey(jobPath string, number int) string {
-	return jobPath + "#" + strconv.Itoa(number)
-}
-
-// ParseBuildKey splits a build key (jobPath#number) into its components.
-// Returns number=0 when the key is malformed.
-func ParseBuildKey(key string) (jobPath string, number int) {
-	idx := strings.LastIndex(key, "#")
-	if idx < 0 {
-		return key, 0
-	}
-	n, err := strconv.Atoi(key[idx+1:])
-	if err != nil {
-		return key[:idx], 0
-	}
-	return key[:idx], n
-}
+// BuildKey, ParseBuildKey live in internal/domain/jmodel.
 
 // ScanAllBuilds fetches recent builds across all jobs on the Jenkins instance.
 // At most maxPerJob builds per job/branch are returned. This is a potentially
 // heavy call: use it with a slow polling interval and cache the result.
-func (c *Client) ScanAllBuilds(ctx context.Context, maxPerJob int) ([]UserBuild, error) {
+func (c *Client) ScanAllBuilds(ctx context.Context, maxPerJob int) ([]jmodel.UserBuild, error) {
 	tree := allBuildsTree(maxPerJob)
 	path := "/api/json?tree=" + url.QueryEscape(tree)
 	data, err := c.get(ctx, path)
@@ -60,13 +45,13 @@ func (c *Client) ScanAllBuilds(ctx context.Context, maxPerJob int) ([]UserBuild,
 	if err := json.Unmarshal(data, &list); err != nil {
 		return nil, fmt.Errorf("parsing all builds scan: %w", err)
 	}
-	var out []UserBuild
+	var out []jmodel.UserBuild
 	flattenJobBuilds(list.Jobs, "", &out)
 	return out, nil
 }
 
 // flattenJobBuilds recursively extracts UserBuilds from a nested job tree.
-func flattenJobBuilds(jobs []jsonJob, parentPath string, out *[]UserBuild) {
+func flattenJobBuilds(jobs []jsonJob, parentPath string, out *[]jmodel.UserBuild) {
 	for _, job := range jobs {
 		jobPath := strings.TrimPrefix(job.FullName, "/")
 		if jobPath == "" {
@@ -78,7 +63,7 @@ func flattenJobBuilds(jobs []jsonJob, parentPath string, out *[]UserBuild) {
 			}
 		}
 		for _, b := range job.Builds {
-			*out = append(*out, UserBuild{
+			*out = append(*out, jmodel.UserBuild{
 				JobPath:     jobPath,
 				DisplayName: jobPath + " #" + strconv.Itoa(b.Number),
 				Build:       b.toDomain(),

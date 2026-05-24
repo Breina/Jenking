@@ -12,6 +12,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 var (
@@ -29,7 +31,7 @@ var (
 // GetBuildScript fetches the Groovy script used for a specific build via the
 // Jenkins replay page. This matches what the Jenkins GUI shows at /{build}/replay/.
 func (c *Client) GetBuildScript(ctx context.Context, jobPath string, buildNumber int) (string, error) {
-	path := fmt.Sprintf("%s/%d/replay/", JobPathToURL(jobPath), buildNumber)
+	path := fmt.Sprintf("%s/%d/replay/", jmodel.JobPathToURL(jobPath), buildNumber)
 	data, err := c.get(ctx, path)
 	if err != nil {
 		return "", fmt.Errorf("get build script: %w", err)
@@ -72,7 +74,7 @@ func (c *Client) getCrumb(ctx context.Context) (crumb, error) {
 // form action, then POST everything back with mainScript replaced. This mirrors
 // exactly what a browser does and avoids guessing field names.
 func (c *Client) ReplayBuild(ctx context.Context, jobPath string, buildNum int, script string) error {
-	formPath := fmt.Sprintf("%s/%d/replay/", JobPathToURL(jobPath), buildNum)
+	formPath := fmt.Sprintf("%s/%d/replay/", jmodel.JobPathToURL(jobPath), buildNum)
 	pageData, err := c.get(ctx, formPath)
 	if err != nil {
 		return fmt.Errorf("replay build: fetch form: %w", err)
@@ -80,7 +82,7 @@ func (c *Client) ReplayBuild(ctx context.Context, jobPath string, buildNum int, 
 	pageHTML := string(pageData)
 
 	// Parse the form action (relative URL like "rebuild").
-	actionPath := formPath // fallback
+	var actionPath string
 	if m := formActionRe.FindStringSubmatch(pageHTML); m != nil {
 		action := html.UnescapeString(m[1])
 		if strings.HasPrefix(action, "http") {
@@ -186,17 +188,10 @@ func jsonQuote(s string) string {
 	return string(b)
 }
 
-func firstN(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}
-
 // GetBuildParameters fetches the actual parameter values used for a specific build.
 // Uses json.RawMessage for values so boolean/numeric params are handled correctly.
 func (c *Client) GetBuildParameters(ctx context.Context, jobPath string, buildNumber int) (map[string]string, error) {
-	path := fmt.Sprintf("%s/%d/api/json?tree=actions[_class,parameters[name,value]]", JobPathToURL(jobPath), buildNumber)
+	path := fmt.Sprintf("%s/%d/api/json?tree=actions[_class,parameters[name,value]]", jmodel.JobPathToURL(jobPath), buildNumber)
 	data, err := c.get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("get build parameters: %w", err)

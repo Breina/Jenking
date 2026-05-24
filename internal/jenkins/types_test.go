@@ -3,19 +3,21 @@ package jenkins
 import (
 	"testing"
 	"time"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 func TestParseJobType(t *testing.T) {
 	tests := []struct {
 		class string
-		want  JobType
+		want  jmodel.JobType
 	}{
-		{"com.cloudbees.hudson.plugins.folder.Folder", JobTypeFolder},
-		{"org.jenkinsci.plugins.workflow.job.WorkflowJob", JobTypePipeline},
-		{"hudson.model.FreeStyleProject", JobTypeFreeStyle},
-		{"org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject", JobTypeMultiBranch},
-		{"jenkins.branch.MultiBranchProject", JobTypeMultiBranch},
-		{"some.unknown.Class", JobTypeUnknown},
+		{"com.cloudbees.hudson.plugins.folder.Folder", jmodel.JobTypeFolder},
+		{"org.jenkinsci.plugins.workflow.job.WorkflowJob", jmodel.JobTypePipeline},
+		{"hudson.model.FreeStyleProject", jmodel.JobTypeFreeStyle},
+		{"org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject", jmodel.JobTypeMultiBranch},
+		{"jenkins.branch.MultiBranchProject", jmodel.JobTypeMultiBranch},
+		{"some.unknown.Class", jmodel.JobTypeUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.class, func(t *testing.T) {
@@ -34,16 +36,16 @@ func TestParseBuildStatus(t *testing.T) {
 		name     string
 		result   *string
 		building bool
-		want     BuildStatus
+		want     jmodel.BuildStatus
 	}{
-		{"building", nil, true, BuildStatusRunning},
-		{"null result not building", nil, false, BuildStatusRunning},
-		{"success", str("SUCCESS"), false, BuildStatusSuccess},
-		{"failure", str("FAILURE"), false, BuildStatusFailed},
-		{"aborted", str("ABORTED"), false, BuildStatusAborted},
-		{"unstable", str("UNSTABLE"), false, BuildStatusUnstable},
-		{"not built", str("NOT_BUILT"), false, BuildStatusNotBuilt},
-		{"unknown", str("WEIRD"), false, BuildStatusUnknown},
+		{"building", nil, true, jmodel.BuildStatusRunning},
+		{"null result not building", nil, false, jmodel.BuildStatusRunning},
+		{"success", str("SUCCESS"), false, jmodel.BuildStatusSuccess},
+		{"failure", str("FAILURE"), false, jmodel.BuildStatusFailed},
+		{"aborted", str("ABORTED"), false, jmodel.BuildStatusAborted},
+		{"unstable", str("UNSTABLE"), false, jmodel.BuildStatusUnstable},
+		{"not built", str("NOT_BUILT"), false, jmodel.BuildStatusNotBuilt},
+		{"unknown", str("WEIRD"), false, jmodel.BuildStatusUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -58,18 +60,18 @@ func TestParseBuildStatus(t *testing.T) {
 func TestColorToBuildStatus(t *testing.T) {
 	tests := []struct {
 		color string
-		want  BuildStatus
+		want  jmodel.BuildStatus
 	}{
-		{"blue", BuildStatusSuccess},
-		{"blue_anime", BuildStatusRunning},
-		{"red", BuildStatusFailed},
-		{"red_anime", BuildStatusRunning},
-		{"aborted", BuildStatusAborted},
-		{"grey", BuildStatusAborted},
-		{"yellow", BuildStatusUnstable},
-		{"notbuilt", BuildStatusNotBuilt},
-		{"disabled", BuildStatusNotBuilt},
-		{"something_else", BuildStatusUnknown},
+		{"blue", jmodel.BuildStatusSuccess},
+		{"blue_anime", jmodel.BuildStatusRunning},
+		{"red", jmodel.BuildStatusFailed},
+		{"red_anime", jmodel.BuildStatusRunning},
+		{"aborted", jmodel.BuildStatusAborted},
+		{"grey", jmodel.BuildStatusAborted},
+		{"yellow", jmodel.BuildStatusUnstable},
+		{"notbuilt", jmodel.BuildStatusNotBuilt},
+		{"disabled", jmodel.BuildStatusNotBuilt},
+		{"something_else", jmodel.BuildStatusUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.color, func(t *testing.T) {
@@ -103,9 +105,9 @@ func TestJobPathToURL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			got := JobPathToURL(tt.path)
+			got := jmodel.JobPathToURL(tt.path)
 			if got != tt.want {
-				t.Errorf("JobPathToURL(%q) = %q, want %q", tt.path, got, tt.want)
+				t.Errorf("jmodel.JobPathToURL(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
 	}

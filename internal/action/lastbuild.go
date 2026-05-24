@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Breina/Jenking/internal/tui/view"
+	"github.com/Breina/Jenking/internal/navmsg"
 )
 
 // resolveBuildNumber returns a concrete build number for the given NC build
 // reference. When the reference carries an explicit number it's returned
 // verbatim. For #last (or no reference at all) the latest build is fetched
 // from the API. Returns an error when the job has no builds.
-func resolveBuildNumber(ctx context.Context, client apiClient, jobPath string, ref view.NavBuildRef) (int, error) {
+func resolveBuildNumber(ctx context.Context, client apiClient, jobPath string, ref navmsg.NavBuildRef) (int, error) {
 	if ref.Number > 0 {
 		return ref.Number, nil
 	}

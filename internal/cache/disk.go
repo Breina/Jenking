@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
-	"github.com/Breina/Jenking/internal/jenkins"
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
 )
 
 // DiskStore persists immutable build data to disk using gob encoding.
@@ -66,7 +66,7 @@ func (d *DiskStore) RemoveLegacyFiles() error {
 }
 
 // LoadStages returns the cached stages for the given key ("jobPath:buildNum").
-func (d *DiskStore) LoadStages(key string) ([]jenkins.Stage, error) {
+func (d *DiskStore) LoadStages(key string) ([]jmodel.Stage, error) {
 	m, err := d.loadAllStages()
 	if err != nil {
 		return nil, err
@@ -79,30 +79,30 @@ func (d *DiskStore) LoadStages(key string) ([]jenkins.Stage, error) {
 }
 
 // SaveStages persists stages for a single build (read-modify-write on the shared map file).
-func (d *DiskStore) SaveStages(key string, stages []jenkins.Stage) error {
+func (d *DiskStore) SaveStages(key string, stages []jmodel.Stage) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	m, _ := d.loadAllStagesLocked()
 	if m == nil {
-		m = make(map[string][]jenkins.Stage)
+		m = make(map[string][]jmodel.Stage)
 	}
 	m[key] = stages
 	return writeGob(d.stagesPath(), m)
 }
 
 // loadAllStages returns all persisted stages.
-func (d *DiskStore) loadAllStages() (map[string][]jenkins.Stage, error) {
+func (d *DiskStore) loadAllStages() (map[string][]jmodel.Stage, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.loadAllStagesLocked()
 }
 
-func (d *DiskStore) loadAllStagesLocked() (map[string][]jenkins.Stage, error) {
-	return readGob[map[string][]jenkins.Stage](d.stagesPath())
+func (d *DiskStore) loadAllStagesLocked() (map[string][]jmodel.Stage, error) {
+	return readGob[map[string][]jmodel.Stage](d.stagesPath())
 }
 
 // LoadTestReport returns the cached test report for the given key ("jobPath:buildNum").
-func (d *DiskStore) LoadTestReport(key string) (*jenkins.TestReport, error) {
+func (d *DiskStore) LoadTestReport(key string) (*jmodel.TestReport, error) {
 	m, err := d.loadAllTestReports()
 	if err != nil {
 		return nil, err
@@ -115,30 +115,30 @@ func (d *DiskStore) LoadTestReport(key string) (*jenkins.TestReport, error) {
 }
 
 // SaveTestReport persists a test report for a single build (read-modify-write).
-func (d *DiskStore) SaveTestReport(key string, report *jenkins.TestReport) error {
+func (d *DiskStore) SaveTestReport(key string, report *jmodel.TestReport) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	m, _ := d.loadAllTestReportsLocked()
 	if m == nil {
-		m = make(map[string]*jenkins.TestReport)
+		m = make(map[string]*jmodel.TestReport)
 	}
 	m[key] = report
 	return writeGob(d.testReportsPath(), m)
 }
 
 // loadAllTestReports returns all persisted test reports.
-func (d *DiskStore) loadAllTestReports() (map[string]*jenkins.TestReport, error) {
+func (d *DiskStore) loadAllTestReports() (map[string]*jmodel.TestReport, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.loadAllTestReportsLocked()
 }
 
-func (d *DiskStore) loadAllTestReportsLocked() (map[string]*jenkins.TestReport, error) {
-	return readGob[map[string]*jenkins.TestReport](d.testReportsPath())
+func (d *DiskStore) loadAllTestReportsLocked() (map[string]*jmodel.TestReport, error) {
+	return readGob[map[string]*jmodel.TestReport](d.testReportsPath())
 }
 
 // LoadArtifacts returns the cached artifact list for the given key ("jobPath:buildNum").
-func (d *DiskStore) LoadArtifacts(key string) ([]jenkins.Artifact, error) {
+func (d *DiskStore) LoadArtifacts(key string) ([]jmodel.Artifact, error) {
 	m, err := d.loadAllArtifacts()
 	if err != nil {
 		return nil, err
@@ -151,29 +151,29 @@ func (d *DiskStore) LoadArtifacts(key string) ([]jenkins.Artifact, error) {
 }
 
 // SaveArtifacts persists the artifact list for a single build (read-modify-write).
-func (d *DiskStore) SaveArtifacts(key string, artifacts []jenkins.Artifact) error {
+func (d *DiskStore) SaveArtifacts(key string, artifacts []jmodel.Artifact) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	m, _ := d.loadAllArtifactsLocked()
 	if m == nil {
-		m = make(map[string][]jenkins.Artifact)
+		m = make(map[string][]jmodel.Artifact)
 	}
 	m[key] = artifacts
 	return writeGob(d.artifactsPath(), m)
 }
 
-func (d *DiskStore) loadAllArtifacts() (map[string][]jenkins.Artifact, error) {
+func (d *DiskStore) loadAllArtifacts() (map[string][]jmodel.Artifact, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.loadAllArtifactsLocked()
 }
 
-func (d *DiskStore) loadAllArtifactsLocked() (map[string][]jenkins.Artifact, error) {
-	return readGob[map[string][]jenkins.Artifact](d.artifactsPath())
+func (d *DiskStore) loadAllArtifactsLocked() (map[string][]jmodel.Artifact, error) {
+	return readGob[map[string][]jmodel.Artifact](d.artifactsPath())
 }
 
 // LoadJobs returns the cached job listing for the given folder path.
-func (d *DiskStore) LoadJobs(folderPath string) ([]jenkins.Job, error) {
+func (d *DiskStore) LoadJobs(folderPath string) ([]jmodel.Job, error) {
 	m, err := d.loadAllJobs()
 	if err != nil {
 		return nil, err
@@ -186,26 +186,26 @@ func (d *DiskStore) LoadJobs(folderPath string) ([]jenkins.Job, error) {
 }
 
 // SaveJobs persists the job listing for a single folder (read-modify-write).
-func (d *DiskStore) SaveJobs(folderPath string, jobs []jenkins.Job) error {
+func (d *DiskStore) SaveJobs(folderPath string, jobs []jmodel.Job) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	m, _ := d.loadAllJobsLocked()
 	if m == nil {
-		m = make(map[string][]jenkins.Job)
+		m = make(map[string][]jmodel.Job)
 	}
 	m[folderPath] = jobs
 	return writeGob(d.jobsPath(), m)
 }
 
 // loadAllJobs returns all persisted folder job listings.
-func (d *DiskStore) loadAllJobs() (map[string][]jenkins.Job, error) {
+func (d *DiskStore) loadAllJobs() (map[string][]jmodel.Job, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.loadAllJobsLocked()
 }
 
-func (d *DiskStore) loadAllJobsLocked() (map[string][]jenkins.Job, error) {
-	return readGob[map[string][]jenkins.Job](d.jobsPath())
+func (d *DiskStore) loadAllJobsLocked() (map[string][]jmodel.Job, error) {
+	return readGob[map[string][]jmodel.Job](d.jobsPath())
 }
 
 // LoadSymbols returns the cached Symbols for the given key ("jobPath#buildNum").
@@ -278,10 +278,10 @@ func writeGob(path string, v any) error {
 // Called once from NewStore at startup; errors are silently ignored (cache is regenerable).
 // Build status lives in the registry, loaded separately via LoadRegistry.
 func (d *DiskStore) populate(
-	jobs *Cache[string, []jenkins.Job],
-	stages *Cache[string, []jenkins.Stage],
-	testReports *Cache[string, *jenkins.TestReport],
-	artifacts *Cache[string, []jenkins.Artifact],
+	jobs *Cache[string, []jmodel.Job],
+	stages *Cache[string, []jmodel.Stage],
+	testReports *Cache[string, *jmodel.TestReport],
+	artifacts *Cache[string, []jmodel.Artifact],
 	symbols *Cache[string, *pipelinesyntax.Symbols],
 ) {
 	if jm, err := d.loadAllJobs(); err == nil {

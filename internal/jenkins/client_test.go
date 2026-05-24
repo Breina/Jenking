@@ -23,7 +23,7 @@ func TestWhoAmI(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Jenkins", "2.479.1")
-		w.Write([]byte(`{"id":"admin","fullName":"Admin User"}`))
+		w.Write([]byte(`{"id":"admin","fullName":"Admin jmodel.User"}`))
 	}))
 	defer srv.Close()
 
@@ -36,8 +36,8 @@ func TestWhoAmI(t *testing.T) {
 	if user.ID != "admin" {
 		t.Errorf("user.ID = %q, want %q", user.ID, "admin")
 	}
-	if user.FullName != "Admin User" {
-		t.Errorf("user.FullName = %q, want %q", user.FullName, "Admin User")
+	if user.FullName != "Admin jmodel.User" {
+		t.Errorf("user.FullName = %q, want %q", user.FullName, "Admin jmodel.User")
 	}
 	if user.JenkinsVersion != "2.479.1" {
 		t.Errorf("user.JenkinsVersion = %q, want %q", user.JenkinsVersion, "2.479.1")

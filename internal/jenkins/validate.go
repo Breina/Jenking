@@ -8,57 +8,24 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
-// ValidationIssue is one problem the Jenkins pipeline-model-converter found in
-// a Jenkinsfile. Line/Col are 1-based; both are 0 when the converter didn't
-// report a position (e.g. tokenisation errors that point at the whole file).
-type ValidationIssue struct {
-	Line    int
-	Col     int
-	Message string
-}
-
-// ValidationResult is the parsed response from /pipeline-model-converter/validate.
-type ValidationResult struct {
-	OK     bool
-	Issues []ValidationIssue
-	Raw    string
-}
-
-// FormatErrorformat renders the issues in a format vim's errorformat picks up
-// with `%f:%l:%c: %m` (col present) and `%f:%l: %m` (col missing).
-func (r ValidationResult) FormatErrorformat(file string) string {
-	if len(r.Issues) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, iss := range r.Issues {
-		if iss.Col > 0 {
-			fmt.Fprintf(&b, "%s:%d:%d: %s\n", file, iss.Line, iss.Col, iss.Message)
-		} else {
-			line := iss.Line
-			if line == 0 {
-				line = 1
-			}
-			fmt.Fprintf(&b, "%s:%d: %s\n", file, line, iss.Message)
-		}
-	}
-	return b.String()
-}
+// ValidationIssue, ValidationResult, FormatErrorformat live in internal/domain/jmodel.
 
 // ValidateJenkinsfile POSTs the script to the controller's pipeline-model-converter
 // /validate endpoint. Declarative-pipeline only (the converter rejects pure
 // scripted pipelines with a recognisable error message — surfaced as a single
 // issue rather than a transport error).
-func (c *Client) ValidateJenkinsfile(ctx context.Context, content string) (ValidationResult, error) {
+func (c *Client) ValidateJenkinsfile(ctx context.Context, content string) (jmodel.ValidationResult, error) {
 	form := url.Values{}
 	form.Set("jenkinsfile", content)
 
 	endpoint := c.baseURL + "/pipeline-model-converter/validate"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return ValidationResult{}, fmt.Errorf("validate: build request: %w", err)
+		return jmodel.ValidationResult{}, fmt.Errorf("validate: build request: %w", err)
 	}
 	req.SetBasicAuth(c.username, c.token)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -70,15 +37,15 @@ func (c *Client) ValidateJenkinsfile(ctx context.Context, content string) (Valid
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return ValidationResult{}, fmt.Errorf("validate: %w", err)
+		return jmodel.ValidationResult{}, fmt.Errorf("validate: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return ValidationResult{}, fmt.Errorf("validate: read response: %w", err)
+		return jmodel.ValidationResult{}, fmt.Errorf("validate: read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ValidationResult{Raw: string(body)},
+		return jmodel.ValidationResult{Raw: string(body)},
 			fmt.Errorf("validate: HTTP %d", resp.StatusCode)
 	}
 	return parseValidateResponse(string(body)), nil
@@ -90,16 +57,16 @@ func (c *Client) ValidateJenkinsfile(ctx context.Context, content string) (Valid
 // Failure: "Errors encountered validating Jenkinsfile:\nWorkflowScript: 5: <msg>\n..."
 //
 //	or "Jenkinsfile content '...' did not contain a Jenkinsfile" etc.
-func parseValidateResponse(s string) ValidationResult {
+func parseValidateResponse(s string) jmodel.ValidationResult {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return ValidationResult{OK: true, Raw: s}
+		return jmodel.ValidationResult{OK: true, Raw: s}
 	}
 	if strings.HasPrefix(s, "Jenkinsfile successfully validated") {
-		return ValidationResult{OK: true, Raw: s}
+		return jmodel.ValidationResult{OK: true, Raw: s}
 	}
 
-	var issues []ValidationIssue
+	var issues []jmodel.ValidationIssue
 	// Each structured error from pipeline-model-converter spans up to three
 	// lines: the message (which carries Line via prefix or @-suffix form), an
 	// echo of the offending source line, and a caret pointing at the column.
@@ -127,9 +94,9 @@ func parseValidateResponse(s string) ValidationResult {
 		issues = append(issues, parsed)
 	}
 	if len(issues) == 0 {
-		issues = []ValidationIssue{{Message: s}}
+		issues = []jmodel.ValidationIssue{{Message: s}}
 	}
-	return ValidationResult{OK: false, Issues: issues, Raw: s}
+	return jmodel.ValidationResult{OK: false, Issues: issues, Raw: s}
 }
 
 var (
@@ -143,9 +110,9 @@ var (
 	validateLineSuffixRe = regexp.MustCompile(`\s*@\s*line\s+(\d+),\s*column\s+(\d+)\.?\s*$`)
 )
 
-func parseValidateLine(line string) ValidationIssue {
+func parseValidateLine(line string) jmodel.ValidationIssue {
 	if m := validateLineRe.FindStringSubmatch(line); m != nil {
-		iss := ValidationIssue{Message: strings.TrimSpace(m[3])}
+		iss := jmodel.ValidationIssue{Message: strings.TrimSpace(m[3])}
 		if n, err := atoiSafe(m[1]); err == nil {
 			iss.Line = n
 		}
@@ -157,7 +124,7 @@ func parseValidateLine(line string) ValidationIssue {
 		return iss
 	}
 	if loc := validateLineSuffixRe.FindStringSubmatchIndex(line); loc != nil {
-		iss := ValidationIssue{Message: strings.TrimSpace(line[:loc[0]])}
+		iss := jmodel.ValidationIssue{Message: strings.TrimSpace(line[:loc[0]])}
 		if n, err := atoiSafe(line[loc[2]:loc[3]]); err == nil {
 			iss.Line = n
 		}
@@ -166,7 +133,7 @@ func parseValidateLine(line string) ValidationIssue {
 		}
 		return iss
 	}
-	return ValidationIssue{Message: line}
+	return jmodel.ValidationIssue{Message: line}
 }
 
 func atoiSafe(s string) (int, error) {

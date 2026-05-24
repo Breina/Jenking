@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 type jsonArtifact struct {
@@ -20,10 +22,10 @@ type jsonArtifactResponse struct {
 
 // GetArtifacts fetches the list of artifacts for a build.
 // Returns nil, nil when the build has no artifacts.
-func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]Artifact, error) {
+func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]jmodel.Artifact, error) {
 	path := fmt.Sprintf(
 		"%s/%d/api/json?tree=url,artifacts[displayPath,relativePath]",
-		JobPathToURL(jobPath), buildNum,
+		jmodel.JobPathToURL(jobPath), buildNum,
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
@@ -56,7 +58,7 @@ func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int)
 	}
 
 	if len(jr.Artifacts) == 0 {
-		return []Artifact{}, nil
+		return []jmodel.Artifact{}, nil
 	}
 
 	buildURL := jr.URL
@@ -64,9 +66,9 @@ func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int)
 		buildURL += "/"
 	}
 
-	out := make([]Artifact, len(jr.Artifacts))
+	out := make([]jmodel.Artifact, len(jr.Artifacts))
 	for i, a := range jr.Artifacts {
-		out[i] = Artifact{
+		out[i] = jmodel.Artifact{
 			DisplayPath: a.DisplayPath,
 			URL:         buildURL + "artifact/" + a.RelativePath,
 		}

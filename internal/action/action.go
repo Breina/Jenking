@@ -19,9 +19,9 @@ import (
 	"io"
 
 	"github.com/Breina/Jenking/internal/cache"
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/navmsg"
 	"github.com/Breina/Jenking/internal/tui/command"
-	"github.com/Breina/Jenking/internal/tui/view"
 )
 
 // Kind selects the headless executor.
@@ -52,25 +52,25 @@ type Request struct {
 	Target command.Target
 }
 
-// apiClient is the narrow subset of jenkins.JenkinsClient that headless
+// apiClient is the narrow subset of jmodel.JenkinsClient that headless
 // executors call. Defined locally so tests can supply a small fake without
 // implementing the full 20+ method interface.
 type apiClient interface {
-	ListBuilds(ctx context.Context, jobPath string) ([]jenkins.Build, error)
+	ListBuilds(ctx context.Context, jobPath string) ([]jmodel.Build, error)
 	GetFullConsoleText(ctx context.Context, jobPath string, number int) (string, error)
 	GetBuildScript(ctx context.Context, jobPath string, buildNumber int) (string, error)
-	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*jenkins.TestReport, error)
+	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*jmodel.TestReport, error)
 }
 
 // Run resolves the request's target against the cache and dispatches to the
 // appropriate executor. It writes the executor's output to w and returns any
 // error encountered.
-func Run(ctx context.Context, client jenkins.JenkinsClient, store *cache.Store, req Request, w io.Writer) error {
+func Run(ctx context.Context, client jmodel.JenkinsClient, store *cache.Store, req Request, w io.Writer) error {
 	return runWith(ctx, client, store, req, w)
 }
 
 func runWith(ctx context.Context, client apiClient, store *cache.Store, req Request, w io.Writer) error {
-	nc, err := view.ResolveTarget(req.Target, store, view.NavigationContext{})
+	nc, err := navmsg.ResolveTarget(req.Target, store, navmsg.NavigationContext{})
 	if err != nil {
 		return err
 	}

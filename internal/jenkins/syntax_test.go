@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
 )
 
 func TestApplyUserGDSL_AttachesToExistingGlobal(t *testing.T) {

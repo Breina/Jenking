@@ -90,8 +90,19 @@ func (b Breadcrumb) renderSegment() string {
 	s := b.segment
 	st := b.theme.Breadcrumb
 
-	// Filter prefix: "my running " before the view type, highlighted with the search
-	// highlight color as foreground when active.
+	title := b.renderFilterPrefix() + st.ViewType.Render(s.ViewType)
+	title += b.renderContext()
+	title += b.renderCount()
+
+	if b.searchAnnotation != "" {
+		title += " " + st.Badge.Render(" /"+b.searchAnnotation+" ")
+	}
+	return title
+}
+
+// renderFilterPrefix builds the "my running failed " filter prefix.
+func (b Breadcrumb) renderFilterPrefix() string {
+	s := b.segment
 	activeColor := b.theme.Search.Match.GetBackground()
 	filterStyle := lipgloss.NewStyle().Foreground(activeColor).Bold(true)
 	var prefix string
@@ -104,60 +115,56 @@ func (b Breadcrumb) renderSegment() string {
 	if s.Failed {
 		prefix += filterStyle.Render("failed") + " "
 	}
-	title := prefix + st.ViewType.Render(s.ViewType)
+	return prefix
+}
 
-	if len(s.Context) > 0 {
-		title += st.Paren.Render("(")
-		for i, part := range s.Context {
-			if i > 0 {
-				sep := "/"
-				if part.Separator != "" {
-					sep = part.Separator
-				}
-				title += st.Paren.Render(sep)
-			}
-			text := shortenPart(part.Text, maxContextPartWidth)
-			if part.IsBuildNum {
-				title += st.BuildNum.Render("#" + text)
-			} else {
-				title += st.Context.Render(text)
-			}
-		}
-		// Resolved #last parts after " → " arrow.
-		if len(s.ResolvedParts) > 0 {
-			title += st.Paren.Render(" → ")
-			for i, part := range s.ResolvedParts {
-				if i > 0 {
-					sep := "/"
-					if part.Separator != "" {
-						sep = part.Separator
-					}
-					title += st.Paren.Render(sep)
-				}
-				text := shortenPart(part.Text, maxContextPartWidth)
-				if part.IsBuildNum {
-					title += st.BuildNum.Render("#" + text)
-				} else {
-					title += st.Context.Render(text)
-				}
-			}
-		}
-		title += st.Paren.Render(")")
-	} else {
-		title += st.Paren.Render("()")
+// renderContext builds the "(part/part → resolved)" portion of the title.
+func (b Breadcrumb) renderContext() string {
+	s := b.segment
+	st := b.theme.Breadcrumb
+	if len(s.Context) == 0 {
+		return st.Paren.Render("()")
 	}
+	out := st.Paren.Render("(") + b.renderParts(s.Context)
+	if len(s.ResolvedParts) > 0 {
+		out += st.Paren.Render(" → ") + b.renderParts(s.ResolvedParts)
+	}
+	out += st.Paren.Render(")")
+	return out
+}
 
+// renderParts renders a sequence of BreadcrumbParts joined by separators.
+func (b Breadcrumb) renderParts(parts []BreadcrumbPart) string {
+	st := b.theme.Breadcrumb
+	var out string
+	for i, part := range parts {
+		if i > 0 {
+			sep := "/"
+			if part.Separator != "" {
+				sep = part.Separator
+			}
+			out += st.Paren.Render(sep)
+		}
+		text := shortenPart(part.Text, maxContextPartWidth)
+		if part.IsBuildNum {
+			out += st.BuildNum.Render("#" + text)
+		} else {
+			out += st.Context.Render(text)
+		}
+	}
+	return out
+}
+
+// renderCount builds the "[tail]" or "[N]" trailing badge.
+func (b Breadcrumb) renderCount() string {
+	st := b.theme.Breadcrumb
 	if b.tail {
-		title += st.Count.Render("[tail]")
-	} else if b.count > 0 {
-		title += st.Count.Render(fmt.Sprintf("[%d]", b.count))
+		return st.Count.Render("[tail]")
 	}
-
-	if b.searchAnnotation != "" {
-		title += " " + st.Badge.Render(" /"+b.searchAnnotation+" ")
+	if b.count > 0 {
+		return st.Count.Render(fmt.Sprintf("[%d]", b.count))
 	}
-
-	return title
+	return ""
 }
 
 // renderLegacy renders the old trail-style breadcrumb.

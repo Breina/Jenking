@@ -3,6 +3,8 @@ package jenkins
 import (
 	"strings"
 	"testing"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 func TestParseValidateResponse_OK(t *testing.T) {
@@ -103,7 +105,7 @@ func TestParseValidateResponse_FreeformError(t *testing.T) {
 }
 
 func TestFormatErrorformat(t *testing.T) {
-	r := ValidationResult{Issues: []ValidationIssue{
+	r := jmodel.ValidationResult{Issues: []jmodel.ValidationIssue{
 		{Line: 4, Col: 12, Message: `Expected "}"`},
 		{Line: 7, Message: "Unknown step"},
 		{Message: "whole-file error"},

@@ -4,8 +4,8 @@ import (
 	"sync"
 
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
-	"github.com/Breina/Jenking/internal/jenkins"
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
 )
 
 // NodeLogSnapshot holds the progressive log state for a single flow node.
@@ -28,13 +28,13 @@ type StageLogKey struct {
 // The remaining Cache fields persist non-build-status data (jobs, stages,
 // test reports, artifacts) that has its own immutable-after-completion semantics.
 type Store struct {
-	Jobs        *Cache[string, []jenkins.Job]           // key: folderPath
-	Stages      *Cache[string, []jenkins.Stage]         // key: "jobPath:buildNum"
+	Jobs        *Cache[string, []jmodel.Job]            // key: folderPath
+	Stages      *Cache[string, []jmodel.Stage]          // key: "jobPath:buildNum"
 	NodeLogs    *Cache[StageLogKey, NodeLogSnapshot]    // LRU(200)
 	WhenSkipped *Cache[string, map[string][]bool]       // key: "jobPath:buildNum"
-	TestReports *Cache[string, *jenkins.TestReport]     // key: "jobPath:buildNum"
-	Artifacts   *Cache[string, []jenkins.Artifact]      // key: "jobPath:buildNum"
-	BuildDetail *Cache[string, jenkins.Build]           // key: "jobPath:buildNum"
+	TestReports *Cache[string, *jmodel.TestReport]      // key: "jobPath:buildNum"
+	Artifacts   *Cache[string, []jmodel.Artifact]       // key: "jobPath:buildNum"
+	BuildDetail *Cache[string, jmodel.Build]            // key: "jobPath:buildNum"
 	Symbols     *Cache[string, *pipelinesyntax.Symbols] // key: "jobPath#buildNum"
 
 	// Registry is the single source of truth for build status.
@@ -49,13 +49,13 @@ type Store struct {
 // NewStore creates a Store with sensible defaults. disk may be nil to disable persistence.
 func NewStore(disk *DiskStore) *Store {
 	s := &Store{
-		Jobs:        New[string, []jenkins.Job](0),
-		Stages:      New[string, []jenkins.Stage](0),
+		Jobs:        New[string, []jmodel.Job](0),
+		Stages:      New[string, []jmodel.Stage](0),
 		NodeLogs:    New[StageLogKey, NodeLogSnapshot](200),
 		WhenSkipped: New[string, map[string][]bool](0),
-		TestReports: New[string, *jenkins.TestReport](100),
-		Artifacts:   New[string, []jenkins.Artifact](100),
-		BuildDetail: New[string, jenkins.Build](100),
+		TestReports: New[string, *jmodel.TestReport](100),
+		Artifacts:   New[string, []jmodel.Artifact](100),
+		BuildDetail: New[string, jmodel.Build](100),
 		Symbols:     New[string, *pipelinesyntax.Symbols](200),
 		Disk:        disk,
 		dirtyJobs:   make(map[string]bool),

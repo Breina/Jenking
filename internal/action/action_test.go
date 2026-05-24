@@ -9,16 +9,16 @@ import (
 	"testing"
 
 	"github.com/Breina/Jenking/internal/cache"
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/tui/command"
 )
 
 // fakeClient implements the apiClient subset for tests.
 type fakeClient struct {
-	builds      []jenkins.Build
+	builds      []jmodel.Build
 	console     string
 	script      string
-	testReport  *jenkins.TestReport
+	testReport  *jmodel.TestReport
 	listErr     error
 	consoleErr  error
 	scriptErr   error
@@ -27,7 +27,7 @@ type fakeClient struct {
 	gotBuildNum int
 }
 
-func (f *fakeClient) ListBuilds(_ context.Context, jobPath string) ([]jenkins.Build, error) {
+func (f *fakeClient) ListBuilds(_ context.Context, jobPath string) ([]jmodel.Build, error) {
 	f.gotJobPath = jobPath
 	return f.builds, f.listErr
 }
@@ -44,7 +44,7 @@ func (f *fakeClient) GetBuildScript(_ context.Context, jobPath string, n int) (s
 	return f.script, f.scriptErr
 }
 
-func (f *fakeClient) GetTestReport(_ context.Context, jobPath string, n int) (*jenkins.TestReport, error) {
+func (f *fakeClient) GetTestReport(_ context.Context, jobPath string, n int) (*jmodel.TestReport, error) {
 	f.gotJobPath = jobPath
 	f.gotBuildNum = n
 	return f.testReport, f.reportErr
@@ -52,8 +52,8 @@ func (f *fakeClient) GetTestReport(_ context.Context, jobPath string, n int) (*j
 
 func newStoreWithProject(_ *testing.T) *cache.Store {
 	s := cache.NewStore(nil)
-	s.Jobs.Put("", []jenkins.Job{
-		{Name: "webidm", FullPath: "webidm", Type: jenkins.JobTypeMultiBranch},
+	s.Jobs.Put("", []jmodel.Job{
+		{Name: "webidm", FullPath: "webidm", Type: jmodel.JobTypeMultiBranch},
 	})
 	return s
 }
@@ -78,7 +78,7 @@ func TestRun_Logs(t *testing.T) {
 
 func TestRun_LogsResolvesLast(t *testing.T) {
 	c := &fakeClient{
-		builds:  []jenkins.Build{{Number: 99}, {Number: 98}},
+		builds:  []jmodel.Build{{Number: 99}, {Number: 98}},
 		console: "latest output",
 	}
 	var buf bytes.Buffer
@@ -125,7 +125,7 @@ func TestRun_Describe(t *testing.T) {
 }
 
 func TestRun_Tests(t *testing.T) {
-	c := &fakeClient{testReport: &jenkins.TestReport{Passed: 10, Failed: 2, Skipped: 1}}
+	c := &fakeClient{testReport: &jmodel.TestReport{Passed: 10, Failed: 2, Skipped: 1}}
 	var buf bytes.Buffer
 	err := runWith(context.Background(), c, newStoreWithProject(t), Request{
 		Kind:   KindTests,
@@ -134,7 +134,7 @@ func TestRun_Tests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got jenkins.TestReport
+	var got jmodel.TestReport
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
 	}

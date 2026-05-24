@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
 )
 
 func TestDumpSyntaxFetch_WritesAllThreeFiles(t *testing.T) {

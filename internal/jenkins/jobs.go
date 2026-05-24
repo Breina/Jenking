@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // wellKnownPrimaryBranches lists branch names to prefer as the "primary" branch,
@@ -42,10 +44,10 @@ func primaryBranch(branches []jsonJob) *jsonJob {
 }
 
 // ListJobs returns jobs in the given folder (empty string for root).
-func (c *Client) ListJobs(ctx context.Context, folder string) ([]Job, error) {
+func (c *Client) ListJobs(ctx context.Context, folder string) ([]jmodel.Job, error) {
 	path := "/api/json"
 	if folder != "" {
-		path = JobPathToURL(folder) + "/api/json"
+		path = jmodel.JobPathToURL(folder) + "/api/json"
 	}
 	// Include one level of nested jobs so we can derive the primary branch
 	// status/lastBuild for WorkflowMultiBranchProject items.
@@ -61,55 +63,5 @@ func (c *Client) ListJobs(ctx context.Context, folder string) ([]Job, error) {
 		return nil, fmt.Errorf("parsing jobs response: %w", err)
 	}
 
-	jobs := make([]Job, len(resp.Jobs))
-	for i, j := range resp.Jobs {
-		job := j.toDomain(folder)
-		if job.Type == JobTypeMultiBranch {
-			if primary := primaryBranch(j.Jobs); primary != nil {
-				job.Color = primary.Color
-				if primary.LastBuild != nil {
-					job.LastBuild = &BuildRef{
-						Number:            primary.LastBuild.Number,
-						URL:               primary.LastBuild.URL,
-						Timestamp:         millisToTime(primary.LastBuild.Timestamp),
-						EstimatedDuration: millisToDuration(primary.LastBuild.EstimatedDuration),
-					}
-				}
-			}
-			// Derive cross-branch stats from all child branches.
-			var latestBranch *jsonJob
-			for bi := range j.Jobs {
-				b := &j.Jobs[bi]
-				if strings.HasSuffix(b.Color, "_anime") {
-					job.RunningCount++
-				}
-				if b.LastBuild != nil {
-					if latestBranch == nil || b.LastBuild.Timestamp > latestBranch.LastBuild.Timestamp {
-						latestBranch = b
-					}
-				}
-			}
-			if latestBranch != nil && latestBranch.LastBuild != nil {
-				job.LastAnyBuild = &BuildRef{
-					Number:            latestBranch.LastBuild.Number,
-					URL:               latestBranch.LastBuild.URL,
-					Timestamp:         millisToTime(latestBranch.LastBuild.Timestamp),
-					EstimatedDuration: millisToDuration(latestBranch.LastBuild.EstimatedDuration),
-				}
-				job.LastAnyColor = latestBranch.Color
-			} else {
-				job.LastAnyBuild = job.LastBuild
-				job.LastAnyColor = job.Color
-			}
-		} else {
-			// Single-branch: LastAnyBuild == LastBuild; RunningCount 0 or 1.
-			job.LastAnyBuild = job.LastBuild
-			job.LastAnyColor = job.Color
-			if ColorToBuildStatus(job.Color) == BuildStatusRunning {
-				job.RunningCount = 1
-			}
-		}
-		jobs[i] = job
-	}
-	return jobs, nil
+	return parseJobList(resp, folder), nil
 }

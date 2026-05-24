@@ -8,39 +8,11 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
-// JenkinsClient defines the API boundary for testability.
-type JenkinsClient interface {
-	ListJobs(ctx context.Context, folder string) ([]Job, error)
-	ListBuilds(ctx context.Context, jobPath string) ([]Build, error)
-	ListProjectBuilds(ctx context.Context, projectPath string) ([]ProjectBuild, error)
-	ListUserBuilds(ctx context.Context, username string) ([]UserBuild, error)
-	ListRunningBuilds(ctx context.Context) ([]UserBuild, error)
-	ScanAllBuilds(ctx context.Context, maxPerJob int) ([]UserBuild, error)
-	ListStages(ctx context.Context, jobPath string, buildNumber int) ([]Stage, error)
-	GetBuild(ctx context.Context, jobPath string, number int) (*BuildDetail, error)
-	GetConsoleOutput(ctx context.Context, jobPath string, number int) (io.ReadCloser, error)
-	GetFullConsoleText(ctx context.Context, jobPath string, number int) (string, error)
-	GetProgressiveLog(ctx context.Context, jobPath string, number, start int) (*ProgressiveLog, error)
-	GetNodeLog(ctx context.Context, jobPath string, buildNumber, nodeID int) (string, error)
-	GetNodeLogProgressive(ctx context.Context, jobPath string, buildNumber, nodeID, start int) (*NodeLog, error)
-	GetJobParameters(ctx context.Context, jobPath string) ([]ParameterDefinition, error)
-	GetBuildScript(ctx context.Context, jobPath string, buildNumber int) (string, error)
-	FetchPipelineSyntax(ctx context.Context, jobPath string, buildNumber int) (*pipelinesyntax.Symbols, error)
-	ValidateJenkinsfile(ctx context.Context, content string) (ValidationResult, error)
-	GetBuildParameters(ctx context.Context, jobPath string, buildNumber int) (map[string]string, error)
-	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*TestReport, error)
-	GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]Artifact, error)
-	TriggerBuild(ctx context.Context, jobPath string, params map[string]string) error
-	ReplayBuild(ctx context.Context, jobPath string, buildNum int, script string) error
-	CancelBuild(ctx context.Context, jobPath string, number int) error
-	WhoAmI(ctx context.Context) (*User, error)
-}
-
-// Compile-time interface check.
-var _ JenkinsClient = (*Client)(nil)
+// JenkinsClient lives in internal/domain/jmodel; this adapter implements it.
+var _ jmodel.JenkinsClient = (*Client)(nil)
 
 // Client is the concrete Jenkins HTTP client.
 type Client struct {
@@ -136,7 +108,7 @@ func (c *Client) post(ctx context.Context, path string, body io.Reader) error {
 }
 
 // WhoAmI returns the authenticated Jenkins user.
-func (c *Client) WhoAmI(ctx context.Context) (*User, error) {
+func (c *Client) WhoAmI(ctx context.Context) (*jmodel.User, error) {
 	resp, err := c.doRequest(ctx, http.MethodGet, "/me/api/json", nil)
 	if err != nil {
 		return nil, fmt.Errorf("whoami: %w", err)
@@ -153,7 +125,7 @@ func (c *Client) WhoAmI(ctx context.Context) (*User, error) {
 		return nil, fmt.Errorf("parsing whoami response: %w", err)
 	}
 
-	return &User{
+	return &jmodel.User{
 		ID:             u.ID,
 		FullName:       u.FullName,
 		JenkinsVersion: resp.Header.Get("X-Jenkins"),

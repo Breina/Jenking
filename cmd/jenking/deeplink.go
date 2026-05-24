@@ -4,18 +4,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Breina/Jenking/internal/app/view"
 	"github.com/Breina/Jenking/internal/cache"
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/theme"
-	"github.com/Breina/Jenking/internal/tui/view"
 )
 
 // deepLinkArgs bundles the immutable runtime state needed to construct any
 // deep-linked view from CLI arguments.
 type deepLinkArgs struct {
 	theme        theme.Theme
-	client       jenkins.JenkinsClient
+	client       jmodel.JenkinsClient
 	store        *cache.Store
 	username     string
 	friendlyName string
@@ -57,7 +57,7 @@ func buildDeepLinkView(verb string, args []string, d deepLinkArgs) (view.View, e
 
 	case "stages", "stage", "s":
 		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
-			return view.NewStageView(d.theme, d.client, d.store, nc, jenkins.Build{Number: nc.Build.Number}), nil
+			return view.NewStageView(d.theme, d.client, d.store, nc, jmodel.Build{Number: nc.Build.Number}), nil
 		}
 		return view.NewMyBuildsView(d.theme, d.client, d.store, nc.AtScope(), d.slowInterval), nil
 

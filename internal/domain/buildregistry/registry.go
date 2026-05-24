@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // Source identifies which ingress wrote a record.
@@ -42,15 +42,15 @@ type Key struct {
 	Number  int
 }
 
-// String returns "jobPath#number", matching jenkins.BuildKey.
-func (k Key) String() string { return jenkins.BuildKey(k.JobPath, k.Number) }
+// String returns "jobPath#number", matching jmodel.BuildKey.
+func (k Key) String() string { return jmodel.BuildKey(k.JobPath, k.Number) }
 
 // KeyOf returns the Key for a UserBuild.
-func KeyOf(b jenkins.UserBuild) Key { return Key{JobPath: b.JobPath, Number: b.Number} }
+func KeyOf(b jmodel.UserBuild) Key { return Key{JobPath: b.JobPath, Number: b.Number} }
 
 // Record is the canonical per-build state stored in the registry.
 type Record struct {
-	Build           jenkins.Build
+	Build           jmodel.Build
 	JobPath         string
 	BranchName      string // for multibranch projects
 	DisplayName     string
@@ -63,10 +63,10 @@ type Record struct {
 
 // UserBuild materializes a Record as a UserBuild with the *display* status
 // (after applying invariant 2).
-func (r Record) UserBuild(displayStatus jenkins.BuildStatus) jenkins.UserBuild {
+func (r Record) UserBuild(displayStatus jmodel.BuildStatus) jmodel.UserBuild {
 	b := r.Build
 	b.Status = displayStatus
-	return jenkins.UserBuild{
+	return jmodel.UserBuild{
 		JobPath:     r.JobPath,
 		Node:        r.Node,
 		DisplayName: r.DisplayName,
@@ -159,11 +159,11 @@ func New(cfg Config) *Registry {
 }
 
 // isTerminal reports whether s is a terminal (non-running, non-unknown) status.
-func isTerminal(s jenkins.BuildStatus) bool {
+func isTerminal(s jmodel.BuildStatus) bool {
 	switch s {
-	case jenkins.BuildStatusSuccess, jenkins.BuildStatusFailed,
-		jenkins.BuildStatusAborted, jenkins.BuildStatusUnstable,
-		jenkins.BuildStatusNotBuilt:
+	case jmodel.BuildStatusSuccess, jmodel.BuildStatusFailed,
+		jmodel.BuildStatusAborted, jmodel.BuildStatusUnstable,
+		jmodel.BuildStatusNotBuilt:
 		return true
 	}
 	return false
@@ -172,7 +172,7 @@ func isTerminal(s jenkins.BuildStatus) bool {
 // upsertLocked merges b into the existing record (or creates one). Terminal
 // records are never overwritten by a non-terminal status (invariant 1).
 // Returns true if any field changed.
-func (r *Registry) upsertLocked(k Key, b jenkins.Build, jobPath, branchName, displayName, node string, src Source, runningSeenAt time.Time) bool {
+func (r *Registry) upsertLocked(k Key, b jmodel.Build, jobPath, branchName, displayName, node string, src Source, runningSeenAt time.Time) bool {
 	now := r.now()
 	cur, exists := r.records[k]
 	if exists && cur.Terminal && !isTerminal(b.Status) {
@@ -240,7 +240,7 @@ func (r *Registry) upsertLocked(k Key, b jenkins.Build, jobPath, branchName, dis
 // IngestRunningSnapshot replaces liveRunning with builds and upserts each.
 // For every key that was in the previous liveRunning set and is now absent,
 // schedules a reconciliation fetch.
-func (r *Registry) IngestRunningSnapshot(builds []jenkins.UserBuild, polledAt time.Time) {
+func (r *Registry) IngestRunningSnapshot(builds []jmodel.UserBuild, polledAt time.Time) {
 	r.mu.Lock()
 	if polledAt.IsZero() {
 		polledAt = r.now()
@@ -252,7 +252,7 @@ func (r *Registry) IngestRunningSnapshot(builds []jenkins.UserBuild, polledAt ti
 		// Force Status=Running from a live executor poll. Terminal records are
 		// shielded by upsertLocked.
 		bb := b.Build
-		bb.Status = jenkins.BuildStatusRunning
+		bb.Status = jmodel.BuildStatusRunning
 		r.upsertLocked(k, bb, b.JobPath, "", b.DisplayName, b.Node, SourceRunningPoll, polledAt)
 	}
 	departed := make([]Key, 0)
@@ -285,17 +285,17 @@ func (r *Registry) IngestRunningSnapshot(builds []jenkins.UserBuild, polledAt ti
 // IngestScan upserts builds from a wide scan (ScanAllBuilds). A "Running"
 // status from a scan is stored as-is — Query will gate its visibility via
 // invariant 2 and schedule a reconciliation if needed.
-func (r *Registry) IngestScan(builds []jenkins.UserBuild) {
+func (r *Registry) IngestScan(builds []jmodel.UserBuild) {
 	r.ingestList(builds, SourceScan)
 }
 
-func (r *Registry) ingestList(builds []jenkins.UserBuild, src Source) {
+func (r *Registry) ingestList(builds []jmodel.UserBuild, src Source) {
 	r.mu.Lock()
 	unconfirmed := make([]Key, 0)
 	for _, b := range builds {
 		k := KeyOf(b)
 		r.upsertLocked(k, b.Build, b.JobPath, "", b.DisplayName, b.Node, src, time.Time{})
-		if b.Status == jenkins.BuildStatusRunning {
+		if b.Status == jmodel.BuildStatusRunning {
 			if _, live := r.liveRunning[k]; !live {
 				unconfirmed = append(unconfirmed, k)
 			}
@@ -321,22 +321,22 @@ func (r *Registry) ingestList(builds []jenkins.UserBuild, src Source) {
 }
 
 // IngestBranchList upserts builds for a single branch/job (BranchBuildsProvider).
-func (r *Registry) IngestBranchList(jobPath string, builds []jenkins.Build) {
-	ub := make([]jenkins.UserBuild, len(builds))
+func (r *Registry) IngestBranchList(jobPath string, builds []jmodel.Build) {
+	ub := make([]jmodel.UserBuild, len(builds))
 	for i, b := range builds {
-		ub[i] = jenkins.UserBuild{JobPath: jobPath, Build: b}
+		ub[i] = jmodel.UserBuild{JobPath: jobPath, Build: b}
 	}
 	r.ingestList(ub, SourceBranchList)
 }
 
 // IngestProjectList upserts builds for all branches of a multibranch project.
-func (r *Registry) IngestProjectList(projectPath string, builds []jenkins.ProjectBuild) {
+func (r *Registry) IngestProjectList(projectPath string, builds []jmodel.ProjectBuild) {
 	r.mu.Lock()
 	unconfirmed := make([]Key, 0)
 	for _, b := range builds {
 		k := Key{JobPath: b.BranchPath, Number: b.Number}
 		r.upsertLocked(k, b.Build, b.BranchPath, b.BranchName, "", "", SourceProjectList, time.Time{})
-		if b.Status == jenkins.BuildStatusRunning {
+		if b.Status == jmodel.BuildStatusRunning {
 			if _, live := r.liveRunning[k]; !live {
 				unconfirmed = append(unconfirmed, k)
 			}
@@ -364,7 +364,7 @@ func (r *Registry) IngestProjectList(projectPath string, builds []jenkins.Projec
 // ApplyCompletion installs the terminal status of a build. This is unconditional
 // (it can finalize a record the registry didn't yet know about) and locks the
 // record (Terminal=true) so subsequent scans cannot revert it to Running.
-func (r *Registry) ApplyCompletion(k Key, b jenkins.Build) {
+func (r *Registry) ApplyCompletion(k Key, b jmodel.Build) {
 	r.mu.Lock()
 	// Force status to whatever the completion fetch returned; the upsert will
 	// still gate by isTerminal — but if b.Status is somehow still Running, we
@@ -411,7 +411,7 @@ func (r *Registry) LoadFromDisk(records []Record) {
 		rec.LastSeenRunning = time.Time{}
 		rec.LastWriter = SourceDiskLoad
 		r.records[k] = rec
-		if !rec.Terminal && rec.Build.Status == jenkins.BuildStatusRunning {
+		if !rec.Terminal && rec.Build.Status == jmodel.BuildStatusRunning {
 			reconcileKeys = append(reconcileKeys, k)
 		}
 	}
@@ -433,24 +433,24 @@ func (r *Registry) LoadFromDisk(records []Record) {
 // only shown as Running if the key is in the latest running snapshot OR was
 // confirmed there within RunTTL. Otherwise we return Unknown (and the caller
 // schedules a reconcile via needsReconcile).
-func (r *Registry) displayStatusLocked(k Key, rec Record) (jenkins.BuildStatus, bool) {
-	if rec.Build.Status != jenkins.BuildStatusRunning || rec.Terminal {
+func (r *Registry) displayStatusLocked(k Key, rec Record) (jmodel.BuildStatus, bool) {
+	if rec.Build.Status != jmodel.BuildStatusRunning || rec.Terminal {
 		return rec.Build.Status, false
 	}
 	if _, live := r.liveRunning[k]; live {
-		return jenkins.BuildStatusRunning, false
+		return jmodel.BuildStatusRunning, false
 	}
 	if !rec.LastSeenRunning.IsZero() && r.now().Sub(rec.LastSeenRunning) <= r.runTTL {
-		return jenkins.BuildStatusRunning, false
+		return jmodel.BuildStatusRunning, false
 	}
-	return jenkins.BuildStatusUnknown, true
+	return jmodel.BuildStatusUnknown, true
 }
 
 // Query returns all UserBuilds matching filter, with statuses gated by
 // invariant 2. Sorted newest-timestamp-first.
-func (r *Registry) Query(filter Filter) []jenkins.UserBuild {
+func (r *Registry) Query(filter Filter) []jmodel.UserBuild {
 	r.mu.RLock()
-	out := make([]jenkins.UserBuild, 0, len(r.records))
+	out := make([]jmodel.UserBuild, 0, len(r.records))
 	var needRecon []Key
 	for k, rec := range r.records {
 		if !filter.matches(rec) {
@@ -460,7 +460,7 @@ func (r *Registry) Query(filter Filter) []jenkins.UserBuild {
 		if recon {
 			needRecon = append(needRecon, k)
 		}
-		if filter.OnlyRunning && status != jenkins.BuildStatusRunning {
+		if filter.OnlyRunning && status != jmodel.BuildStatusRunning {
 			continue
 		}
 		out = append(out, rec.UserBuild(status))
@@ -485,9 +485,9 @@ func (r *Registry) Query(filter Filter) []jenkins.UserBuild {
 
 // QueryProject returns ProjectBuilds for the given multibranch project, with
 // invariant 2 applied.
-func (r *Registry) QueryProject(projectPath string) []jenkins.ProjectBuild {
+func (r *Registry) QueryProject(projectPath string) []jmodel.ProjectBuild {
 	r.mu.RLock()
-	out := make([]jenkins.ProjectBuild, 0)
+	out := make([]jmodel.ProjectBuild, 0)
 	var needRecon []Key
 	for k, rec := range r.records {
 		if projectPath == "" || !strings.HasPrefix(rec.JobPath, projectPath+"/") {
@@ -499,7 +499,7 @@ func (r *Registry) QueryProject(projectPath string) []jenkins.ProjectBuild {
 		}
 		b := rec.Build
 		b.Status = status
-		out = append(out, jenkins.ProjectBuild{
+		out = append(out, jmodel.ProjectBuild{
 			Build:      b,
 			BranchName: rec.BranchName,
 			BranchPath: rec.JobPath,
@@ -530,7 +530,7 @@ func (r *Registry) HasRunning(filter Filter) bool {
 			continue
 		}
 		status, _ := r.displayStatusLocked(k, rec)
-		if status == jenkins.BuildStatusRunning {
+		if status == jmodel.BuildStatusRunning {
 			return true
 		}
 	}
@@ -547,13 +547,13 @@ func (r *Registry) RunningCount() int {
 
 // RunningBuilds returns the latest running-set snapshot as UserBuilds. Use this
 // where callers previously read store.RunningBuilds.
-func (r *Registry) RunningBuilds() []jenkins.UserBuild {
+func (r *Registry) RunningBuilds() []jmodel.UserBuild {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]jenkins.UserBuild, 0, len(r.liveRunning))
+	out := make([]jmodel.UserBuild, 0, len(r.liveRunning))
 	for k := range r.liveRunning {
 		if rec, ok := r.records[k]; ok {
-			out = append(out, rec.UserBuild(jenkins.BuildStatusRunning))
+			out = append(out, rec.UserBuild(jmodel.BuildStatusRunning))
 		}
 	}
 	return out

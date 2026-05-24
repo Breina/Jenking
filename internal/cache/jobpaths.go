@@ -3,7 +3,7 @@ package cache
 import (
 	"sort"
 
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // AllProjectPaths walks the Jobs cache starting from the root folder and
@@ -30,7 +30,7 @@ func walkJobs(s *Store, folderPath string, out *[]string) {
 		return
 	}
 	for _, j := range entry.Value {
-		if j.Type == jenkins.JobTypeFolder {
+		if j.Type == jmodel.JobTypeFolder {
 			walkJobs(s, j.FullPath, out)
 			continue
 		}

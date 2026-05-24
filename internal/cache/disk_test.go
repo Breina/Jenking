@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
-	"github.com/Breina/Jenking/internal/jenkins"
-	"github.com/Breina/Jenking/internal/jenkins/pipelinesyntax"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
 )
 
 func newTestDiskStore(t *testing.T) *DiskStore {
@@ -33,9 +33,9 @@ func TestDiskStore_Registry_RoundTrip(t *testing.T) {
 		{
 			JobPath:  "folder/job",
 			Terminal: true,
-			Build: jenkins.Build{
+			Build: jmodel.Build{
 				Number:    1,
-				Status:    jenkins.BuildStatusSuccess,
+				Status:    jmodel.BuildStatusSuccess,
 				Timestamp: time.Unix(1700000000, 0),
 				Duration:  5 * time.Second,
 			},
@@ -43,9 +43,9 @@ func TestDiskStore_Registry_RoundTrip(t *testing.T) {
 		{
 			JobPath:  "folder/job",
 			Terminal: true,
-			Build: jenkins.Build{
+			Build: jmodel.Build{
 				Number:    2,
-				Status:    jenkins.BuildStatusFailed,
+				Status:    jmodel.BuildStatusFailed,
 				Timestamp: time.Unix(1700001000, 0),
 				Duration:  3 * time.Second,
 			},
@@ -78,9 +78,9 @@ func TestDiskStore_Stages_RoundTrip(t *testing.T) {
 		t.Fatalf("expected ErrNotExist for missing key, got %v", err)
 	}
 
-	stages := []jenkins.Stage{
-		{Name: "Build", Status: jenkins.BuildStatusSuccess, Duration: 10 * time.Second},
-		{Name: "Test", Status: jenkins.BuildStatusFailed, Duration: 20 * time.Second},
+	stages := []jmodel.Stage{
+		{Name: "Build", Status: jmodel.BuildStatusSuccess, Duration: 10 * time.Second},
+		{Name: "Test", Status: jmodel.BuildStatusFailed, Duration: 20 * time.Second},
 	}
 
 	if err := d.SaveStages("folder/job:42", stages); err != nil {
@@ -104,8 +104,8 @@ func TestDiskStore_Stages_RoundTrip(t *testing.T) {
 func TestDiskStore_Stages_MultipleKeys(t *testing.T) {
 	d := newTestDiskStore(t)
 
-	s1 := []jenkins.Stage{{Name: "A", Status: jenkins.BuildStatusSuccess}}
-	s2 := []jenkins.Stage{{Name: "B", Status: jenkins.BuildStatusFailed}}
+	s1 := []jmodel.Stage{{Name: "A", Status: jmodel.BuildStatusSuccess}}
+	s2 := []jmodel.Stage{{Name: "B", Status: jmodel.BuildStatusFailed}}
 
 	if err := d.SaveStages("job:1", s1); err != nil {
 		t.Fatalf("SaveStages job:1: %v", err)
@@ -132,14 +132,14 @@ func TestDiskStore_TestReport_RoundTrip(t *testing.T) {
 		t.Fatalf("expected ErrNotExist for missing key, got %v", err)
 	}
 
-	report := &jenkins.TestReport{
+	report := &jmodel.TestReport{
 		Failed:  2,
 		Passed:  10,
 		Skipped: 1,
-		Suites: []jenkins.TestSuite{
-			{Name: "SuiteA", Cases: []jenkins.TestCase{
-				{Name: "test1", Status: jenkins.TestStatusPassed},
-				{Name: "test2", Status: jenkins.TestStatusFailed, ErrorDetails: "assertion failed"},
+		Suites: []jmodel.TestSuite{
+			{Name: "SuiteA", Cases: []jmodel.TestCase{
+				{Name: "test1", Status: jmodel.TestStatusPassed},
+				{Name: "test2", Status: jmodel.TestStatusFailed, ErrorDetails: "assertion failed"},
 			}},
 		},
 	}
@@ -171,9 +171,9 @@ func TestDiskStore_Jobs_RoundTrip(t *testing.T) {
 		t.Fatalf("expected ErrNotExist for missing key, got %v", err)
 	}
 
-	jobs := []jenkins.Job{
-		{Name: "pipeline-a", FullPath: "Code/pipeline-a", Type: jenkins.JobTypePipeline},
-		{Name: "pipeline-b", FullPath: "Code/pipeline-b", Type: jenkins.JobTypePipeline},
+	jobs := []jmodel.Job{
+		{Name: "pipeline-a", FullPath: "Code/pipeline-a", Type: jmodel.JobTypePipeline},
+		{Name: "pipeline-b", FullPath: "Code/pipeline-b", Type: jmodel.JobTypePipeline},
 	}
 
 	if err := d.SaveJobs("Code", jobs); err != nil {
@@ -197,9 +197,9 @@ func TestDiskStore_Jobs_RoundTrip(t *testing.T) {
 func TestDiskStore_Populate(t *testing.T) {
 	d := newTestDiskStore(t)
 
-	folderJobs := []jenkins.Job{{Name: "pipeline-a", FullPath: "Code/pipeline-a", Type: jenkins.JobTypePipeline}}
-	stages := []jenkins.Stage{{Name: "Deploy", Status: jenkins.BuildStatusSuccess}}
-	report := &jenkins.TestReport{Passed: 5}
+	folderJobs := []jmodel.Job{{Name: "pipeline-a", FullPath: "Code/pipeline-a", Type: jmodel.JobTypePipeline}}
+	stages := []jmodel.Stage{{Name: "Deploy", Status: jmodel.BuildStatusSuccess}}
+	report := &jmodel.TestReport{Passed: 5}
 
 	if err := d.SaveJobs("Code", folderJobs); err != nil {
 		t.Fatalf("SaveJobs: %v", err)
@@ -211,10 +211,10 @@ func TestDiskStore_Populate(t *testing.T) {
 		t.Fatalf("SaveTestReport: %v", err)
 	}
 
-	jobsCache := New[string, []jenkins.Job](0)
-	stagesCache := New[string, []jenkins.Stage](0)
-	reportsCache := New[string, *jenkins.TestReport](100)
-	artifactsCache := New[string, []jenkins.Artifact](100)
+	jobsCache := New[string, []jmodel.Job](0)
+	stagesCache := New[string, []jmodel.Stage](0)
+	reportsCache := New[string, *jmodel.TestReport](100)
+	artifactsCache := New[string, []jmodel.Artifact](100)
 	symbolsCache := New[string, *pipelinesyntax.Symbols](100)
 	d.populate(jobsCache, stagesCache, reportsCache, artifactsCache, symbolsCache)
 

@@ -8,7 +8,7 @@ import (
 
 	"github.com/Breina/Jenking/internal/action"
 	"github.com/Breina/Jenking/internal/cache"
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/tui/command"
 )
 
@@ -29,7 +29,7 @@ func stripRawFlag(args []string) ([]string, bool) {
 
 // runHeadless executes a headless action and writes its output to stdout.
 // All errors print to stderr and terminate the process with exit code 1.
-func runHeadless(client jenkins.JenkinsClient, store *cache.Store, args []string) {
+func runHeadless(client jmodel.JenkinsClient, store *cache.Store, args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "jenking: --raw requires a verb (logs, describe, tests)")
 		os.Exit(1)

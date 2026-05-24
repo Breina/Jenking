@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/tui/theme"
-	"github.com/Breina/Jenking/internal/version"
 )
 
 const headerArt = `
@@ -40,12 +39,16 @@ const (
 	GroupAction = "Actions"
 )
 
-// Shortcut is a key/action pair.
+// Shortcut is a key/action pair. Rank controls position within its Group
+// (lower renders first; ties preserve insertion order via stable sort).
+// Producers — not consumers — decide rank, so the header column is deterministic
+// regardless of who registered the shortcut when.
 type Shortcut struct {
 	Key    string
 	Action string
 	Active bool   // when true, key+action are highlighted with the active-filter style
 	Group  string // GroupNav | GroupFilter | GroupView | GroupAction | ""
+	Rank   int    // intra-group ordering; 0 = unranked, sorts among other 0s in insertion order
 }
 
 // Nav returns a Navigate-group shortcut.
@@ -63,9 +66,19 @@ func ViewSC(key, action string, active bool) Shortcut {
 	return Shortcut{Key: key, Action: action, Active: active, Group: GroupView}
 }
 
+// ViewSCRanked is ViewSC plus an intra-group Rank for deterministic ordering.
+func ViewSCRanked(key, action string, active bool, rank int) Shortcut {
+	return Shortcut{Key: key, Action: action, Active: active, Group: GroupView, Rank: rank}
+}
+
 // Action returns an Actions-group shortcut.
 func Action(key, action string) Shortcut {
 	return Shortcut{Key: key, Action: action, Group: GroupAction}
+}
+
+// ActionRanked is Action plus an intra-group Rank for deterministic ordering.
+func ActionRanked(key, action string, rank int) Shortcut {
+	return Shortcut{Key: key, Action: action, Group: GroupAction, Rank: rank}
 }
 
 // Header renders the top panel with connection info and shortcuts.
@@ -74,6 +87,7 @@ type Header struct {
 	url            string
 	user           string
 	jenkinsVersion string
+	appVersion     string // current build version, injected by the caller
 	connected      bool
 	updateVersion  string     // non-empty when a newer version is available
 	shortcuts      []Shortcut // global, always shown
@@ -91,13 +105,15 @@ type Header struct {
 	dbgViewType    string
 }
 
-// NewHeader creates a new header component.
-func NewHeader(t theme.Theme, url, user, jenkinsVersion string, debug bool) Header {
+// NewHeader creates a new header component. appVersion is the current build
+// version (passed in to keep this package Jenking-agnostic).
+func NewHeader(t theme.Theme, url, user, jenkinsVersion, appVersion string, debug bool) Header {
 	return Header{
 		theme:          t,
 		url:            url,
 		user:           user,
 		jenkinsVersion: jenkinsVersion,
+		appVersion:     appVersion,
 		connected:      true,
 		shortcuts: []Shortcut{
 			Action(":", "command"),
@@ -273,7 +289,7 @@ func (h Header) View() string {
 
 func (h Header) jenkingVersionLine(t theme.Theme) string {
 	label := t.Header.Label.Render("   Jenking:")
-	cur := t.Header.Value.Render(version.App)
+	cur := t.Header.Value.Render(h.appVersion)
 	if h.updateVersion == "" {
 		return fmt.Sprintf("%s %s", label, cur)
 	}
@@ -308,122 +324,131 @@ var groupMinWidth = map[string]int{
 // Header info column is 6 lines tall; 1 line is used for the group label.
 const maxItemsPerCol = 5
 
-func (h Header) renderShortcutColumns(available int) string {
-	t := h.theme
+// shortcutColumn is one rendered column of shortcuts plus the group name it
+// was reserved for (so the layout phase can apply min-widths).
+type shortcutColumn struct {
+	content   string
+	groupName string
+}
 
-	// Collect shortcuts by group.
+const shortcutColMargin = 3
+
+func (h Header) renderShortcutColumns(available int) string {
+	groupItems := h.collectShortcutsByGroup()
+
+	fixedTotal := 0
+	for _, name := range canonicalGroups {
+		fixedTotal += groupMinWidth[name] + shortcutColMargin
+	}
+	useFixed := fixedTotal <= available
+
+	var cols []shortcutColumn
+	if useFixed {
+		cols = h.layoutFixed(groupItems)
+	} else {
+		cols = h.layoutCompact(groupItems)
+	}
+	return h.assembleColumns(cols, useFixed)
+}
+
+// collectShortcutsByGroup groups all shortcuts and stable-sorts each group by Rank.
+func (h Header) collectShortcutsByGroup() map[string][]Shortcut {
 	groupItems := map[string][]Shortcut{}
 	all := append(h.shortcuts, h.viewShortcuts...) //nolint:gocritic
 	for _, sc := range all {
 		groupItems[sc.Group] = append(groupItems[sc.Group], sc)
 	}
-
-	type colContent struct {
-		content   string
-		groupName string
+	for g, items := range groupItems {
+		sort.SliceStable(items, func(i, j int) bool { return items[i].Rank < items[j].Rank })
+		groupItems[g] = items
 	}
+	return groupItems
+}
 
-	const colMargin = 3
-
-	// buildChunk renders one column's worth of shortcuts (with label on first chunk).
-	buildChunk := func(name string, items []Shortcut, first bool) colContent {
-		var lines []string
-		if first && name != "" {
-			lines = append(lines, t.StatusBar.Help.Faint(true).Render(name))
-		}
-		for _, sc := range items {
-			keyStyle := t.StatusBar.Key
-			actionStyle := t.StatusBar.Help
-			if sc.Active {
-				activeColor := t.Search.Match.GetBackground()
-				keyStyle = lipgloss.NewStyle().Bold(true).Foreground(activeColor)
-				actionStyle = lipgloss.NewStyle().Foreground(activeColor)
-			}
-			lines = append(lines,
-				keyStyle.Render(fmt.Sprintf("<%s>", sc.Key))+
-					actionStyle.Render(" "+sc.Action),
-			)
-		}
-		return colContent{content: strings.Join(lines, "\n"), groupName: name}
+// buildShortcutChunk renders one column's worth of shortcuts (with label on first chunk).
+func (h Header) buildShortcutChunk(name string, items []Shortcut, first bool) shortcutColumn {
+	t := h.theme
+	var lines []string
+	if first && name != "" {
+		lines = append(lines, t.StatusBar.Help.Faint(true).Render(name))
 	}
-
-	appendChunked := func(dst []colContent, name string, items []Shortcut) []colContent {
-		for chunkStart := 0; chunkStart < len(items); chunkStart += maxItemsPerCol {
-			end := chunkStart + maxItemsPerCol
-			if end > len(items) {
-				end = len(items)
-			}
-			dst = append(dst, buildChunk(name, items[chunkStart:end], chunkStart == 0))
+	for _, sc := range items {
+		keyStyle := t.StatusBar.Key
+		actionStyle := t.StatusBar.Help
+		if sc.Active {
+			activeColor := t.Search.Match.GetBackground()
+			keyStyle = lipgloss.NewStyle().Bold(true).Foreground(activeColor)
+			actionStyle = lipgloss.NewStyle().Foreground(activeColor)
 		}
-		return dst
+		lines = append(lines,
+			keyStyle.Render(fmt.Sprintf("<%s>", sc.Key))+
+				actionStyle.Render(" "+sc.Action),
+		)
 	}
+	return shortcutColumn{content: strings.Join(lines, "\n"), groupName: name}
+}
 
-	// Fixed layout: all canonical groups hold reserved positions even when empty.
-	// Total reserved width determines whether we can use the fixed layout.
-	fixedTotal := 0
+// appendChunked splits items into maxItemsPerCol-sized columns and appends each.
+func (h Header) appendChunked(dst []shortcutColumn, name string, items []Shortcut) []shortcutColumn {
+	for chunkStart := 0; chunkStart < len(items); chunkStart += maxItemsPerCol {
+		end := chunkStart + maxItemsPerCol
+		if end > len(items) {
+			end = len(items)
+		}
+		dst = append(dst, h.buildShortcutChunk(name, items[chunkStart:end], chunkStart == 0))
+	}
+	return dst
+}
+
+// layoutFixed produces columns for the fixed layout (canonical groups always reserve a slot).
+func (h Header) layoutFixed(groupItems map[string][]Shortcut) []shortcutColumn {
+	var cols []shortcutColumn
 	for _, name := range canonicalGroups {
-		fixedTotal += groupMinWidth[name] + colMargin
+		items := groupItems[name]
+		if len(items) == 0 {
+			cols = append(cols, shortcutColumn{groupName: name})
+			continue
+		}
+		cols = h.appendChunked(cols, name, items)
 	}
-	useFixed := fixedTotal <= available
+	// Ungrouped shortcuts appended compactly after the fixed block.
+	cols = h.appendChunked(cols, "", groupItems[""])
+	return cols
+}
 
-	var colContents []colContent
-
-	if useFixed {
-		for _, name := range canonicalGroups {
-			items := groupItems[name]
-			if len(items) == 0 {
-				// Empty placeholder keeps the column position reserved.
-				colContents = append(colContents, colContent{groupName: name})
-				continue
-			}
-			// First chunk gets the reserved slot; overflow chunks are appended after.
-			end := len(items)
-			if end > maxItemsPerCol {
-				end = maxItemsPerCol
-			}
-			colContents = append(colContents, buildChunk(name, items[:end], true))
-			for chunkStart := maxItemsPerCol; chunkStart < len(items); chunkStart += maxItemsPerCol {
-				chunkEnd := chunkStart + maxItemsPerCol
-				if chunkEnd > len(items) {
-					chunkEnd = len(items)
-				}
-				colContents = append(colContents, buildChunk(name, items[chunkStart:chunkEnd], false))
-			}
-		}
-		// Ungrouped shortcuts appended compactly after the fixed block.
-		colContents = appendChunked(colContents, "", groupItems[""])
-	} else {
-		// Compact fallback: only render groups that have items, in canonical order.
-		type namedGroup struct {
-			name  string
-			items []Shortcut
-		}
-		var present []namedGroup
-		for name, items := range groupItems {
-			if len(items) > 0 {
-				present = append(present, namedGroup{name, items})
-			}
-		}
-		sort.SliceStable(present, func(i, j int) bool {
-			return groupOrder[present[i].name] < groupOrder[present[j].name]
-		})
-		for _, g := range present {
-			colContents = appendChunked(colContents, g.name, g.items)
+// layoutCompact produces columns for the compact fallback layout (only non-empty groups).
+func (h Header) layoutCompact(groupItems map[string][]Shortcut) []shortcutColumn {
+	type namedGroup struct {
+		name  string
+		items []Shortcut
+	}
+	var present []namedGroup
+	for name, items := range groupItems {
+		if len(items) > 0 {
+			present = append(present, namedGroup{name, items})
 		}
 	}
+	sort.SliceStable(present, func(i, j int) bool {
+		return groupOrder[present[i].name] < groupOrder[present[j].name]
+	})
+	var cols []shortcutColumn
+	for _, g := range present {
+		cols = h.appendChunked(cols, g.name, g.items)
+	}
+	return cols
+}
 
-	// Render each column, applying the reserved min-width in fixed mode.
-	var cols []string
-	for _, c := range colContents {
+// assembleColumns renders each column with the reserved min-width when in fixed mode.
+func (h Header) assembleColumns(cols []shortcutColumn, useFixed bool) string {
+	rendered := make([]string, 0, len(cols))
+	for _, c := range cols {
 		w := lipgloss.Width(c.content)
 		if useFixed {
 			if mw := groupMinWidth[c.groupName]; mw > w {
 				w = mw
 			}
 		}
-		col := lipgloss.NewStyle().Width(w).MarginRight(colMargin).Render(c.content)
-		cols = append(cols, col)
+		rendered = append(rendered, lipgloss.NewStyle().Width(w).MarginRight(shortcutColMargin).Render(c.content))
 	}
-
-	return lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
 }

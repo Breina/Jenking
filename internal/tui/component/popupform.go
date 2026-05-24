@@ -377,142 +377,192 @@ func (pf *PopupForm) focusCurrent() {
 	}
 }
 
+// popupStyles bundles the styles used for one View() invocation.
+type popupStyles struct {
+	title    lipgloss.Style
+	label    lipgloss.Style
+	hint     lipgloss.Style
+	desc     lipgloss.Style
+	err      lipgloss.Style
+	selected lipgloss.Style
+	accent   lipgloss.TerminalColor
+}
+
+func (pf PopupForm) buildStyles() popupStyles {
+	t := pf.theme
+	accent := t.Popup.Title.GetForeground()
+	return popupStyles{
+		title:    t.Popup.Title,
+		label:    t.Popup.Label,
+		hint:     t.Popup.Hint,
+		desc:     t.Popup.Desc,
+		err:      t.Header.Disconnected,
+		selected: lipgloss.NewStyle().Foreground(accent).Bold(true),
+		accent:   accent,
+	}
+}
+
 // View renders the popup as a styled box. Callers overlay it on a background
 // using their preferred mechanism (e.g. view.overlayCenter).
 func (pf PopupForm) View() string {
-	t := pf.theme
-	titleStyle := t.Popup.Title
-	accentColor := titleStyle.GetForeground()
-	labelStyle := t.Popup.Label
-	hintStyle := t.Popup.Hint
-	descStyle := t.Popup.Desc
-	errStyle := t.Header.Disconnected
-	selectedStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+	st := pf.buildStyles()
 
-	var lines []string
-	lines = append(lines, titleStyle.Render(pf.title), "")
-
+	lines := []string{st.title.Render(pf.title), ""}
 	for i, f := range pf.fields {
-		active := i == pf.cursor
-		prefix := "  "
-		ls := labelStyle
-		if active {
-			prefix = "▸ "
-			ls = selectedStyle
-		}
-
-		labelText := f.def.Label
-		if f.def.Required {
-			labelText += " *"
-		}
-		lines = append(lines, ls.Render(prefix+labelText))
-
-		switch f.def.Kind {
-		case FieldBool:
-			check := "[ ]"
-			if f.boolValue {
-				check = "[✔]"
-			}
-			if active {
-				lines = append(lines, "    "+selectedStyle.Render(check)+hintStyle.Render("  (space to toggle)"))
-			} else {
-				lines = append(lines, "    "+check)
-			}
-		case FieldChoice:
-			val := ""
-			if f.choiceIdx >= 0 && f.choiceIdx < len(f.def.Choices) {
-				val = f.def.Choices[f.choiceIdx]
-			}
-			if active {
-				lines = append(lines, "    "+selectedStyle.Render("◂ "+val+" ▸")+hintStyle.Render("  (←/→)"))
-			} else {
-				lines = append(lines, "    "+val)
-			}
-		case FieldPassword:
-			if active {
-				lines = append(lines, "    "+f.textInput.View())
-			} else if v := f.stringVal; v != "" {
-				lines = append(lines, "    "+strings.Repeat("•", len(v)))
-			} else {
-				lines = append(lines, "    "+hintStyle.Render("(empty)"))
-			}
-		default:
-			if active {
-				lines = append(lines, "    "+f.textInput.View())
-			} else if v := f.stringVal; v != "" {
-				lines = append(lines, "    "+v)
-			} else {
-				lines = append(lines, "    "+hintStyle.Render("(empty)"))
-			}
-		}
-
-		if f.def.Description != "" {
-			for _, dl := range wrapText(f.def.Description, pf.contentW-4) {
-				lines = append(lines, "    "+descStyle.Render(dl))
-			}
-		}
-
-		// Reserve one line for validation errors on fields that can produce
-		// them; renders the error or a blank spacer. Other fields just get a
-		// blank spacer between blocks. Either way the height per field is
-		// stable when an error toggles on or off.
-		canError := (f.def.Kind == FieldText || f.def.Kind == FieldPassword) &&
-			(f.def.Required || f.def.Validator != nil)
-		if canError {
-			errText := ""
-			if i < len(pf.fieldErrors) {
-				errText = pf.fieldErrors[i]
-			}
-			if errText != "" {
-				wrapped := wrapText("✗ "+errText, pf.contentW-4)
-				for _, el := range wrapped {
-					lines = append(lines, "    "+errStyle.Render(el))
-				}
-			} else {
-				lines = append(lines, "")
-			}
-		} else {
-			lines = append(lines, "")
-		}
+		lines = append(lines, pf.renderField(i, f, st)...)
 	}
+	lines = append(lines, pf.renderStatusSection()...)
+	lines = append(lines, pf.renderFooterLines()...)
 
-	// Status section. When reserved, always render statusReservedLines rows so
-	// height stays constant whether status is set or not.
-	if pf.statusReservedLines > 0 {
-		var statusLines []string
-		if pf.statusText != "" {
-			style := pf.statusStyle()
-			for _, sl := range wrapText(pf.statusText, pf.contentW) {
-				statusLines = append(statusLines, style.Render(sl))
-			}
-		}
-		for len(statusLines) < pf.statusReservedLines {
-			statusLines = append(statusLines, "")
-		}
-		if len(statusLines) > pf.statusReservedLines {
-			statusLines = statusLines[:pf.statusReservedLines]
-		}
-		lines = append(lines, statusLines...)
-		lines = append(lines, "")
-	} else if pf.statusText != "" {
-		style := pf.statusStyle()
-		for _, sl := range wrapText(pf.statusText, pf.contentW) {
-			lines = append(lines, style.Render(sl))
-		}
-		lines = append(lines, "")
-	}
-
-	for _, fl := range pf.renderFooterLines() {
-		lines = append(lines, fl)
-	}
-
-	content := strings.Join(lines, "\n")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accentColor).
+		BorderForeground(st.accent).
 		Padding(1, 3).
 		Width(pf.contentW + 6).
-		Render(content)
+		Render(strings.Join(lines, "\n"))
+}
+
+// renderField returns the lines for one field block: label + value + description + error spacer.
+func (pf PopupForm) renderField(i int, f popupField, st popupStyles) []string {
+	active := i == pf.cursor
+	var lines []string
+	lines = append(lines, pf.renderFieldLabel(f, active, st))
+	lines = append(lines, pf.renderFieldValue(f, active, st))
+
+	if f.def.Description != "" {
+		for _, dl := range wrapText(f.def.Description, pf.contentW-4) {
+			lines = append(lines, "    "+st.desc.Render(dl))
+		}
+	}
+	lines = append(lines, pf.renderFieldError(i, f, st)...)
+	return lines
+}
+
+func (pf PopupForm) renderFieldLabel(f popupField, active bool, st popupStyles) string {
+	prefix := "  "
+	ls := st.label
+	if active {
+		prefix = "▸ "
+		ls = st.selected
+	}
+	labelText := f.def.Label
+	if f.def.Required {
+		labelText += " *"
+	}
+	return ls.Render(prefix + labelText)
+}
+
+func (pf PopupForm) renderFieldValue(f popupField, active bool, st popupStyles) string {
+	switch f.def.Kind {
+	case FieldBool:
+		return pf.renderBoolValue(f, active, st)
+	case FieldChoice:
+		return pf.renderChoiceValue(f, active, st)
+	case FieldPassword:
+		return pf.renderPasswordValue(f, active, st)
+	default:
+		return pf.renderTextValue(f, active, st)
+	}
+}
+
+func (pf PopupForm) renderBoolValue(f popupField, active bool, st popupStyles) string {
+	check := "[ ]"
+	if f.boolValue {
+		check = "[✔]"
+	}
+	if active {
+		return "    " + st.selected.Render(check) + st.hint.Render("  (space to toggle)")
+	}
+	return "    " + check
+}
+
+func (pf PopupForm) renderChoiceValue(f popupField, active bool, st popupStyles) string {
+	val := ""
+	if f.choiceIdx >= 0 && f.choiceIdx < len(f.def.Choices) {
+		val = f.def.Choices[f.choiceIdx]
+	}
+	if active {
+		return "    " + st.selected.Render("◂ "+val+" ▸") + st.hint.Render("  (←/→)")
+	}
+	return "    " + val
+}
+
+func (pf PopupForm) renderPasswordValue(f popupField, active bool, st popupStyles) string {
+	if active {
+		return "    " + f.textInput.View()
+	}
+	if v := f.stringVal; v != "" {
+		return "    " + strings.Repeat("•", len(v))
+	}
+	return "    " + st.hint.Render("(empty)")
+}
+
+func (pf PopupForm) renderTextValue(f popupField, active bool, st popupStyles) string {
+	if active {
+		return "    " + f.textInput.View()
+	}
+	if v := f.stringVal; v != "" {
+		return "    " + v
+	}
+	return "    " + st.hint.Render("(empty)")
+}
+
+// renderFieldError returns the per-field error block: either the wrapped error
+// lines or a single blank spacer so the field height stays stable.
+func (pf PopupForm) renderFieldError(i int, f popupField, st popupStyles) []string {
+	canError := (f.def.Kind == FieldText || f.def.Kind == FieldPassword) &&
+		(f.def.Required || f.def.Validator != nil)
+	if !canError {
+		return []string{""}
+	}
+	errText := ""
+	if i < len(pf.fieldErrors) {
+		errText = pf.fieldErrors[i]
+	}
+	if errText == "" {
+		return []string{""}
+	}
+	wrapped := wrapText("✗ "+errText, pf.contentW-4)
+	out := make([]string, 0, len(wrapped))
+	for _, el := range wrapped {
+		out = append(out, "    "+st.err.Render(el))
+	}
+	return out
+}
+
+// renderStatusSection returns the lines for the optional status section,
+// honouring statusReservedLines for stable popup height.
+func (pf PopupForm) renderStatusSection() []string {
+	if pf.statusReservedLines > 0 {
+		return pf.renderReservedStatus()
+	}
+	if pf.statusText == "" {
+		return nil
+	}
+	style := pf.statusStyle()
+	var out []string
+	for _, sl := range wrapText(pf.statusText, pf.contentW) {
+		out = append(out, style.Render(sl))
+	}
+	out = append(out, "")
+	return out
+}
+
+func (pf PopupForm) renderReservedStatus() []string {
+	var statusLines []string
+	if pf.statusText != "" {
+		style := pf.statusStyle()
+		for _, sl := range wrapText(pf.statusText, pf.contentW) {
+			statusLines = append(statusLines, style.Render(sl))
+		}
+	}
+	for len(statusLines) < pf.statusReservedLines {
+		statusLines = append(statusLines, "")
+	}
+	if len(statusLines) > pf.statusReservedLines {
+		statusLines = statusLines[:pf.statusReservedLines]
+	}
+	return append(statusLines, "")
 }
 
 func (pf PopupForm) renderFooterLines() []string {

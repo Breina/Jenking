@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 type jsonComputerList struct {
@@ -38,7 +40,7 @@ const computerTreeParam = `computer[displayName,` +
 	`oneOffExecutors[currentExecutable[number,url,timestamp,estimatedDuration,building,fullDisplayName,actions[causes[shortDescription,userName,userId]]]]]`
 
 // ListRunningBuilds returns all builds currently executing across all nodes.
-func (c *Client) ListRunningBuilds(ctx context.Context) ([]UserBuild, error) {
+func (c *Client) ListRunningBuilds(ctx context.Context) ([]jmodel.UserBuild, error) {
 	data, err := c.get(ctx, "/computer/api/json?tree="+computerTreeParam)
 	if err != nil {
 		return nil, fmt.Errorf("listing running builds: %w", err)
@@ -49,7 +51,7 @@ func (c *Client) ListRunningBuilds(ctx context.Context) ([]UserBuild, error) {
 		return nil, fmt.Errorf("parsing running builds: %w", err)
 	}
 
-	var builds []UserBuild
+	var builds []jmodel.UserBuild
 	for _, computer := range list.Computer {
 		executors := append(computer.Executors, computer.OneOffExecutors...)
 		for _, ex := range executors {
@@ -61,13 +63,13 @@ func (c *Client) ListRunningBuilds(ctx context.Context) ([]UserBuild, error) {
 			if err != nil {
 				continue
 			}
-			builds = append(builds, UserBuild{
+			builds = append(builds, jmodel.UserBuild{
 				JobPath:     jobPath,
 				Node:        computer.DisplayName,
 				DisplayName: rb.FullDisplayName,
-				Build: Build{
+				Build: jmodel.Build{
 					Number:            number,
-					Status:            BuildStatusRunning,
+					Status:            jmodel.BuildStatusRunning,
 					EstimatedDuration: millisToDuration(rb.EstimatedDuration),
 					Timestamp:         millisToTime(rb.Timestamp),
 					TriggeredBy:       extractUserID(rb.Actions),

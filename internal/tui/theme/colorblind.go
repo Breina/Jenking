@@ -223,6 +223,97 @@ func applyToStyle(s lipgloss.Style, fn func(lipgloss.Color) lipgloss.Color) lipg
 	return s
 }
 
+// styleField describes a single lipgloss.Style field on Theme. It carries a
+// getter (from the source theme) and a setter (into the destination theme),
+// allowing ApplyColorblindFilter to iterate over a flat table rather than
+// repeat per-field assignments.
+type styleField struct {
+	get func(*Theme) lipgloss.Style
+	set func(*Theme, lipgloss.Style)
+}
+
+// themeStyleFields lists every Style field on Theme that carries a colour.
+// Border (lipgloss.Border) is intentionally absent — it stores no colours.
+var themeStyleFields = []styleField{
+	// Header
+	{func(t *Theme) lipgloss.Style { return t.Header.Title }, func(t *Theme, s lipgloss.Style) { t.Header.Title = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.URL }, func(t *Theme, s lipgloss.Style) { t.Header.URL = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.Label }, func(t *Theme, s lipgloss.Style) { t.Header.Label = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.Value }, func(t *Theme, s lipgloss.Style) { t.Header.Value = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.Connected }, func(t *Theme, s lipgloss.Style) { t.Header.Connected = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.Disconnected }, func(t *Theme, s lipgloss.Style) { t.Header.Disconnected = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.RunningBadge }, func(t *Theme, s lipgloss.Style) { t.Header.RunningBadge = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.Logo }, func(t *Theme, s lipgloss.Style) { t.Header.Logo = s }},
+	{func(t *Theme) lipgloss.Style { return t.Header.Crown }, func(t *Theme, s lipgloss.Style) { t.Header.Crown = s }},
+	// Breadcrumb
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Segment }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Segment = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Separator }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Separator = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Badge }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Badge = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.ViewType }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.ViewType = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Filter }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Filter = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Context }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Context = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.BuildNum }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.BuildNum = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Paren }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Paren = s }},
+	{func(t *Theme) lipgloss.Style { return t.Breadcrumb.Count }, func(t *Theme, s lipgloss.Style) { t.Breadcrumb.Count = s }},
+	// Search
+	{func(t *Theme) lipgloss.Style { return t.Search.Match }, func(t *Theme, s lipgloss.Style) { t.Search.Match = s }},
+	// Table
+	{func(t *Theme) lipgloss.Style { return t.Table.Header }, func(t *Theme, s lipgloss.Style) { t.Table.Header = s }},
+	{func(t *Theme) lipgloss.Style { return t.Table.Row }, func(t *Theme, s lipgloss.Style) { t.Table.Row = s }},
+	{func(t *Theme) lipgloss.Style { return t.Table.Selected }, func(t *Theme, s lipgloss.Style) { t.Table.Selected = s }},
+	// StatusBar
+	{func(t *Theme) lipgloss.Style { return t.StatusBar.Bar }, func(t *Theme, s lipgloss.Style) { t.StatusBar.Bar = s }},
+	{func(t *Theme) lipgloss.Style { return t.StatusBar.Key }, func(t *Theme, s lipgloss.Style) { t.StatusBar.Key = s }},
+	{func(t *Theme) lipgloss.Style { return t.StatusBar.Help }, func(t *Theme, s lipgloss.Style) { t.StatusBar.Help = s }},
+	{func(t *Theme) lipgloss.Style { return t.StatusBar.Input }, func(t *Theme, s lipgloss.Style) { t.StatusBar.Input = s }},
+	{func(t *Theme) lipgloss.Style { return t.StatusBar.Error }, func(t *Theme, s lipgloss.Style) { t.StatusBar.Error = s }},
+	{func(t *Theme) lipgloss.Style { return t.StatusBar.Command }, func(t *Theme, s lipgloss.Style) { t.StatusBar.Command = s }},
+	// BuildStatus
+	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Running }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Running = s }},
+	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Success }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Success = s }},
+	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Failed }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Failed = s }},
+	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Aborted }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Aborted = s }},
+	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Unstable }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Unstable = s }},
+	// ProgressBar
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.Filled }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.Filled = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.Empty }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.Empty = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.Overrun }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.Overrun = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.FilledText }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.FilledText = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.EmptyText }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.EmptyText = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.OverrunText }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.OverrunText = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.SelFilled }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.SelFilled = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.SelEmpty }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.SelEmpty = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.SelOverrun }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.SelOverrun = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.SelFilledText }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.SelFilledText = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.SelEmptyText }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.SelEmptyText = s }},
+	{func(t *Theme) lipgloss.Style { return t.ProgressBar.SelOverrunText }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.SelOverrunText = s }},
+	// Log
+	{func(t *Theme) lipgloss.Style { return t.Log.Normal }, func(t *Theme, s lipgloss.Style) { t.Log.Normal = s }},
+	{func(t *Theme) lipgloss.Style { return t.Log.Dim }, func(t *Theme, s lipgloss.Style) { t.Log.Dim = s }},
+	{func(t *Theme) lipgloss.Style { return t.Log.Error }, func(t *Theme, s lipgloss.Style) { t.Log.Error = s }},
+	{func(t *Theme) lipgloss.Style { return t.Log.Warning }, func(t *Theme, s lipgloss.Style) { t.Log.Warning = s }},
+	{func(t *Theme) lipgloss.Style { return t.Log.Trunc }, func(t *Theme, s lipgloss.Style) { t.Log.Trunc = s }},
+	// Stage
+	{func(t *Theme) lipgloss.Style { return t.Stage.GhostDim }, func(t *Theme, s lipgloss.Style) { t.Stage.GhostDim = s }},
+	// Weather
+	{func(t *Theme) lipgloss.Style { return t.Weather.Sun }, func(t *Theme, s lipgloss.Style) { t.Weather.Sun = s }},
+	{func(t *Theme) lipgloss.Style { return t.Weather.Unstable }, func(t *Theme, s lipgloss.Style) { t.Weather.Unstable = s }},
+	{func(t *Theme) lipgloss.Style { return t.Weather.Storm }, func(t *Theme, s lipgloss.Style) { t.Weather.Storm = s }},
+	{func(t *Theme) lipgloss.Style { return t.Weather.None }, func(t *Theme, s lipgloss.Style) { t.Weather.None = s }},
+	// NavTag
+	{func(t *Theme) lipgloss.Style { return t.NavTag.Active }, func(t *Theme, s lipgloss.Style) { t.NavTag.Active = s }},
+	{func(t *Theme) lipgloss.Style { return t.NavTag.Ancestor }, func(t *Theme, s lipgloss.Style) { t.NavTag.Ancestor = s }},
+	// Popup
+	{func(t *Theme) lipgloss.Style { return t.Popup.Title }, func(t *Theme, s lipgloss.Style) { t.Popup.Title = s }},
+	{func(t *Theme) lipgloss.Style { return t.Popup.Accent }, func(t *Theme, s lipgloss.Style) { t.Popup.Accent = s }},
+	{func(t *Theme) lipgloss.Style { return t.Popup.Hint }, func(t *Theme, s lipgloss.Style) { t.Popup.Hint = s }},
+	{func(t *Theme) lipgloss.Style { return t.Popup.Label }, func(t *Theme, s lipgloss.Style) { t.Popup.Label = s }},
+	{func(t *Theme) lipgloss.Style { return t.Popup.Desc }, func(t *Theme, s lipgloss.Style) { t.Popup.Desc = s }},
+	{func(t *Theme) lipgloss.Style { return t.Popup.Normal }, func(t *Theme, s lipgloss.Style) { t.Popup.Normal = s }},
+	// PanelBorder
+	{func(t *Theme) lipgloss.Style { return t.PanelBorder }, func(t *Theme, s lipgloss.Style) { t.PanelBorder = s }},
+}
+
 // ApplyColorblindFilter returns a copy of base with all theme colors adjusted
 // for the given colorblindness type. Returns base unchanged for ColorblindnessNone.
 // Border (lipgloss.Border) is not touched — it contains no colors.
@@ -230,104 +321,12 @@ func ApplyColorblindFilter(base Theme, cbType ColorblindnessType) Theme {
 	if cbType == ColorblindnessNone {
 		return base
 	}
-
 	fn := func(c lipgloss.Color) lipgloss.Color {
 		return TransformColor(c, cbType)
 	}
-
 	t := base
-
-	// Header
-	t.Header.Title = applyToStyle(base.Header.Title, fn)
-	t.Header.URL = applyToStyle(base.Header.URL, fn)
-	t.Header.Label = applyToStyle(base.Header.Label, fn)
-	t.Header.Value = applyToStyle(base.Header.Value, fn)
-	t.Header.Connected = applyToStyle(base.Header.Connected, fn)
-	t.Header.Disconnected = applyToStyle(base.Header.Disconnected, fn)
-	t.Header.RunningBadge = applyToStyle(base.Header.RunningBadge, fn)
-	t.Header.Logo = applyToStyle(base.Header.Logo, fn)
-	t.Header.Crown = applyToStyle(base.Header.Crown, fn)
-
-	// Breadcrumb
-	t.Breadcrumb.Segment = applyToStyle(base.Breadcrumb.Segment, fn)
-	t.Breadcrumb.Separator = applyToStyle(base.Breadcrumb.Separator, fn)
-	t.Breadcrumb.Badge = applyToStyle(base.Breadcrumb.Badge, fn)
-	t.Breadcrumb.ViewType = applyToStyle(base.Breadcrumb.ViewType, fn)
-	t.Breadcrumb.Filter = applyToStyle(base.Breadcrumb.Filter, fn)
-	t.Breadcrumb.Context = applyToStyle(base.Breadcrumb.Context, fn)
-	t.Breadcrumb.BuildNum = applyToStyle(base.Breadcrumb.BuildNum, fn)
-	t.Breadcrumb.Paren = applyToStyle(base.Breadcrumb.Paren, fn)
-	t.Breadcrumb.Count = applyToStyle(base.Breadcrumb.Count, fn)
-
-	// Search
-	t.Search.Match = applyToStyle(base.Search.Match, fn)
-
-	// Table
-	t.Table.Header = applyToStyle(base.Table.Header, fn)
-	t.Table.Row = applyToStyle(base.Table.Row, fn)
-	t.Table.Selected = applyToStyle(base.Table.Selected, fn)
-
-	// StatusBar
-	t.StatusBar.Bar = applyToStyle(base.StatusBar.Bar, fn)
-	t.StatusBar.Key = applyToStyle(base.StatusBar.Key, fn)
-	t.StatusBar.Help = applyToStyle(base.StatusBar.Help, fn)
-	t.StatusBar.Input = applyToStyle(base.StatusBar.Input, fn)
-	t.StatusBar.Error = applyToStyle(base.StatusBar.Error, fn)
-	t.StatusBar.Command = applyToStyle(base.StatusBar.Command, fn)
-
-	// BuildStatus
-	t.BuildStatus.Running = applyToStyle(base.BuildStatus.Running, fn)
-	t.BuildStatus.Success = applyToStyle(base.BuildStatus.Success, fn)
-	t.BuildStatus.Failed = applyToStyle(base.BuildStatus.Failed, fn)
-	t.BuildStatus.Aborted = applyToStyle(base.BuildStatus.Aborted, fn)
-	t.BuildStatus.Unstable = applyToStyle(base.BuildStatus.Unstable, fn)
-
-	// ProgressBar
-	t.ProgressBar.Filled = applyToStyle(base.ProgressBar.Filled, fn)
-	t.ProgressBar.Empty = applyToStyle(base.ProgressBar.Empty, fn)
-	t.ProgressBar.Overrun = applyToStyle(base.ProgressBar.Overrun, fn)
-	t.ProgressBar.FilledText = applyToStyle(base.ProgressBar.FilledText, fn)
-	t.ProgressBar.EmptyText = applyToStyle(base.ProgressBar.EmptyText, fn)
-	t.ProgressBar.OverrunText = applyToStyle(base.ProgressBar.OverrunText, fn)
-	t.ProgressBar.SelFilled = applyToStyle(base.ProgressBar.SelFilled, fn)
-	t.ProgressBar.SelEmpty = applyToStyle(base.ProgressBar.SelEmpty, fn)
-	t.ProgressBar.SelOverrun = applyToStyle(base.ProgressBar.SelOverrun, fn)
-	t.ProgressBar.SelFilledText = applyToStyle(base.ProgressBar.SelFilledText, fn)
-	t.ProgressBar.SelEmptyText = applyToStyle(base.ProgressBar.SelEmptyText, fn)
-	t.ProgressBar.SelOverrunText = applyToStyle(base.ProgressBar.SelOverrunText, fn)
-
-	// Log
-	t.Log.Normal = applyToStyle(base.Log.Normal, fn)
-	t.Log.Dim = applyToStyle(base.Log.Dim, fn)
-	t.Log.Error = applyToStyle(base.Log.Error, fn)
-	t.Log.Warning = applyToStyle(base.Log.Warning, fn)
-	t.Log.Trunc = applyToStyle(base.Log.Trunc, fn)
-
-	// Stage
-	t.Stage.GhostDim = applyToStyle(base.Stage.GhostDim, fn)
-
-	// Weather
-	t.Weather.Sun = applyToStyle(base.Weather.Sun, fn)
-	t.Weather.Unstable = applyToStyle(base.Weather.Unstable, fn)
-	t.Weather.Storm = applyToStyle(base.Weather.Storm, fn)
-	t.Weather.None = applyToStyle(base.Weather.None, fn)
-
-	// NavTag
-	t.NavTag.Active = applyToStyle(base.NavTag.Active, fn)
-	t.NavTag.Ancestor = applyToStyle(base.NavTag.Ancestor, fn)
-
-	// Popup
-	t.Popup.Title = applyToStyle(base.Popup.Title, fn)
-	t.Popup.Accent = applyToStyle(base.Popup.Accent, fn)
-	t.Popup.Hint = applyToStyle(base.Popup.Hint, fn)
-	t.Popup.Label = applyToStyle(base.Popup.Label, fn)
-	t.Popup.Desc = applyToStyle(base.Popup.Desc, fn)
-	t.Popup.Normal = applyToStyle(base.Popup.Normal, fn)
-
-	// PanelBorder
-	t.PanelBorder = applyToStyle(base.PanelBorder, fn)
-
-	// Border: no colors stored in lipgloss.Border — leave untouched.
-
+	for _, f := range themeStyleFields {
+		f.set(&t, applyToStyle(f.get(&base), fn))
+	}
 	return t
 }

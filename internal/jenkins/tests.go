@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // GetTestReport fetches JUnit test results for the given build.
 // Returns nil, nil when Jenkins reports 404 (no test results recorded).
-func (c *Client) GetTestReport(ctx context.Context, jobPath string, buildNum int) (*TestReport, error) {
+func (c *Client) GetTestReport(ctx context.Context, jobPath string, buildNum int) (*jmodel.TestReport, error) {
 	path := fmt.Sprintf(
 		"%s/%d/testReport/api/json?tree=duration,failCount,passCount,skipCount,suites[name,duration,cases[className,name,status,duration,errorDetails]]",
-		JobPathToURL(jobPath), buildNum,
+		jmodel.JobPathToURL(jobPath), buildNum,
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)

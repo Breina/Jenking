@@ -2,176 +2,11 @@ package jenkins
 
 import (
 	"encoding/json"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
-
-// JobType represents the type of a Jenkins job.
-type JobType string
-
-const (
-	JobTypeFolder      JobType = "folder"
-	JobTypeFreeStyle   JobType = "freestyle"
-	JobTypePipeline    JobType = "pipeline"
-	JobTypeMultiBranch JobType = "multibranch"
-	JobTypeUnknown     JobType = "unknown"
-)
-
-// BranchType represents whether a multibranch child is a branch or MR.
-type BranchType string
-
-const (
-	BranchTypeBranch       BranchType = "branch"
-	BranchTypeMergeRequest BranchType = "merge_request"
-	BranchTypeNone         BranchType = "none"
-)
-
-// ParamType represents the type of a Jenkins parameter.
-type ParamType string
-
-const (
-	ParamTypeString   ParamType = "string"
-	ParamTypeBool     ParamType = "bool"
-	ParamTypeChoice   ParamType = "choice"
-	ParamTypePassword ParamType = "password"
-)
-
-// ParameterDefinition describes a parameter of a parameterized Jenkins job.
-type ParameterDefinition struct {
-	Name        string
-	Type        ParamType
-	Default     string
-	Description string
-	Choices     []string // only for choice type
-}
-
-// BuildStatus represents the status of a Jenkins build.
-type BuildStatus string
-
-const (
-	BuildStatusRunning  BuildStatus = "running"
-	BuildStatusSuccess  BuildStatus = "success"
-	BuildStatusFailed   BuildStatus = "failed"
-	BuildStatusAborted  BuildStatus = "aborted"
-	BuildStatusUnstable BuildStatus = "unstable"
-	BuildStatusSkipped  BuildStatus = "skipped"
-	BuildStatusNotBuilt BuildStatus = "not_built"
-	BuildStatusUnknown  BuildStatus = "unknown"
-)
-
-// BuildRef is a lightweight reference to a build.
-type BuildRef struct {
-	Number            int
-	URL               string
-	Timestamp         time.Time
-	EstimatedDuration time.Duration
-}
-
-// Job represents a Jenkins job.
-type Job struct {
-	Name         string
-	FullPath     string
-	Type         JobType
-	BranchType   BranchType
-	LastBuild    *BuildRef // primary branch last build
-	Color        string    // primary branch color (may include _anime for running)
-	LastAnyBuild *BuildRef // most recently built branch across all branches
-	LastAnyColor string    // color of the most recently built branch
-	RunningCount int       // number of currently running builds/branches
-	Disabled     bool      // true when the job is disabled in Jenkins
-}
-
-// Build represents a Jenkins build.
-type Build struct {
-	Number            int
-	Status            BuildStatus
-	Duration          time.Duration
-	EstimatedDuration time.Duration
-	Timestamp         time.Time
-	Params            map[string]string
-	TriggeredBy       string // user ID who triggered the build (empty if unknown)
-	TriggeredByName   string // display name of the trigger user (e.g. "Brecht Derwael"; empty if unknown)
-	Cause             string // human-readable trigger description (e.g. "Started by user Brecht")
-}
-
-// BuildDetail extends Build with stage information.
-type BuildDetail struct {
-	Build
-	Stages []Stage
-}
-
-// Stage represents a pipeline stage.
-type Stage struct {
-	Name     string
-	Status   BuildStatus
-	Duration time.Duration
-	NodeIDs  []int // flow graph node IDs that have log output within this stage
-	Depth    int   // nesting depth (0 = top-level)
-	Parallel bool  // true if this stage's children run in parallel
-}
-
-// ProjectBuild is a build from a multibranch project, associated with its branch.
-type ProjectBuild struct {
-	Build
-	BranchName string
-	BranchPath string // full job path of the branch job (for API calls)
-}
-
-// UserBuild is a build associated with its job path.
-type UserBuild struct {
-	JobPath     string
-	Node        string // build agent name
-	DisplayName string // full human-readable name, e.g. "FolderA » Pipeline #42"
-	Build
-}
-
-// User represents a Jenkins user.
-type User struct {
-	ID             string
-	FullName       string
-	JenkinsVersion string
-}
-
-// TestStatus represents the outcome of a single test case.
-type TestStatus string
-
-const (
-	TestStatusPassed  TestStatus = "passed"
-	TestStatusFailed  TestStatus = "failed"
-	TestStatusSkipped TestStatus = "skipped"
-)
-
-// TestCase represents a single test case within a suite.
-type TestCase struct {
-	ClassName    string
-	Name         string
-	Status       TestStatus
-	Duration     time.Duration
-	ErrorDetails string
-}
-
-// TestSuite represents a group of test cases.
-type TestSuite struct {
-	Name     string
-	Duration time.Duration
-	Cases    []TestCase
-}
-
-// TestReport holds aggregated test results for a build.
-type TestReport struct {
-	Duration time.Duration
-	Failed   int
-	Passed   int
-	Skipped  int
-	Suites   []TestSuite
-}
-
-// Artifact represents a single build artifact.
-type Artifact struct {
-	DisplayPath string // human-readable name shown in Jenkins UI
-	URL         string // absolute download URL
-}
 
 // JSON response structs (unexported) for unmarshalling Jenkins API responses.
 
@@ -182,8 +17,8 @@ type jsonJob struct {
 	URL       string        `json:"url"`
 	Color     string        `json:"color"`
 	LastBuild *jsonBuildRef `json:"lastBuild"`
-	Jobs      []jsonJob     `json:"jobs"`   // populated for multi-branch: the branch jobs
-	Builds    []jsonBuild   `json:"builds"` // populated by ScanAllBuilds tree query
+	Jobs      []jsonJob     `json:"jobs"`
+	Builds    []jsonBuild   `json:"builds"`
 }
 
 type jsonBuildRef struct {
@@ -223,7 +58,6 @@ type jsonCause struct {
 	UserID           string `json:"userId"`
 }
 
-// extractUserID returns the userId of the first cause that has one.
 func extractUserID(actions []jsonAction) string {
 	for _, a := range actions {
 		for _, c := range a.Causes {
@@ -235,7 +69,6 @@ func extractUserID(actions []jsonAction) string {
 	return ""
 }
 
-// extractUserName returns the userName of the first cause that has one.
 func extractUserName(actions []jsonAction) string {
 	for _, a := range actions {
 		for _, c := range a.Causes {
@@ -247,10 +80,9 @@ func extractUserName(actions []jsonAction) string {
 	return ""
 }
 
-// extractCause returns the most informative shortDescription from a build's causes.
-// It skips BranchEventCause ("Push event to branch X") and BranchIndexingCause
-// ("Branch indexing") which carry no user identity, preferring causes like
-// UserIdCause or GitLabWebHookCause that name the actual trigger.
+// extractCause returns the most informative shortDescription. BranchEventCause
+// and BranchIndexingCause carry no user identity, so they're treated as
+// fallbacks behind causes like UserIdCause or GitLabWebHookCause.
 func extractCause(actions []jsonAction) string {
 	const branchEvent = "jenkins.branch.BranchEventCause"
 	const branchIndex = "jenkins.branch.BranchIndexingCause"
@@ -272,20 +104,14 @@ func extractCause(actions []jsonAction) string {
 	return fallback
 }
 
-// jsonParameter holds a build-time parameter value. Value is RawMessage
-// because Jenkins serialises parameters using their native JSON type — bool
-// for BooleanParameterValue, number for NumberParameterValue, etc. Decoding
-// into a `string` field crashes the entire build-detail unmarshal and was
-// the root cause of GetBuild silently failing for any pipeline with a
-// non-string parameter.
+// jsonParameter — Value is RawMessage because Jenkins serialises parameter
+// values using their native JSON type (bool, number, string). Decoding into a
+// `string` crashes the whole build-detail unmarshal for any non-string param.
 type jsonParameter struct {
 	Name  string          `json:"name"`
 	Value json.RawMessage `json:"value"`
 }
 
-// stringValue returns the parameter value as a string regardless of its
-// underlying JSON type. Strings are unquoted; bool/number/null fall back to
-// their literal JSON form (e.g. "true", "42", "null").
 func (p *jsonParameter) stringValue() string {
 	if len(p.Value) == 0 {
 		return ""
@@ -331,16 +157,6 @@ type jsonUser struct {
 	FullName string `json:"fullName"`
 }
 
-type jsonStage struct {
-	Name           string `json:"name"`
-	Status         string `json:"status"`
-	DurationMillis int64  `json:"durationMillis"`
-}
-
-type jsonWfDescribe struct {
-	Stages []jsonStage `json:"stages"`
-}
-
 type jsonTestCase struct {
 	ClassName    string  `json:"className"`
 	Name         string  `json:"name"`
@@ -363,13 +179,13 @@ type jsonTestReport struct {
 	Suites    []jsonTestSuite `json:"suites"`
 }
 
-// Conversion helpers
+// Conversion helpers — adapter-side parsing into domain types.
 
-func (j *jsonJob) toDomain(parentPath string) Job {
-	job := Job{
+func (j *jsonJob) toDomain(parentPath string) jmodel.Job {
+	job := jmodel.Job{
 		Name:       j.Name,
 		Type:       ParseJobType(j.Class),
-		BranchType: BranchTypeNone,
+		BranchType: jmodel.BranchTypeNone,
 		Color:      j.Color,
 		Disabled:   j.Color == "disabled",
 	}
@@ -379,7 +195,7 @@ func (j *jsonJob) toDomain(parentPath string) Job {
 		job.FullPath = parentPath + "/" + j.Name
 	}
 	if j.LastBuild != nil {
-		job.LastBuild = &BuildRef{
+		job.LastBuild = &jmodel.BuildRef{
 			Number:            j.LastBuild.Number,
 			URL:               j.LastBuild.URL,
 			Timestamp:         millisToTime(j.LastBuild.Timestamp),
@@ -389,8 +205,8 @@ func (j *jsonJob) toDomain(parentPath string) Job {
 	return job
 }
 
-func (j *jsonBuild) toDomain() Build {
-	return Build{
+func (j *jsonBuild) toDomain() jmodel.Build {
+	return jmodel.Build{
 		Number:            j.Number,
 		Status:            ParseBuildStatus(j.Result, j.Building),
 		Duration:          millisToDuration(j.Duration),
@@ -402,8 +218,8 @@ func (j *jsonBuild) toDomain() Build {
 	}
 }
 
-func (j *jsonBuildDetail) toDomain() BuildDetail {
-	bd := BuildDetail{
+func (j *jsonBuildDetail) toDomain() jmodel.BuildDetail {
+	bd := jmodel.BuildDetail{
 		Build: j.jsonBuild.toDomain(),
 	}
 	for _, action := range j.Actions {
@@ -418,155 +234,114 @@ func (j *jsonBuildDetail) toDomain() BuildDetail {
 	return bd
 }
 
-func (j *jsonStage) toDomain() Stage {
-	return Stage{
-		Name:     j.Name,
-		Status:   parsePipelineStatus(j.Status),
-		Duration: millisToDuration(j.DurationMillis),
-	}
-}
-
-// ParseJobType converts a Jenkins _class string to a JobType.
-func ParseJobType(class string) JobType {
+func ParseJobType(class string) jmodel.JobType {
 	switch {
 	case strings.Contains(class, "Folder"):
-		return JobTypeFolder
+		return jmodel.JobTypeFolder
 	case strings.Contains(class, "FreeStyleProject"):
-		return JobTypeFreeStyle
+		return jmodel.JobTypeFreeStyle
 	case strings.Contains(class, "WorkflowJob"):
-		return JobTypePipeline
+		return jmodel.JobTypePipeline
 	case strings.Contains(class, "WorkflowMultiBranchProject") ||
 		strings.Contains(class, "MultiBranchProject"):
-		return JobTypeMultiBranch
+		return jmodel.JobTypeMultiBranch
 	default:
-		return JobTypeUnknown
+		return jmodel.JobTypeUnknown
 	}
 }
 
-// ParseBuildStatus converts Jenkins result/building fields to a BuildStatus.
-func ParseBuildStatus(result *string, building bool) BuildStatus {
+func ParseBuildStatus(result *string, building bool) jmodel.BuildStatus {
 	if building {
-		return BuildStatusRunning
+		return jmodel.BuildStatusRunning
 	}
 	if result == nil {
-		return BuildStatusRunning
+		return jmodel.BuildStatusRunning
 	}
 	switch *result {
 	case "SUCCESS":
-		return BuildStatusSuccess
+		return jmodel.BuildStatusSuccess
 	case "FAILURE":
-		return BuildStatusFailed
+		return jmodel.BuildStatusFailed
 	case "ABORTED":
-		return BuildStatusAborted
+		return jmodel.BuildStatusAborted
 	case "UNSTABLE":
-		return BuildStatusUnstable
+		return jmodel.BuildStatusUnstable
 	case "NOT_BUILT":
-		return BuildStatusNotBuilt
+		return jmodel.BuildStatusNotBuilt
 	default:
-		return BuildStatusUnknown
+		return jmodel.BuildStatusUnknown
 	}
 }
 
-// ColorToLastCompletedStatus returns the last-completed BuildStatus from a
-// Jenkins color string, stripping any "_anime" running suffix first so that a
+// ColorToLastCompletedStatus strips any "_anime" running suffix so a
 // currently-running build reports its previous result rather than Running.
-func ColorToLastCompletedStatus(color string) BuildStatus {
+func ColorToLastCompletedStatus(color string) jmodel.BuildStatus {
 	return ColorToBuildStatus(strings.TrimSuffix(color, "_anime"))
 }
 
-// ColorToBuildStatus converts a Jenkins color string to a BuildStatus.
-func ColorToBuildStatus(color string) BuildStatus {
-	// Strip "_anime" suffix (indicates running)
+func ColorToBuildStatus(color string) jmodel.BuildStatus {
 	if strings.HasSuffix(color, "_anime") {
-		return BuildStatusRunning
+		return jmodel.BuildStatusRunning
 	}
 	switch color {
 	case "blue":
-		return BuildStatusSuccess
+		return jmodel.BuildStatusSuccess
 	case "red":
-		return BuildStatusFailed
+		return jmodel.BuildStatusFailed
 	case "aborted", "grey":
-		return BuildStatusAborted
+		return jmodel.BuildStatusAborted
 	case "yellow":
-		return BuildStatusUnstable
+		return jmodel.BuildStatusUnstable
 	case "notbuilt", "disabled":
-		return BuildStatusNotBuilt
+		return jmodel.BuildStatusNotBuilt
 	default:
-		return BuildStatusUnknown
+		return jmodel.BuildStatusUnknown
 	}
 }
 
-// parsePipelineStatus converts a wfapi stage status string.
-func parsePipelineStatus(status string) BuildStatus {
-	switch status {
-	case "SUCCESS":
-		return BuildStatusSuccess
-	case "FAILED":
-		return BuildStatusFailed
-	case "ABORTED":
-		return BuildStatusAborted
-	case "UNSTABLE":
-		return BuildStatusUnstable
-	case "NOT_EXECUTED":
-		return BuildStatusNotBuilt
-	case "IN_PROGRESS":
-		return BuildStatusRunning
-	default:
-		return BuildStatusUnknown
-	}
-}
+func millisToDuration(ms int64) time.Duration { return time.Duration(ms) * time.Millisecond }
+func millisToTime(ms int64) time.Time         { return time.UnixMilli(ms) }
 
-func millisToDuration(ms int64) time.Duration {
-	return time.Duration(ms) * time.Millisecond
-}
-
-func millisToTime(ms int64) time.Time {
-	return time.UnixMilli(ms)
-}
-
-// parseParamType maps a Jenkins parameter class name to a ParamType.
-func parseParamType(class string) ParamType {
+func parseParamType(class string) jmodel.ParamType {
 	switch {
 	case strings.Contains(class, "PasswordParameterDefinition"):
-		return ParamTypePassword
+		return jmodel.ParamTypePassword
 	case strings.Contains(class, "BooleanParameterDefinition"):
-		return ParamTypeBool
+		return jmodel.ParamTypeBool
 	case strings.Contains(class, "ChoiceParameterDefinition"):
-		return ParamTypeChoice
+		return jmodel.ParamTypeChoice
 	default:
-		return ParamTypeString
+		return jmodel.ParamTypeString
 	}
 }
 
-func secondsToDuration(s float64) time.Duration {
-	return time.Duration(s * float64(time.Second))
-}
+func secondsToDuration(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
 
-func parseTestStatus(s string) TestStatus {
+func parseTestStatus(s string) jmodel.TestStatus {
 	switch s {
 	case "PASSED", "FIXED":
-		return TestStatusPassed
+		return jmodel.TestStatusPassed
 	case "FAILED", "REGRESSION":
-		return TestStatusFailed
+		return jmodel.TestStatusFailed
 	default:
-		return TestStatusSkipped
+		return jmodel.TestStatusSkipped
 	}
 }
 
-func (j *jsonTestReport) toDomain() *TestReport {
-	r := &TestReport{
+func (j *jsonTestReport) toDomain() *jmodel.TestReport {
+	r := &jmodel.TestReport{
 		Duration: secondsToDuration(j.Duration),
 		Failed:   j.FailCount,
 		Passed:   j.PassCount,
 		Skipped:  j.SkipCount,
 	}
 	for _, s := range j.Suites {
-		suite := TestSuite{
+		suite := jmodel.TestSuite{
 			Name:     s.Name,
 			Duration: secondsToDuration(s.Duration),
 		}
 		for _, c := range s.Cases {
-			suite.Cases = append(suite.Cases, TestCase{
+			suite.Cases = append(suite.Cases, jmodel.TestCase{
 				ClassName:    c.ClassName,
 				Name:         c.Name,
 				Status:       parseTestStatus(c.Status),
@@ -577,23 +352,4 @@ func (j *jsonTestReport) toDomain() *TestReport {
 		r.Suites = append(r.Suites, suite)
 	}
 	return r
-}
-
-// JobPathToURL converts a slash-separated job path to a Jenkins URL path.
-// Segments are passed through url.PathEscape WITHOUT first unescaping, so that
-// branch names stored by Jenkins with literal %2F (e.g. "feature%2Fbranch")
-// become %252F in the URL — matching the double-encoded form Jenkins requires
-// (browsers show this as %252F in the address bar).
-// Plain names are encoded normally: spaces → %20, etc.
-// e.g. "Code Private/feature%2Fbranch" -> "/job/Code%20Private/job/feature%252Fbranch"
-func JobPathToURL(jobPath string) string {
-	if jobPath == "" {
-		return ""
-	}
-	parts := strings.Split(jobPath, "/")
-	encoded := make([]string, len(parts))
-	for i, p := range parts {
-		encoded[i] = url.PathEscape(p)
-	}
-	return "/job/" + strings.Join(encoded, "/job/")
 }

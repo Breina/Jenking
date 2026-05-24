@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Breina/Jenking/internal/jenkins"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
-func ub(jobPath string, num int, status jenkins.BuildStatus, ts time.Time) jenkins.UserBuild {
-	return jenkins.UserBuild{
+func ub(jobPath string, num int, status jmodel.BuildStatus, ts time.Time) jmodel.UserBuild {
+	return jmodel.UserBuild{
 		JobPath: jobPath,
-		Build:   jenkins.Build{Number: num, Status: status, Timestamp: ts},
+		Build:   jmodel.Build{Number: num, Status: status, Timestamp: ts},
 	}
 }
 
@@ -40,7 +40,7 @@ func TestQueryDowngradesUnconfirmedRunning(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	r, reconciled := newTestRegistry(t, clock)
 	now := clock.t
-	r.IngestScan([]jenkins.UserBuild{ub("job/a", 1, jenkins.BuildStatusRunning, now)})
+	r.IngestScan([]jmodel.UserBuild{ub("job/a", 1, jmodel.BuildStatusRunning, now)})
 
 	// Advance past TTL so a previous LastSeenRunning would expire — but here
 	// scan ingestion sets no LastSeenRunning at all, so the record is never confirmed.
@@ -49,7 +49,7 @@ func TestQueryDowngradesUnconfirmedRunning(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(out))
 	}
-	if out[0].Status != jenkins.BuildStatusUnknown {
+	if out[0].Status != jmodel.BuildStatusUnknown {
 		t.Errorf("expected unconfirmed Running to display as Unknown, got %v", out[0].Status)
 	}
 	if len(*reconciled) == 0 {
@@ -62,11 +62,11 @@ func TestQueryReturnsRunningWhenLive(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	r, _ := newTestRegistry(t, clock)
 	now := clock.t
-	r.IngestScan([]jenkins.UserBuild{ub("job/a", 1, jenkins.BuildStatusRunning, now)})
-	r.IngestRunningSnapshot([]jenkins.UserBuild{ub("job/a", 1, jenkins.BuildStatusRunning, now)}, now)
+	r.IngestScan([]jmodel.UserBuild{ub("job/a", 1, jmodel.BuildStatusRunning, now)})
+	r.IngestRunningSnapshot([]jmodel.UserBuild{ub("job/a", 1, jmodel.BuildStatusRunning, now)}, now)
 
 	out := r.Query(Filter{})
-	if len(out) != 1 || out[0].Status != jenkins.BuildStatusRunning {
+	if len(out) != 1 || out[0].Status != jmodel.BuildStatusRunning {
 		t.Fatalf("expected Running, got %+v", out)
 	}
 }
@@ -76,12 +76,12 @@ func TestTerminalIsSticky(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	r, _ := newTestRegistry(t, clock)
 	k := Key{JobPath: "job/a", Number: 1}
-	r.ApplyCompletion(k, jenkins.Build{Number: 1, Status: jenkins.BuildStatusSuccess, Timestamp: clock.t})
+	r.ApplyCompletion(k, jmodel.Build{Number: 1, Status: jmodel.BuildStatusSuccess, Timestamp: clock.t})
 
 	// Stale scan that still thinks the build is running.
-	r.IngestScan([]jenkins.UserBuild{ub("job/a", 1, jenkins.BuildStatusRunning, clock.t)})
+	r.IngestScan([]jmodel.UserBuild{ub("job/a", 1, jmodel.BuildStatusRunning, clock.t)})
 	out := r.Query(Filter{})
-	if len(out) != 1 || out[0].Status != jenkins.BuildStatusSuccess {
+	if len(out) != 1 || out[0].Status != jmodel.BuildStatusSuccess {
 		t.Fatalf("expected sticky Success after completion, got %+v", out)
 	}
 }
@@ -92,7 +92,7 @@ func TestDepartureTriggersReconcile(t *testing.T) {
 	r, reconciled := newTestRegistry(t, clock)
 	now := clock.t
 	k := Key{JobPath: "job/a", Number: 1}
-	r.IngestRunningSnapshot([]jenkins.UserBuild{ub("job/a", 1, jenkins.BuildStatusRunning, now)}, now)
+	r.IngestRunningSnapshot([]jmodel.UserBuild{ub("job/a", 1, jmodel.BuildStatusRunning, now)}, now)
 	r.IngestRunningSnapshot(nil, now.Add(time.Second))
 
 	found := false
@@ -112,18 +112,18 @@ func TestRunningStaysWithinTTL(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	r, _ := newTestRegistry(t, clock)
 	start := clock.t
-	r.IngestRunningSnapshot([]jenkins.UserBuild{ub("job/a", 1, jenkins.BuildStatusRunning, start)}, start)
+	r.IngestRunningSnapshot([]jmodel.UserBuild{ub("job/a", 1, jmodel.BuildStatusRunning, start)}, start)
 	// Next tick: build no longer in live set, but TTL hasn't elapsed.
 	r.IngestRunningSnapshot(nil, start.Add(time.Second))
 	clock.t = start.Add(2 * time.Second)
 	out := r.Query(Filter{})
-	if len(out) != 1 || out[0].Status != jenkins.BuildStatusRunning {
+	if len(out) != 1 || out[0].Status != jmodel.BuildStatusRunning {
 		t.Fatalf("expected Running within TTL, got %+v", out)
 	}
 	// Past TTL: downgrade.
 	clock.t = start.Add(10 * time.Second)
 	out = r.Query(Filter{})
-	if out[0].Status != jenkins.BuildStatusUnknown {
+	if out[0].Status != jmodel.BuildStatusUnknown {
 		t.Errorf("expected Unknown past TTL, got %v", out[0].Status)
 	}
 }
@@ -134,7 +134,7 @@ func TestLoadFromDiskDoesNotShowStaleRunning(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	r, reconciled := newTestRegistry(t, clock)
 	r.LoadFromDisk([]Record{{
-		Build:           jenkins.Build{Number: 1, Status: jenkins.BuildStatusRunning, Timestamp: clock.t.Add(-time.Hour)},
+		Build:           jmodel.Build{Number: 1, Status: jmodel.BuildStatusRunning, Timestamp: clock.t.Add(-time.Hour)},
 		JobPath:         "job/a",
 		LastSeenRunning: clock.t.Add(-time.Hour), // stale
 	}})
@@ -142,7 +142,7 @@ func TestLoadFromDiskDoesNotShowStaleRunning(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("expected 1 record after disk load, got %d", len(out))
 	}
-	if out[0].Status == jenkins.BuildStatusRunning {
+	if out[0].Status == jmodel.BuildStatusRunning {
 		t.Errorf("expected disk-loaded Running to be downgraded, got Running")
 	}
 	if len(*reconciled) == 0 {
@@ -154,9 +154,9 @@ func TestLoadFromDiskDoesNotShowStaleRunning(t *testing.T) {
 func TestQueryFolderFilter(t *testing.T) {
 	clock := &fakeClock{t: time.Unix(1000, 0)}
 	r, _ := newTestRegistry(t, clock)
-	r.IngestScan([]jenkins.UserBuild{
-		ub("Code/proj/main", 1, jenkins.BuildStatusSuccess, clock.t),
-		ub("Other/proj/main", 1, jenkins.BuildStatusSuccess, clock.t),
+	r.IngestScan([]jmodel.UserBuild{
+		ub("Code/proj/main", 1, jmodel.BuildStatusSuccess, clock.t),
+		ub("Other/proj/main", 1, jmodel.BuildStatusSuccess, clock.t),
 	})
 	out := r.Query(Filter{FolderPrefix: "Code"})
 	if len(out) != 1 || out[0].JobPath != "Code/proj/main" {

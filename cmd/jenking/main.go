@@ -10,27 +10,34 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Breina/Jenking/internal/app"
+	"github.com/Breina/Jenking/internal/app/view"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/config"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/logging"
-	"github.com/Breina/Jenking/internal/tui"
 	"github.com/Breina/Jenking/internal/tui/component"
 	"github.com/Breina/Jenking/internal/tui/theme"
-	"github.com/Breina/Jenking/internal/tui/view"
+	"github.com/Breina/Jenking/internal/tui/widget"
+	"github.com/Breina/Jenking/internal/version"
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	logCleanup, err := logging.Setup(logging.ParseLevel(cfg.Preferences.LogLevel))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error setting up logging: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("setting up logging: %w", err)
 	}
 	defer logCleanup()
 
@@ -43,7 +50,7 @@ func main() {
 	// surface from the underlying API call instead.
 	if cleanArgs, raw := stripRawFlag(os.Args[1:]); raw {
 		runHeadless(client, store, cleanArgs)
-		return
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -51,8 +58,7 @@ func main() {
 
 	user, err := client.WhoAmI(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to Jenkins at %s (user: %s): %v\n", active.URL, active.Username, err)
-		os.Exit(1)
+		return fmt.Errorf("connecting to Jenkins at %s (user: %s): %w", active.URL, active.Username, err)
 	}
 
 	themeID := theme.ThemeID(cfg.Preferences.Theme)
@@ -70,15 +76,15 @@ func main() {
 	}
 	activeTheme := theme.ApplyColorblindFilter(baseTheme, cbType)
 
-	view.SetVimPolicy(view.VimPolicy{
+	widget.SetVimPolicy(widget.VimPolicy{
 		Enabled:         cfg.Preferences.VimIntegration.Enabled,
 		PrefetchSymbols: cfg.Preferences.VimIntegration.PrefetchSymbols,
 		ValidateOnSave:  cfg.Preferences.VimIntegration.ValidateOnSave,
 	})
 
-	keys := tui.DefaultKeyMap()
+	keys := app.DefaultKeyMap()
 	debug := logging.ParseLevel(cfg.Preferences.LogLevel) == logging.LevelDebug
-	header := component.NewHeader(activeTheme, active.URL, user.FullName, user.JenkinsVersion, debug)
+	header := component.NewHeader(activeTheme, active.URL, user.FullName, user.JenkinsVersion, version.App, debug)
 	breadcrumb := component.NewBreadcrumb(activeTheme)
 	statusBar := component.NewStatusBar(activeTheme)
 	dashboard := view.NewJobList(activeTheme, client, store, "", "Dashboard", false, user.ID, cfg.Preferences.GitUsernames)
@@ -100,8 +106,7 @@ func main() {
 			slowInterval: cfg.Preferences.SlowRefreshInterval,
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "jenking: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("jenking: %w", err)
 		}
 		initialView = v
 	}
@@ -116,17 +121,17 @@ func main() {
 		return cfg.SetPreferences(notifications, gitUsernames, refreshInterval, slowInterval, maxLogLines, logLevel)
 	}
 
-	app := tui.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.RefreshInterval, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, initialView, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications, cfg.Preferences.MaxLogLines, cfg.Preferences.LogLevel, cfg.Contexts, active.Name, newDiskStore, cfg.AddContext, cfg.DeleteContext, cfg.SetCurrentContext, savePrefsFn)
+	model := app.NewApp(activeTheme, baseTheme, themeID, cbType, keys, client, store, user.ID, user.FullName, cfg.Preferences.GitUsernames, cfg.Preferences.RefreshInterval, cfg.Preferences.SlowRefreshInterval, header, breadcrumb, statusBar, initialView, saveFn, saveThemeFn, debug, sponsorKey, cfg.Preferences.Notifications, cfg.Preferences.MaxLogLines, cfg.Preferences.LogLevel, cfg.Contexts, active.Name, newDiskStore, cfg.AddContext, cfg.DeleteContext, cfg.SetCurrentContext, savePrefsFn)
 
-	p := tea.NewProgram(app, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error running TUI: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("running TUI: %w", err)
 	}
-	if a, ok := finalModel.(tui.App); ok && a.UpdatedTo != "" {
+	if a, ok := finalModel.(app.App); ok && a.UpdatedTo != "" {
 		fmt.Printf("Jenking updated to %s — please restart to use the new version.\n", a.UpdatedTo)
 	}
+	return nil
 }
 
 // newDiskStore creates a DiskStore under the XDG cache dir for the given server URL.
