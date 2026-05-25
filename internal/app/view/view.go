@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/component"
@@ -81,6 +83,32 @@ type NavigationContextProvider interface {
 	NC() NavigationContext
 }
 
+// ClipTo returns nc with all fields below `level` cleared and Level set to
+// `level`. This is the single source of truth for "what does this scope own?":
+// a CtxBuild view's nc never contains a stage name; a CtxBranch nc never
+// contains a build; etc. Every view constructor that stores an nc clips it on
+// entry so the breadcrumb, child-view nc projection, and any derived state can
+// never carry stale fields inherited from a deeper scope.
+func (nc NavigationContext) ClipTo(level ContextLevel) NavigationContext {
+	if level < CtxStage {
+		nc.StageName = ""
+	}
+	if level < CtxBuild {
+		nc.Build = NavBuildRef{}
+	}
+	if level < CtxBranch {
+		nc.BranchName = ""
+	}
+	if level < CtxProject {
+		nc.ProjectName = ""
+	}
+	if level < CtxFolder {
+		nc.FolderPath = ""
+	}
+	nc.Level = level
+	return nc
+}
+
 // AtScope strips build- and stage-level detail from the NavigationContext,
 // returning the highest scope level implied by the populated fields.
 // CtxBuild/CtxStage → CtxBranch (if branch set), else CtxProject, etc.
@@ -150,9 +178,77 @@ type Filterable interface {
 	ToggleRunning()
 }
 
-// BreadcrumbFor builds a BreadcrumbSegment from a view type name and a NavigationContext.
-// This is the single source of truth for breadcrumb construction.
-func BreadcrumbFor(viewType string, nc NavigationContext) BreadcrumbSegment {
+// BaseView is the embeddable foundation for every nc-anchored view. It owns
+// the cross-cutting plumbing — theme, client, store, navigation context,
+// cancellation, panel size — and provides default Close/SetSize/NC/Scope
+// implementations. Concrete views override only what they need (e.g.
+// StageLogView.Close flushes node logs before cancel; views with widgets
+// override SetSize to lay them out).
+type BaseView struct {
+	theme  theme.Theme
+	client jmodel.JenkinsClient
+	store  *cache.Store
+
+	nc    NavigationContext
+	scope ContextLevel
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	width  int
+	height int
+}
+
+// NewBaseView constructs a BaseView with a cancellable context and the nc
+// clipped to the declared scope. Every concrete view's constructor should
+// route through here so the scope invariant is enforced exactly once.
+func NewBaseView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store, nc NavigationContext, scope ContextLevel) BaseView {
+	ctx, cancel := context.WithCancel(context.Background())
+	return BaseView{
+		theme:  t,
+		client: c,
+		store:  s,
+		nc:     nc.ClipTo(scope),
+		scope:  scope,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+}
+
+// NC returns the (already-clipped) navigation context.
+func (b *BaseView) NC() NavigationContext { return b.nc }
+
+// Scope returns the navigation level this view is anchored at.
+func (b *BaseView) Scope() ContextLevel { return b.scope }
+
+// MakeBreadcrumb returns a scope-clipped BreadcrumbSegment. Views decorate it
+// (NavTag, Running, Mine, Failed, ResolvedParts, etc.) before returning.
+func (b *BaseView) MakeBreadcrumb(viewType string) BreadcrumbSegment {
+	return BreadcrumbFor(viewType, b.nc, b.scope)
+}
+
+// SetSize stores the panel dimensions. Views that own internal widgets
+// override this to propagate the size; the override can still update the
+// embedded fields via b.width / b.height.
+func (b *BaseView) SetSize(w, h int) { b.width, b.height = w, h }
+
+// Close cancels the view's context. Views with extra teardown (flushing
+// caches, closing providers) override this and chain to b.cancel themselves.
+func (b *BaseView) Close() error {
+	if b.cancel != nil {
+		b.cancel()
+	}
+	return nil
+}
+
+// BreadcrumbFor builds a BreadcrumbSegment from a view type name, a
+// NavigationContext, and the scope this view owns. The nc is clipped to
+// `scope` before rendering, so a CtxBuild view can never emit a stage tail
+// even if its caller forwarded an nc that still had StageName set. This is the
+// single declaration point: each view says "I'm `<viewType>` at `<scope>`"
+// and the framework handles projection.
+func BreadcrumbFor(viewType string, nc NavigationContext, scope ContextLevel) BreadcrumbSegment {
+	nc = nc.ClipTo(scope)
 	return BreadcrumbSegment{ViewType: viewType, Context: contextParts(nc)}
 }
 

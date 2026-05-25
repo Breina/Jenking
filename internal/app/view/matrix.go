@@ -1,7 +1,6 @@
 package view
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
@@ -118,12 +117,7 @@ func newMatrixStyles() matrixStyles {
 
 // MatrixView renders build logs as Matrix-style digital rain.
 type MatrixView struct {
-	client     jmodel.JenkinsClient
-	nc         NavigationContext
-	ctx        context.Context
-	cancel     context.CancelFunc
-	width      int
-	height     int
+	BaseView
 	columns    []matrixColumn
 	pending    []pendingLine
 	grid       [][]matrixCell
@@ -135,14 +129,10 @@ type MatrixView struct {
 }
 
 func NewMatrixView(client jmodel.JenkinsClient, nc NavigationContext) *MatrixView {
-	ctx, cancel := context.WithCancel(context.Background())
 	return &MatrixView{
-		client: client,
-		nc:     nc,
-		ctx:    ctx,
-		cancel: cancel,
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
-		styles: newMatrixStyles(),
+		BaseView: NewBaseView(theme.Theme{}, client, nil, nc, CtxBuild),
+		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		styles:   newMatrixStyles(),
 	}
 }
 
@@ -460,10 +450,8 @@ func (mv *MatrixView) Title() string {
 }
 
 func (mv *MatrixView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("matrix", mv.nc)
+	return mv.MakeBreadcrumb("matrix")
 }
-
-func (mv *MatrixView) NC() NavigationContext { return mv.nc }
 
 func (mv *MatrixView) ItemCount() int { return len(mv.columns) }
 
@@ -477,16 +465,8 @@ func (mv *MatrixView) SetSize(w, h int) {
 	if w == mv.width && h == mv.height {
 		return
 	}
-	mv.width = w
-	mv.height = h
+	mv.BaseView.SetSize(w, h)
 	mv.allocateGrid()
-}
-
-func (mv *MatrixView) Close() error {
-	if mv.cancel != nil {
-		mv.cancel()
-	}
-	return nil
 }
 
 func (mv *MatrixView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {

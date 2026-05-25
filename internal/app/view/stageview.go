@@ -65,16 +65,10 @@ type buildDetailMsg struct {
 
 // StageView shows the pipeline stages of a single build.
 type StageView struct {
-	theme       theme.Theme
+	BaseView
 	table       component.Table
-	client      jmodel.JenkinsClient
-	nc          NavigationContext
 	build       jmodel.Build
 	stages      []jmodel.Stage
-	width       int
-	height      int
-	ctx         context.Context
-	cancel      context.CancelFunc
 	progressBar component.ProgressBar
 
 	// Inline log preview panel (stage-specific logs + console fallback).
@@ -127,8 +121,6 @@ type StageView struct {
 	prevStages  []jmodel.Stage // stages from previous completed build
 	ghostsValid bool           // current stages are a prefix of prevStages
 
-	store *cache.Store
-
 	// Cross-cutting concerns (trigger / cancel / test-open / artifact-open)
 	// are owned by behaviors registered on host. The trigger machinery lives
 	// in triggerMixin; the behavior wrapper delegates host-callable parts.
@@ -137,25 +129,20 @@ type StageView struct {
 }
 
 func NewStageView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, build jmodel.Build) *StageView {
-	ctx, cancel := context.WithCancel(context.Background())
 	columns := []component.Column{
 		{Title: "STAGE", Width: 40},
 		{Title: "STATUS", Width: colStageStatusWidth},
 		{Title: "DURATION", Width: colStageDurationWidth},
 	}
+	base := NewBaseView(t, client, store, nc, CtxBuild)
 	sv := &StageView{
-		theme:         t,
+		BaseView:      base,
 		table:         component.NewTable(t, columns),
-		client:        client,
-		store:         store,
-		nc:            nc,
 		build:         build,
-		ctx:           ctx,
-		cancel:        cancel,
 		progressBar:   component.NewProgressBar(t),
-		preview:       NewPreviewPanel(t, client, store, ctx, nc),
+		preview:       NewPreviewPanel(t, client, store, base.ctx, base.nc),
 		autoFollowing: true,
-		trigger:       newTriggerMixin(t, client, nc),
+		trigger:       newTriggerMixin(t, client, base.nc),
 	}
 	sv.registerBehaviors()
 	return sv
@@ -172,7 +159,6 @@ func (sv *StageView) registerBehaviors() {
 // the build. It polls ListBuilds until a build with a number higher than
 // lastKnownBuild appears, then switches to normal operation.
 func NewPendingStageView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, lastKnownBuild int) *StageView {
-	ctx, cancel := context.WithCancel(context.Background())
 	columns := []component.Column{
 		{Title: "STAGE", Width: 40},
 		{Title: "STATUS", Width: colStageStatusWidth},
@@ -180,21 +166,17 @@ func NewPendingStageView(t theme.Theme, client jmodel.JenkinsClient, store *cach
 	}
 	pendingNC := nc
 	pendingNC.Build = NavBuildRef{}
+	base := NewBaseView(t, client, store, pendingNC, CtxBuild)
 	sv := &StageView{
-		theme:          t,
+		BaseView:       base,
 		table:          component.NewTable(t, columns),
-		client:         client,
-		store:          store,
-		nc:             pendingNC,
 		build:          jmodel.Build{Status: jmodel.BuildStatusRunning, Timestamp: time.Now()},
-		ctx:            ctx,
-		cancel:         cancel,
 		progressBar:    component.NewProgressBar(t),
-		preview:        NewPreviewPanel(t, client, store, ctx, pendingNC),
+		preview:        NewPreviewPanel(t, client, store, base.ctx, base.nc),
 		autoFollowing:  true,
 		pending:        true,
 		lastKnownBuild: lastKnownBuild,
-		trigger:        newTriggerMixin(t, client, pendingNC),
+		trigger:        newTriggerMixin(t, client, base.nc),
 	}
 	sv.registerBehaviors()
 	return sv
@@ -1360,13 +1342,13 @@ func (sv *StageView) Title() string {
 }
 
 func (sv *StageView) Breadcrumb() BreadcrumbSegment {
-	// contextParts already includes Build.Number when > 0.
+	// MakeBreadcrumb clips nc to scope and renders Build.Number when > 0.
 	// For pending builds, nc.Build.Number == 0, so we append "Pending" manually.
-	ctx := contextParts(sv.nc)
+	seg := sv.MakeBreadcrumb("stages")
 	if sv.pending {
-		ctx = append(ctx, component.BreadcrumbPart{Text: "Pending", IsBuildNum: true, Separator: " "})
+		seg.Context = append(seg.Context, component.BreadcrumbPart{Text: "Pending", IsBuildNum: true, Separator: " "})
 	}
-	return BreadcrumbSegment{ViewType: "stages", Context: ctx}
+	return seg
 }
 
 func (sv *StageView) ItemCount() int {
@@ -1399,8 +1381,7 @@ func (sv *StageView) Shortcuts() []component.Shortcut {
 
 // findFailedStage returns the index of the first failed stage, or -1.
 func (sv *StageView) SetSize(width, height int) {
-	sv.width = width
-	sv.height = height
+	sv.BaseView.SetSize(width, height)
 	stageWidth := width - colStageFixedTotal
 	if stageWidth < 10 {
 		stageWidth = 10
@@ -1532,17 +1513,8 @@ func (sv *StageView) HasPopup() bool {
 	return sv.host.HasPopup()
 }
 
-func (sv *StageView) NC() NavigationContext { return sv.nc }
-
 func (sv *StageView) ScrollInfo() widget.ScrollInfo {
 	return widget.ScrollInfo{Offset: sv.table.ScrollOffset(), TotalLines: sv.table.TotalRows(), ViewHeight: sv.table.ContentHeight()}
-}
-
-func (sv *StageView) Close() error {
-	if sv.cancel != nil {
-		sv.cancel()
-	}
-	return nil
 }
 
 func (sv *StageView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {

@@ -1,7 +1,6 @@
 package view
 
 import (
-	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,18 +18,11 @@ import (
 
 // BuildsView is a unified view for listing builds, backed by a BuildDataProvider.
 type BuildsView struct {
-	theme          theme.Theme
+	BaseView
 	table          component.Table
 	provider       BuildDataProvider
-	client         jmodel.JenkinsClient
-	store          *cache.Store
-	nc             NavigationContext
 	filters        Filters
 	filteredBuilds []int
-	width          int
-	height         int
-	ctx            context.Context
-	cancel         context.CancelFunc
 	progressBar    component.ProgressBar
 	searchQuery    string
 	searchRe       *regexp.Regexp
@@ -45,7 +37,6 @@ type BuildsView struct {
 // NewBuildsView creates a BuildsView backed by the given provider.
 // The first column is always a flexible REF column; its content adapts to the NC level.
 func NewBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, provider BuildDataProvider) *BuildsView {
-	ctx, cancel := context.WithCancel(context.Background())
 	// REF is always the first column and the only flexible column (flexColIdx=0).
 	// All builds views show the same columns — provider fills empty strings when data is unavailable.
 	columns := []component.Column{
@@ -65,14 +56,9 @@ func NewBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Stor
 	}
 	fixedColsWidth += 2 // padding for REF column itself
 	bv := &BuildsView{
-		theme:          t,
+		BaseView:       NewBaseView(t, client, store, nc, nc.Level),
 		table:          component.NewTable(t, columns),
 		provider:       provider,
-		client:         client,
-		store:          store,
-		nc:             nc,
-		ctx:            ctx,
-		cancel:         cancel,
 		progressBar:    component.NewProgressBar(t),
 		flexColIdx:     0,
 		fixedColsWidth: fixedColsWidth,
@@ -336,7 +322,7 @@ func (bv *BuildsView) Title() string {
 }
 
 func (bv *BuildsView) Breadcrumb() BreadcrumbSegment {
-	seg := BreadcrumbFor("builds", bv.nc)
+	seg := bv.MakeBreadcrumb("builds")
 	seg.Running = bv.filters.Running
 	seg.Mine = bv.filters.Mine
 	return seg
@@ -385,10 +371,7 @@ func (bv *BuildsView) HasPopup() bool {
 
 func (bv *BuildsView) Close() error {
 	bv.provider.Close()
-	if bv.cancel != nil {
-		bv.cancel()
-	}
-	return nil
+	return bv.BaseView.Close()
 }
 
 func (bv *BuildsView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {
@@ -407,8 +390,7 @@ func (bv *BuildsView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache
 }
 
 func (bv *BuildsView) SetSize(width, height int) {
-	bv.width = width
-	bv.height = height
+	bv.BaseView.SetSize(width, height)
 	if bv.flexColIdx >= 0 {
 		flex := width - bv.fixedColsWidth
 		if flex < 15 {
@@ -419,10 +401,6 @@ func (bv *BuildsView) SetSize(width, height int) {
 	bv.table.SetSize(width, height)
 	bv.host.SetSize(width, height-6)
 }
-
-// NC returns the NavigationContext for this view. Used by app.go to distinguish
-// AllBuilds (CtxRoot) from other BuildsView instances.
-func (bv *BuildsView) NC() NavigationContext { return bv.nc }
 
 func (bv *BuildsView) ScrollInfo() widget.ScrollInfo {
 	return widget.ScrollInfo{Offset: bv.table.ScrollOffset(), TotalLines: bv.table.TotalRows(), ViewHeight: bv.table.ContentHeight()}

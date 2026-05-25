@@ -16,15 +16,10 @@ import (
 
 // ArtifactView lists the build artifacts and allows opening them in the browser.
 type ArtifactView struct {
-	theme     theme.Theme
+	BaseView
 	table     component.Table
 	artifacts []jmodel.Artifact
-	nc        NavigationContext
 	build     jmodel.Build
-	width     int
-	height    int
-	client    jmodel.JenkinsClient
-	store     *cache.Store
 }
 
 // NewArtifactView creates an ArtifactView for the given build's artifacts.
@@ -33,13 +28,10 @@ func NewArtifactView(t theme.Theme, artifacts []jmodel.Artifact, nc NavigationCo
 		{Title: "ARTIFACT", Width: 60},
 	}
 	v := &ArtifactView{
-		theme:     t,
+		BaseView:  NewBaseView(t, client, store, nc, CtxBuild),
 		table:     component.NewTable(t, columns),
 		artifacts: artifacts,
-		nc:        nc,
 		build:     build,
-		client:    client,
-		store:     store,
 	}
 	v.populateTable()
 	return v
@@ -126,7 +118,7 @@ func (v *ArtifactView) Title() string {
 }
 
 func (v *ArtifactView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("artifacts", v.nc)
+	return v.MakeBreadcrumb("artifacts")
 }
 
 func (v *ArtifactView) ItemCount() int {
@@ -155,20 +147,13 @@ func (v *ArtifactView) Shortcuts() []component.Shortcut {
 }
 
 func (v *ArtifactView) SetSize(width, height int) {
-	v.width = width
-	v.height = height
+	v.BaseView.SetSize(width, height)
 	v.table.SetColumnWidth(0, width-2)
 	v.table.SetSize(width, height)
 }
 
-func (v *ArtifactView) NC() NavigationContext { return v.nc }
-
 func (v *ArtifactView) ScrollInfo() widget.ScrollInfo {
 	return widget.ScrollInfo{Offset: v.table.ScrollOffset(), TotalLines: v.table.TotalRows(), ViewHeight: v.table.ContentHeight()}
-}
-
-func (v *ArtifactView) Close() error {
-	return nil
 }
 
 func (v *ArtifactView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {

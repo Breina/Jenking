@@ -1,7 +1,6 @@
 package view
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -58,11 +57,8 @@ type describeTriggerReadyMsg struct{ latestBuild int }
 // DescribeView shows build parameters (top pane) and the pipeline Groovy script
 // (bottom pane). Implements PreviewProvider so app.go renders both as bordered panels.
 type DescribeView struct {
-	theme  theme.Theme
-	client jmodel.JenkinsClient
-	store  *cache.Store
-	nc     NavigationContext
-	build  jmodel.Build
+	BaseView
+	build jmodel.Build
 
 	script      string            // in-memory Groovy script (editable)
 	params      map[string]string // build parameters (nil = still loading)
@@ -85,32 +81,22 @@ type DescribeView struct {
 	// Parameters pane (main / top).
 	paramLines  []string
 	paramOffset int
-	width       int
-	height      int
 
 	// Script pane (preview / bottom): scrolling, wrapping, and search via LogViewer.
 	scriptLV widget.LogViewer
 
 	trigger triggerMixin
 	host    widget.BehaviorHost
-	ctx     context.Context
-	cancel  context.CancelFunc
 }
 
 // NewDescribeView creates a DescribeView for the given build.
 // Script and parameters are always fetched fresh from the Jenkins API.
 func NewDescribeView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, build jmodel.Build) *DescribeView {
-	ctx, cancel := context.WithCancel(context.Background())
 	dv := &DescribeView{
-		theme:       t,
-		client:      client,
-		store:       store,
-		nc:          nc,
+		BaseView:    NewBaseView(t, client, store, nc, CtxBuild),
 		build:       build,
 		dataLoading: true,
 		trigger:     newTriggerMixin(t, client, nc),
-		ctx:         ctx,
-		cancel:      cancel,
 	}
 	dv.scriptLV = widget.NewLogViewer(t,
 		widget.WithClassifier(func(rawIdx int, _ string) widget.LineKind {
@@ -695,7 +681,7 @@ func (dv *DescribeView) SetPreviewSize(w, h int) {
 
 // PreviewBreadcrumb implements PreviewProvider.
 func (dv *DescribeView) PreviewBreadcrumb() BreadcrumbSegment {
-	seg := BreadcrumbFor("script", dv.nc)
+	seg := dv.MakeBreadcrumb("script")
 	seg.NoTail = true
 	return seg
 }
@@ -746,7 +732,7 @@ func (dv *DescribeView) Breadcrumb() BreadcrumbSegment {
 	if !dv.hasActivePreview() {
 		label = "script"
 	}
-	seg := BreadcrumbFor(label, dv.nc)
+	seg := dv.MakeBreadcrumb(label)
 	seg.NavTag = "describe"
 	return seg
 }
@@ -787,8 +773,7 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 }
 
 func (dv *DescribeView) SetSize(w, h int) {
-	dv.width = w
-	dv.height = h
+	dv.BaseView.SetSize(w, h)
 	dv.host.SetSize(w, h-6)
 	if maxOff := max(0, len(dv.paramLines)-dv.height); dv.paramOffset > maxOff {
 		dv.paramOffset = maxOff
@@ -798,15 +783,6 @@ func (dv *DescribeView) SetSize(w, h int) {
 		dv.layoutScript()
 	}
 }
-
-func (dv *DescribeView) Close() error {
-	if dv.cancel != nil {
-		dv.cancel()
-	}
-	return nil
-}
-
-func (dv *DescribeView) NC() NavigationContext { return dv.nc }
 
 func (dv *DescribeView) HasPopup() bool {
 	return dv.host.HasPopup()

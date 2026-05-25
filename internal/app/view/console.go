@@ -25,16 +25,11 @@ type consoleAbortMsg struct{}
 
 // ConsoleView streams a build's console output using Jenkins' progressive log API.
 type ConsoleView struct {
+	BaseView
 	lv           widget.LogViewer
-	theme        theme.Theme
-	client       jmodel.JenkinsClient
-	nc           NavigationContext
 	done         bool
-	ctx          context.Context
-	cancel       context.CancelFunc
 	fetchStart   int // byte offset to begin the first progressive fetch (non-zero when seeded)
 	build        jmodel.Build
-	store        *cache.Store
 	trigger      triggerMixin
 	host         widget.BehaviorHost
 	copyLogFlash bool
@@ -55,15 +50,10 @@ func (cv *ConsoleView) SetScopedParent(scope NavigationContext, slowInterval tim
 }
 
 func NewConsoleView(t theme.Theme, client jmodel.JenkinsClient, nc NavigationContext) *ConsoleView {
-	ctx, cancel := context.WithCancel(context.Background())
 	cv := &ConsoleView{
-		lv:      widget.NewLogViewer(t),
-		theme:   t,
-		client:  client,
-		nc:      nc,
-		ctx:     ctx,
-		cancel:  cancel,
-		trigger: newTriggerMixin(t, client, nc),
+		BaseView: NewBaseView(t, client, nil, nc, CtxBuild),
+		lv:       widget.NewLogViewer(t),
+		trigger:  newTriggerMixin(t, client, nc),
 	}
 	// build is set lazily by callers; fixedBuildAccessor falls back to nc.Build.Number.
 	access := fixedBuildAccessor(&cv.nc, &cv.build)
@@ -292,7 +282,7 @@ func (cv *ConsoleView) Title() string {
 }
 
 func (cv *ConsoleView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("log", cv.nc)
+	return cv.MakeBreadcrumb("log")
 }
 
 func (cv *ConsoleView) ItemCount() int {
@@ -334,17 +324,8 @@ func (cv *ConsoleView) Shortcuts() []component.Shortcut {
 	return shortcuts
 }
 
-func (cv *ConsoleView) NC() NavigationContext { return cv.nc }
-
 func (cv *ConsoleView) HasPopup() bool {
 	return cv.host.HasPopup()
-}
-
-func (cv *ConsoleView) Close() error {
-	if cv.cancel != nil {
-		cv.cancel()
-	}
-	return nil
 }
 
 func (cv *ConsoleView) Badge() string { return cv.lv.Badge() }

@@ -56,6 +56,7 @@ func TestBreadcrumbFor(t *testing.T) {
 		name         string
 		viewType     string
 		nc           NavigationContext
+		scope        ContextLevel
 		wantViewType string
 		wantParts    int
 	}{
@@ -63,6 +64,7 @@ func TestBreadcrumbFor(t *testing.T) {
 			name:         "builds at branch level",
 			viewType:     "builds",
 			nc:           NavigationContext{Level: CtxBranch, ProjectName: "my-project", BranchName: "main"},
+			scope:        CtxBranch,
 			wantViewType: "builds",
 			wantParts:    2, // project + branch
 		},
@@ -70,6 +72,7 @@ func TestBreadcrumbFor(t *testing.T) {
 			name:         "stages at build level",
 			viewType:     "stages",
 			nc:           NavigationContext{Level: CtxBuild, ProjectName: "my-project", BranchName: "main", Build: NavBuildRef{Number: 5}},
+			scope:        CtxBuild,
 			wantViewType: "stages",
 			wantParts:    3, // project + branch + build number
 		},
@@ -77,6 +80,7 @@ func TestBreadcrumbFor(t *testing.T) {
 			name:         "log at stage level",
 			viewType:     "log",
 			nc:           NavigationContext{Level: CtxStage, ProjectName: "my-project", BranchName: "main", Build: NavBuildRef{Number: 5}, StageName: "Build"},
+			scope:        CtxStage,
 			wantViewType: "log",
 			wantParts:    4, // project + branch + build number + stage
 		},
@@ -84,6 +88,7 @@ func TestBreadcrumbFor(t *testing.T) {
 			name:         "builds at project level (standalone)",
 			viewType:     "builds",
 			nc:           NavigationContext{Level: CtxProject, ProjectName: "my-pipeline"},
+			scope:        CtxProject,
 			wantViewType: "builds",
 			wantParts:    1, // project only
 		},
@@ -91,13 +96,22 @@ func TestBreadcrumbFor(t *testing.T) {
 			name:         "last build reference",
 			viewType:     "stages",
 			nc:           NavigationContext{Level: CtxBuild, ProjectName: "my-project", Build: NavBuildRef{IsLast: true}},
+			scope:        CtxBuild,
 			wantViewType: "stages",
 			wantParts:    2, // project + "last"
+		},
+		{
+			name:         "scope clips stage tail when view owns only the build",
+			viewType:     "describe",
+			nc:           NavigationContext{Level: CtxStage, ProjectName: "my-project", BranchName: "main", Build: NavBuildRef{Number: 5}, StageName: "Build"},
+			scope:        CtxBuild,
+			wantViewType: "describe",
+			wantParts:    3, // project + branch + build (stage dropped)
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			seg := BreadcrumbFor(tt.viewType, tt.nc)
+			seg := BreadcrumbFor(tt.viewType, tt.nc, tt.scope)
 			if seg.ViewType != tt.wantViewType {
 				t.Errorf("ViewType = %q, want %q", seg.ViewType, tt.wantViewType)
 			}

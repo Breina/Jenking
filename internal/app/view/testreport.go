@@ -25,16 +25,11 @@ const (
 
 // TestReportView displays a JUnit test report as a navigable suite/case tree.
 type TestReportView struct {
-	theme      theme.Theme
+	BaseView
 	table      component.Table
 	report     jmodel.TestReport
-	nc         NavigationContext
 	build      jmodel.Build
 	showFailed bool // when true, only failed cases (and their suites) are shown
-	width      int
-	height     int
-	client     jmodel.JenkinsClient
-	store      *cache.Store
 	host       widget.BehaviorHost
 }
 
@@ -46,13 +41,10 @@ func NewTestReportView(t theme.Theme, report jmodel.TestReport, nc NavigationCon
 		{Title: "DURATION", Width: colTestDurationWidth},
 	}
 	v := &TestReportView{
-		theme:  t,
-		table:  component.NewTable(t, columns),
-		report: report,
-		nc:     nc,
-		build:  build,
-		client: client,
-		store:  store,
+		BaseView: NewBaseView(t, client, store, nc, CtxBuild),
+		table:    component.NewTable(t, columns),
+		report:   report,
+		build:    build,
 	}
 	v.populateTable()
 	access := fixedBuildAccessor(&v.nc, &v.build)
@@ -170,7 +162,7 @@ func (v *TestReportView) Title() string {
 }
 
 func (v *TestReportView) Breadcrumb() BreadcrumbSegment {
-	seg := BreadcrumbFor("tests", v.nc)
+	seg := v.MakeBreadcrumb("tests")
 	seg.Failed = v.showFailed
 	return seg
 }
@@ -204,21 +196,14 @@ func (v *TestReportView) Shortcuts() []component.Shortcut {
 }
 
 func (v *TestReportView) SetSize(width, height int) {
-	v.width = width
-	v.height = height
+	v.BaseView.SetSize(width, height)
 	nameWidth := max(10, width-colTestsFixed)
 	v.table.SetColumnWidth(0, nameWidth)
 	v.table.SetSize(width, height)
 }
 
-func (v *TestReportView) NC() NavigationContext { return v.nc }
-
 func (v *TestReportView) ScrollInfo() widget.ScrollInfo {
 	return widget.ScrollInfo{Offset: v.table.ScrollOffset(), TotalLines: v.table.TotalRows(), ViewHeight: v.table.ContentHeight()}
-}
-
-func (v *TestReportView) Close() error {
-	return nil
 }
 
 func (v *TestReportView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {

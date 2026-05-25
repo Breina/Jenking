@@ -227,7 +227,7 @@ func (sv *ScopedView) Title() string { return sv.cfg.Title }
 func (sv *ScopedView) Breadcrumb() BreadcrumbSegment {
 	nc := sv.resolver.scope
 	nc.Build = NavBuildRef{IsLast: true}
-	seg := BreadcrumbFor(sv.cfg.BreadcrumbType, nc)
+	seg := BreadcrumbFor(sv.cfg.BreadcrumbType, nc, CtxBuild)
 	seg.Running = sv.resolver.filterRunning
 	seg.Mine = sv.resolver.filterMine
 	seg.ResolvedParts = resolverParts(&sv.resolver)

@@ -1,7 +1,6 @@
 package view
 
 import (
-	"context"
 	"log/slog"
 	"time"
 
@@ -27,18 +26,13 @@ type stageLogPollMsg struct {
 // StageLogView shows the aggregated log output for a pipeline stage,
 // combining the console output of all flow graph nodes within the stage.
 type StageLogView struct {
+	BaseView
 	lv           widget.LogViewer
-	theme        theme.Theme
-	client       jmodel.JenkinsClient
-	nc           NavigationContext
 	nodeIDs      []int
 	nodes        map[int]*nodeLogState
 	done         bool
 	buildRunning bool
 	build        jmodel.Build
-	store        *cache.Store
-	ctx          context.Context
-	cancel       context.CancelFunc
 	trigger      triggerMixin
 	host         widget.BehaviorHost
 	copyLogFlash bool
@@ -59,18 +53,12 @@ func (sl *StageLogView) SetScopedParent(scope NavigationContext, slowInterval ti
 }
 
 func NewStageLogView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool) *StageLogView {
-	ctx, cancel := context.WithCancel(context.Background())
 	sl := &StageLogView{
+		BaseView:     NewBaseView(t, client, store, nc, CtxStage),
 		lv:           widget.NewLogViewer(t),
-		theme:        t,
-		client:       client,
-		store:        store,
-		nc:           nc,
 		nodeIDs:      nodeIDs,
 		nodes:        make(map[int]*nodeLogState),
 		buildRunning: buildRunning,
-		ctx:          ctx,
-		cancel:       cancel,
 		trigger:      newTriggerMixin(t, client, nc),
 	}
 	return sl
@@ -369,7 +357,7 @@ func (sl *StageLogView) Title() string {
 }
 
 func (sl *StageLogView) Breadcrumb() BreadcrumbSegment {
-	return BreadcrumbFor("stagelog", sl.nc)
+	return sl.MakeBreadcrumb("stagelog")
 }
 
 func (sl *StageLogView) ItemCount() int {
@@ -414,14 +402,9 @@ func (sl *StageLogView) HasPopup() bool {
 	return sl.host.HasPopup()
 }
 
-func (sl *StageLogView) NC() NavigationContext { return sl.nc }
-
 func (sl *StageLogView) Close() error {
 	persistNodeLogs(sl.store, sl.nc.JobPath(), sl.nc.Build.Number, sl.nodeIDs, sl.nodes)
-	if sl.cancel != nil {
-		sl.cancel()
-	}
-	return nil
+	return sl.BaseView.Close()
 }
 
 func (sl *StageLogView) Badge() string { return sl.lv.Badge() }
