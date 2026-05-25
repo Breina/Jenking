@@ -85,6 +85,9 @@ type DescribeView struct {
 	// Script pane (preview / bottom): scrolling, wrapping, and search via LogViewer.
 	scriptLV widget.LogViewer
 
+	copyLogFlash bool
+	copySelFlash bool
+
 	trigger triggerMixin
 	host    widget.BehaviorHost
 }
@@ -138,9 +141,9 @@ func (dv *DescribeView) Init() tea.Cmd {
 	dv.buildParamLines()
 	dv.buildScriptLines()
 	if widget.VimPolicySnapshot().Enabled && widget.VimPolicySnapshot().PrefetchSymbols {
-		return tea.Batch(dv.fetchDataCmd(), dv.fetchSymbolsCmd())
+		return tea.Batch(dv.fetchDataCmd(), dv.fetchSymbolsCmd(), widget.SelectionCheckCmd())
 	}
-	return dv.fetchDataCmd()
+	return tea.Batch(dv.fetchDataCmd(), widget.SelectionCheckCmd())
 }
 
 // fetchSymbolsCmd loads the per-build pipeline-syntax symbol set. Prefers
@@ -384,6 +387,14 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case widget.SelectionCheckMsg:
+		dv.scriptLV.RecordSelection(msg.Text, msg.LineCount)
+		return dv, widget.SelectionCheckCmd()
+	case widget.CopyFlashMsg:
+		return dv, dv.handleCopyFlash(msg)
+	case widget.CopyFlashDoneMsg:
+		dv.handleCopyFlashDone(msg)
+		return dv, nil
 	case ThemeChangedMsg:
 		dv.handleThemeChanged(msg)
 		return dv, nil
@@ -402,6 +413,23 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return dv.handleKeyMsg(msg)
 	}
 	return dv, nil
+}
+
+func (dv *DescribeView) handleCopyFlash(msg widget.CopyFlashMsg) tea.Cmd {
+	if msg.IsSel {
+		dv.copySelFlash = true
+	} else {
+		dv.copyLogFlash = true
+	}
+	return widget.CopyFlashTimer(msg.IsSel)
+}
+
+func (dv *DescribeView) handleCopyFlashDone(msg widget.CopyFlashDoneMsg) {
+	if msg.IsSel {
+		dv.copySelFlash = false
+	} else {
+		dv.copyLogFlash = false
+	}
 }
 
 func (dv *DescribeView) handleThemeChanged(msg ThemeChangedMsg) {
@@ -512,6 +540,12 @@ func (dv *DescribeView) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return dv, dv.startTriggerCmd()
 	case "e":
 		return dv, dv.openEditorCmd()
+	case "c":
+		return dv, dv.scriptLV.CopyLogCmd()
+	case "C":
+		if dv.scriptLV.SelectionInLog() {
+			return dv, dv.scriptLV.CopySelectionCmd()
+		}
 	}
 	return dv, nil
 }
@@ -758,9 +792,13 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 		component.Filter("/", "search", false),
 		component.Filter("w", "wrap", dv.scriptLV.Wrap()),
 		component.Action("e", "edit"),
+		{Key: "c", Action: dv.scriptLV.LogLabel(), Active: dv.copyLogFlash, Group: component.GroupAction, Rank: rankActionCopy},
 	}
 	shortcuts = append(shortcuts, detailViewTabs("d")...)
 	shortcuts = dv.host.AppendShortcuts(shortcuts)
+	if dv.scriptLV.SelectionInLog() {
+		shortcuts = append(shortcuts, component.Shortcut{Key: "C", Action: dv.scriptLV.SelLabel(), Active: dv.copySelFlash, Group: component.GroupAction, Rank: rankActionCopy})
+	}
 	if dv.scriptLV.HasSearch() || dv.scriptLV.ErrorNavActive() {
 		posInfo := dv.scriptLV.NavigationPositionInfo()
 		nextLabel := "next"

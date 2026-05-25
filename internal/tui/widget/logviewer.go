@@ -525,7 +525,7 @@ func (lv *LogViewer) checkSelectionInLog(cleaned string) bool {
 	return false
 }
 
-// LogLabel returns the "copy log [N]" shortcut label.
+// LogLabel returns the "copy all [N]" shortcut label.
 func (lv *LogViewer) LogLabel() string {
 	count := len(lv.rawLines)
 	if !lv.showInternal {
@@ -536,7 +536,7 @@ func (lv *LogViewer) LogLabel() string {
 			}
 		}
 	}
-	return fmt.Sprintf("copy log [%d]", count)
+	return fmt.Sprintf("copy all [%d]", count)
 }
 
 // SelLabel returns the "copy sel [N]" shortcut label.
