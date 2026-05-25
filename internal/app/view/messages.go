@@ -3,6 +3,7 @@ package view
 import (
 	"github.com/Breina/Jenking/internal/config"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/navmsg"
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
 
@@ -166,12 +167,8 @@ type FailedStageMsg struct {
 
 // RunningBuildsUpdatedMsg is broadcast by the RunningBuildsMonitor each poll.
 // App handles it to update the header count, then forwards it to the active view.
-type RunningBuildsUpdatedMsg struct {
-	Builds   []jmodel.UserBuild
-	Arrived  []string // build keys (jobPath#number) newly in running set
-	Departed []string // build keys just left the running set
-	Count    int
-}
+// Aliased from navmsg so the monitor can emit it without importing the view layer.
+type RunningBuildsUpdatedMsg = navmsg.RunningBuildsUpdatedMsg
 
 // OpenScopedStagesMsg asks the app to open a scoped last-build stage view.
 // Emitted by views (e.g. JobList) that know the scope but not the gitUsernames.
@@ -185,10 +182,5 @@ type ConnectionRestoredMsg struct{}
 
 // BuildCompletedMsg carries the final status of a build that just left the running set.
 // The monitor fetches this after detecting a departure.
-type BuildCompletedMsg struct {
-	Key     string // jobPath#number
-	JobPath string
-	Number  int
-	Build   jmodel.Build
-	Err     error
-}
+// Aliased from navmsg so the monitor can emit it without importing the view layer.
+type BuildCompletedMsg = navmsg.BuildCompletedMsg
