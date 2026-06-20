@@ -44,7 +44,8 @@ type NavigationContext struct {
 	ProjectName  string // multibranch project or standalone job name
 	BranchName   string // branch/MR name (URL-encoded as Jenkins stores it)
 	Build        NavBuildRef
-	StageName    string
+	StageName    string   // leaf stage name; used for lookups and back-navigation
+	StageParent  string   // immediate parent stage name, for breadcrumb disambiguation
 	Username     string   // authenticated user (for mine filter); set at root
 	GitUsernames []string // additional names to match in trigger descriptions (e.g. GitLab push)
 	FriendlyName string   // display name for the user (e.g. "Brecht Derwael")
@@ -56,6 +57,7 @@ func (nc NavigationContext) AtBuild(number int) NavigationContext {
 	nc.Level = CtxBuild
 	nc.Build = NavBuildRef{Number: number}
 	nc.StageName = ""
+	nc.StageParent = ""
 	return nc
 }
 
@@ -64,6 +66,7 @@ func (nc NavigationContext) AtBuild(number int) NavigationContext {
 func (nc NavigationContext) AtStage(stageName string) NavigationContext {
 	nc.Level = CtxStage
 	nc.StageName = stageName
+	nc.StageParent = ""
 	return nc
 }
 
@@ -74,6 +77,7 @@ func (nc NavigationContext) AtBranch(branchName string) NavigationContext {
 	nc.BranchName = branchName
 	nc.Build = NavBuildRef{}
 	nc.StageName = ""
+	nc.StageParent = ""
 	return nc
 }
 
@@ -92,6 +96,7 @@ type NavigationContextProvider interface {
 func (nc NavigationContext) ClipTo(level ContextLevel) NavigationContext {
 	if level < CtxStage {
 		nc.StageName = ""
+		nc.StageParent = ""
 	}
 	if level < CtxBuild {
 		nc.Build = NavBuildRef{}
@@ -115,6 +120,7 @@ func (nc NavigationContext) ClipTo(level ContextLevel) NavigationContext {
 func (nc NavigationContext) AtScope() NavigationContext {
 	nc.Build = NavBuildRef{}
 	nc.StageName = ""
+	nc.StageParent = ""
 	if nc.BranchName != "" {
 		nc.Level = CtxBranch
 		return nc
@@ -278,7 +284,15 @@ func contextParts(nc NavigationContext) []component.BreadcrumbPart {
 		parts = append(parts, component.BreadcrumbPart{Text: fmt.Sprintf("%d", nc.Build.Number), IsBuildNum: true, Separator: " "})
 	}
 	if nc.StageName != "" {
-		parts = append(parts, component.BreadcrumbPart{Text: nc.StageName, Separator: ":"})
+		// Render the immediate parent as its own part so the leaf never
+		// truncates and only the (often long) parent front-truncates. This
+		// disambiguates non-unique leaves like matrix-cell "Build" stages.
+		if nc.StageParent != "" {
+			parts = append(parts, component.BreadcrumbPart{Text: nc.StageParent, Separator: ":"})
+			parts = append(parts, component.BreadcrumbPart{Text: nc.StageName, Separator: " › "})
+		} else {
+			parts = append(parts, component.BreadcrumbPart{Text: nc.StageName, Separator: ":"})
+		}
 	}
 	return parts
 }
@@ -423,6 +437,8 @@ func statusIcon(t theme.Theme, s jmodel.BuildStatus) string {
 		return iconOr(t.Icons.StatusSkipped, "◇")
 	case jmodel.BuildStatusNotBuilt:
 		return iconOr(t.Icons.StatusNotBuilt, "◻")
+	case jmodel.BuildStatusPausedInput:
+		return iconOr(t.Icons.StatusPausedInput, "⏸")
 	default:
 		return iconOr(t.Icons.StatusUnknown, "○")
 	}
@@ -440,6 +456,8 @@ func statusLabel(s jmodel.BuildStatus) string {
 		return "Skipped"
 	case jmodel.BuildStatusNotBuilt:
 		return "Not Built"
+	case jmodel.BuildStatusPausedInput:
+		return "Input"
 	default:
 		str := string(s)
 		if len(str) == 0 {
@@ -492,9 +510,25 @@ func renderStatus(t theme.Theme, s jmodel.BuildStatus) string {
 		return t.BuildStatus.Aborted.Render(text)
 	case jmodel.BuildStatusNotBuilt:
 		return t.BuildStatus.Aborted.Render(text)
+	case jmodel.BuildStatusPausedInput:
+		return t.BuildStatus.PausedInput.Render(text)
 	default:
 		return text
 	}
+}
+
+// isBuildPausedOnInput reports whether the given build has cached pending
+// input data — i.e. the StageView (or a sibling) has seen the build paused
+// on an `input` step. Build/job lists use this to swap the progress bar for
+// a paused badge without making extra HTTP calls; the cache populates
+// naturally whenever the user drills into a paused build.
+func isBuildPausedOnInput(store *cache.Store, jobPath string, buildNumber int) bool {
+	if store == nil || store.PendingInputs == nil {
+		return false
+	}
+	key := fmt.Sprintf("%s:%d", jobPath, buildNumber)
+	e := store.PendingInputs.Get(key)
+	return e != nil && len(e.Value) > 0
 }
 
 // renderRunningStatus renders a progress bar when an estimate is available,
@@ -535,6 +569,10 @@ func openURLCmd(url string) tea.Cmd {
 	}
 }
 
+// OpenURLCmd is the exported entry point for opening a URL in the system
+// browser, used by the app layer (e.g. the :artifact command for non-text files).
+func OpenURLCmd(url string) tea.Cmd { return openURLCmd(url) }
+
 // artifactShortcutAction returns the Action string for the <A> shortcut.
 // With a single artifact it shows the display name (truncated); otherwise "artifacts: N".
 func artifactShortcutAction(artifacts []jmodel.Artifact) string {
@@ -545,7 +583,7 @@ func artifactShortcutAction(artifacts []jmodel.Artifact) string {
 		}
 		return name
 	}
-	return fmt.Sprintf("artifacts: %d", len(artifacts))
+	return fmt.Sprintf("artifacts [%d]", len(artifacts))
 }
 
 // FullScreen is optionally implemented by views that bypass all app chrome

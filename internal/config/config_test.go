@@ -44,6 +44,58 @@ preferences:
 	}
 }
 
+func TestSetTextArtifactExtensionsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, ".config", "jenking")
+	os.MkdirAll(configDir, 0755)
+
+	configContent := `
+server:
+  url: https://jenkins.example.com
+  username: testuser
+  token: mytoken
+preferences:
+  max_log_lines: 5000
+`
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configContent), 0644)
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	defer os.Setenv("HOME", origHome)
+
+	mgr, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if len(mgr.Preferences.TextArtifactExtensions) != 0 {
+		t.Fatalf("expected no extensions before seeding, got %v", mgr.Preferences.TextArtifactExtensions)
+	}
+
+	want := []string{"log", "txt", "json"}
+	if err := mgr.SetTextArtifactExtensions(want); err != nil {
+		t.Fatalf("SetTextArtifactExtensions() error: %v", err)
+	}
+
+	// Reload from disk to confirm the key persisted and survives unmarshal.
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("reload error: %v", err)
+	}
+	got := reloaded.Preferences.TextArtifactExtensions
+	if len(got) != len(want) {
+		t.Fatalf("TextArtifactExtensions = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("TextArtifactExtensions[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// Unrelated preferences must be preserved by the single-key write.
+	if reloaded.Preferences.MaxLogLines != 5000 {
+		t.Errorf("MaxLogLines = %d, want 5000 (clobbered by write)", reloaded.Preferences.MaxLogLines)
+	}
+}
+
 func TestLoadEnvVarExpansion(t *testing.T) {
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, ".config", "jenking")

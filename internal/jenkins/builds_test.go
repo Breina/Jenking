@@ -372,7 +372,7 @@ func TestParseDurationText(t *testing.T) {
 func TestParseSkippedStages_LeafSkip(t *testing.T) {
 	log := `[Pipeline] { (Maven deploy)
 [Pipeline] stage
-jmodel.Stage "Maven deploy" skipped due to when conditional`
+Stage "Maven deploy" skipped due to when conditional`
 
 	result := ParseSkippedStages(log)
 	occs := result["Maven deploy"]
@@ -385,13 +385,13 @@ func TestParseSkippedStages_ParentSkipWithChildren(t *testing.T) {
 	// When parent is skipped, children show the parent's name in the skip message.
 	// The current stage (from { (Name) lines) is what matters.
 	log := `[Pipeline] { (Primary branch)
-jmodel.Stage "Primary branch" skipped due to when conditional
+Stage "Primary branch" skipped due to when conditional
 [Pipeline] { (Validate tag)
-jmodel.Stage "Primary branch" skipped due to when conditional
+Stage "Primary branch" skipped due to when conditional
 [Pipeline] { (Sonar scan)
-jmodel.Stage "Primary branch" skipped due to when conditional
+Stage "Primary branch" skipped due to when conditional
 [Pipeline] { (Maven release)
-jmodel.Stage "Primary branch" skipped due to when conditional`
+Stage "Primary branch" skipped due to when conditional`
 
 	result := ParseSkippedStages(log)
 	for _, name := range []string{"Primary branch", "Validate tag", "Sonar scan", "Maven release"} {
@@ -411,9 +411,9 @@ func TestParseSkippedStages_OccurrenceDifferentiation(t *testing.T) {
 	log := `[Pipeline] { (Primary branch)
 [Pipeline] { (Maven deploy)
 [Pipeline] { (Non-primary branch)
-jmodel.Stage "Non-primary branch" skipped due to when conditional
+Stage "Non-primary branch" skipped due to when conditional
 [Pipeline] { (Maven deploy)
-jmodel.Stage "Non-primary branch" skipped due to when conditional`
+Stage "Non-primary branch" skipped due to when conditional`
 
 	result := ParseSkippedStages(log)
 	occs := result["Maven deploy"]
@@ -477,9 +477,9 @@ func TestMarkSkipped_OccurrenceAware(t *testing.T) {
 func TestParseSkippedStages_ProgressiveLogFormat(t *testing.T) {
 	// Jenkins embeds base64 metadata inside ANSI hidden blocks: \x1b[8m...data...\x1b[0m
 	log := "\x1b[8mha:////base64data=\x1b[0m[Pipeline] { (Non-primary branch)\n" +
-		"jmodel.Stage \"Non-primary branch\" skipped due to when conditional\n" +
+		"Stage \"Non-primary branch\" skipped due to when conditional\n" +
 		"\x1b[8mha:////morebase64=\x1b[0m[Pipeline] { (Maven deploy)\n" +
-		"jmodel.Stage \"Non-primary branch\" skipped due to when conditional\n"
+		"Stage \"Non-primary branch\" skipped due to when conditional\n"
 
 	result := ParseSkippedStages(log)
 	occs := result["Non-primary branch"]
@@ -493,17 +493,17 @@ func TestParseSkippedStages_ProgressiveLogFormat(t *testing.T) {
 }
 
 func TestParseSkippedStages_EarlierFailure(t *testing.T) {
-	log := `[Pipeline] { (jmodel.Build Maven)
+	log := `[Pipeline] { (Build Maven)
 [Pipeline] sh
 [Pipeline] { (Sonar scan)
-jmodel.Stage "Sonar scan" skipped due to earlier failure(s)
+Stage "Sonar scan" skipped due to earlier failure(s)
 [Pipeline] { (Maven deploy)
-jmodel.Stage "Maven deploy" skipped due to earlier failure(s)`
+Stage "Maven deploy" skipped due to earlier failure(s)`
 
 	result := ParseSkippedStages(log)
-	occs := result["jmodel.Build Maven"]
+	occs := result["Build Maven"]
 	if len(occs) != 1 || occs[0] {
-		t.Errorf("jmodel.Build Maven should NOT be skipped, got %v", occs)
+		t.Errorf("Build Maven should NOT be skipped, got %v", occs)
 	}
 	occs = result["Sonar scan"]
 	if len(occs) != 1 || !occs[0] {
@@ -521,7 +521,7 @@ jmodel.Stage "Maven deploy" skipped due to earlier failure(s)`
 func TestParseSkippedStages_ParallelChildrenBatchedSkips(t *testing.T) {
 	log := `[Pipeline] stage
 [Pipeline] { (Non-primary branch)
-jmodel.Stage "Non-primary branch" skipped due to when conditional
+Stage "Non-primary branch" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] parallel
 [Pipeline] { (Branch: Trivy scan)
@@ -533,13 +533,13 @@ jmodel.Stage "Non-primary branch" skipped due to when conditional
 [Pipeline] { (Maven verify)
 [Pipeline] stage
 [Pipeline] { (Maven deploy)
-jmodel.Stage "Trivy scan" skipped due to when conditional
+Stage "Trivy scan" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] }
-jmodel.Stage "Maven verify" skipped due to when conditional
+Stage "Maven verify" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] }
-jmodel.Stage "Maven deploy" skipped due to when conditional
+Stage "Maven deploy" skipped due to when conditional
 [Pipeline] getContext
 [Pipeline] }
 [Pipeline] // stage

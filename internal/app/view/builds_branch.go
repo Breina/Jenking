@@ -192,6 +192,23 @@ func fetchTestReport(client jmodel.JenkinsClient, store *cache.Store, jobPath st
 	}
 }
 
+// fetchPendingInputs returns a Cmd that pulls BuildDetail and stores the
+// resulting PendingInputs slice into the store cache. Issued once per
+// selection from buildsview/joblist so the list view can render the paused
+// badge in place of a progress bar. The returned tea.Msg is intentionally
+// nil — consumers read from the cache when they next render.
+func fetchPendingInputs(client jmodel.JenkinsClient, store *cache.Store, jobPath string, buildNum int) tea.Cmd {
+	cacheKey := fmt.Sprintf("%s:%d", jobPath, buildNum)
+	return func() tea.Msg {
+		detail, err := client.GetBuild(context.Background(), jobPath, buildNum)
+		if err != nil {
+			return nil
+		}
+		store.PendingInputs.Put(cacheKey, detail.PendingInputs)
+		return nil
+	}
+}
+
 // fetchArtifacts returns a Cmd that retrieves build artifacts,
 // checking the cache first. Dispatches ArtifactsMsg on completion.
 func fetchArtifacts(client jmodel.JenkinsClient, store *cache.Store, jobPath string, buildNum int) tea.Cmd {
@@ -208,10 +225,12 @@ func fetchArtifacts(client jmodel.JenkinsClient, store *cache.Store, jobPath str
 			if artifacts == nil {
 				artifacts = []jmodel.Artifact{}
 			}
-			// Only cache non-empty results. An empty result during a running
-			// build would be stored and returned on the post-completion fetch,
-			// hiding artifacts that appeared after the first check.
-			if len(artifacts) > 0 {
+			// Only cache once the build is terminal: a running build's artifact
+			// set grows as stages archive (e.g. a screenshot mid-pipeline, then
+			// a report at the end), so caching a partial list — which is then
+			// frozen on disk and never re-fetched — would permanently hide
+			// later artifacts. Non-terminal builds fetch live every time.
+			if len(artifacts) > 0 && store.Registry.IsTerminal(jobPath, buildNum) {
 				store.Artifacts.Put(cacheKey, artifacts)
 				if store.Disk != nil {
 					_ = store.Disk.SaveArtifacts(cacheKey, artifacts)

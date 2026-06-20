@@ -32,14 +32,15 @@ type Theme struct {
 // Icons holds optional glyph overrides. Zero values use built-in defaults.
 // The Matrix theme uses this to replace colored emojis with unicode glyphs.
 type Icons struct {
-	StatusRunning  string
-	StatusSuccess  string
-	StatusFailed   string
-	StatusAborted  string
-	StatusUnstable string
-	StatusSkipped  string
-	StatusNotBuilt string
-	StatusUnknown  string
+	StatusRunning     string
+	StatusSuccess     string
+	StatusFailed      string
+	StatusAborted     string
+	StatusUnstable    string
+	StatusSkipped     string
+	StatusNotBuilt    string
+	StatusPausedInput string
+	StatusUnknown     string
 
 	WeatherSun      string
 	WeatherUnstable string
@@ -60,10 +61,10 @@ type HeaderStyles struct {
 	Label        lipgloss.Style
 	Value        lipgloss.Style
 	Connected    lipgloss.Style
-	Disconnected lipgloss.Style // muted red — shown when Jenkins is unreachable
+	Disconnected lipgloss.Style // muted red — shown when the remote server is unreachable
 	RunningBadge lipgloss.Style // amber dot shown next to running build count
 	Logo         lipgloss.Style
-	Crown        lipgloss.Style // bright yellow crown on the Jenkins logo
+	Crown        lipgloss.Style // bright yellow crown on the app logo
 }
 
 type BreadcrumbStyles struct {
@@ -100,11 +101,12 @@ type StatusBarStyles struct {
 }
 
 type BuildStatusStyles struct {
-	Running  lipgloss.Style
-	Success  lipgloss.Style
-	Failed   lipgloss.Style
-	Aborted  lipgloss.Style
-	Unstable lipgloss.Style
+	Running     lipgloss.Style
+	Success     lipgloss.Style
+	Failed      lipgloss.Style
+	Aborted     lipgloss.Style
+	Unstable    lipgloss.Style
+	PausedInput lipgloss.Style // stage waiting for human input
 }
 
 type ProgressBarStyles struct {
@@ -126,7 +128,7 @@ type ProgressBarStyles struct {
 // LogStyles controls how console/stage log lines are coloured.
 type LogStyles struct {
 	Normal           lipgloss.Style // regular log line
-	Dim              lipgloss.Style // Jenkins-internal [Pipeline] lines
+	Dim              lipgloss.Style // internal/noise lines hidden by default (see InternalLineFn)
 	Error            lipgloss.Style // lines matching error/fatal/exception keywords
 	Warning          lipgloss.Style // lines matching warning/deprecated keywords
 	Trunc            lipgloss.Style // truncation indicator (»)
@@ -138,7 +140,7 @@ type StageStyles struct {
 	GhostDim lipgloss.Style // ghost (predicted-future) stage rows shown during a running build
 }
 
-// WeatherStyles controls the Jenkins weather-icon colours shown in the MAIN column.
+// WeatherStyles controls the weather-icon colours shown in the MAIN column.
 type WeatherStyles struct {
 	Sun      lipgloss.Style // ☀  success
 	Unstable lipgloss.Style // ⛅  unstable
@@ -213,11 +215,12 @@ func Default() Theme {
 			Suggestion: lipgloss.NewStyle().Foreground(dim),
 		},
 		BuildStatus: BuildStatusStyles{
-			Running:  lipgloss.NewStyle().Foreground(lipgloss.Color("74")),  // steel blue
-			Success:  lipgloss.NewStyle().Foreground(green),                 // muted green
-			Failed:   lipgloss.NewStyle().Foreground(lipgloss.Color("167")), // muted red
-			Aborted:  lipgloss.NewStyle().Foreground(dim),
-			Unstable: lipgloss.NewStyle().Foreground(lipgloss.Color("179")), // muted amber
+			Running:     lipgloss.NewStyle().Foreground(lipgloss.Color("74")),  // steel blue
+			Success:     lipgloss.NewStyle().Foreground(green),                 // muted green
+			Failed:      lipgloss.NewStyle().Foreground(lipgloss.Color("167")), // muted red
+			Aborted:     lipgloss.NewStyle().Foreground(dim),
+			Unstable:    lipgloss.NewStyle().Foreground(lipgloss.Color("179")), // muted amber
+			PausedInput: lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true),
 		},
 		ProgressBar: ProgressBarStyles{
 			Filled:      lipgloss.NewStyle().Foreground(lipgloss.Color("74")).Background(lipgloss.Color("238")),

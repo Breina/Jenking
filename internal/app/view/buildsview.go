@@ -171,7 +171,11 @@ func (bv *BuildsView) populateTable() {
 		var statusStr, durationStr string
 		if b.Status == jmodel.BuildStatusRunning {
 			elapsed := time.Since(b.Timestamp)
-			statusStr = renderRunningStatus(bv.theme, bv.progressBar, colStatusBWidth, elapsed, b.EstimatedDuration)
+			if isBuildPausedOnInput(bv.store, b.JobPath, b.Number) {
+				statusStr = renderStatus(bv.theme, jmodel.BuildStatusPausedInput)
+			} else {
+				statusStr = renderRunningStatus(bv.theme, bv.progressBar, colStatusBWidth, elapsed, b.EstimatedDuration)
+			}
 			durationStr = "~" + formatDuration(elapsed)
 		} else {
 			statusStr = renderStatus(bv.theme, b.Status)
@@ -208,6 +212,12 @@ func (bv *BuildsView) maybeFetchSelected() tea.Cmd {
 	// the provider's tracker being updated (e.g. preloadOne not called for this build).
 	if b.Artifacts == nil {
 		cmds = append(cmds, fetchArtifacts(bv.client, bv.store, b.JobPath, b.Number))
+	}
+	// For running builds we cheaply check whether the run is paused on a
+	// pipeline `input` step so the list can swap the progress bar for a
+	// paused badge. Only fires once per selection (cache miss path).
+	if b.Status == jmodel.BuildStatusRunning && bv.store.PendingInputs.Get(key) == nil {
+		cmds = append(cmds, fetchPendingInputs(bv.client, bv.store, b.JobPath, b.Number))
 	}
 	return tea.Batch(cmds...)
 }

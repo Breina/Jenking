@@ -55,7 +55,14 @@ func (m *RunningBuildsMonitor) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 		return true, []tea.Cmd{m.poll}
 	case monitorPollMsg:
 		if msg.err != nil {
-			return true, []tea.Cmd{m.scheduleTick()}
+			// Surface the failure so the app can mark the connection lost
+			// immediately, then keep polling — the recurring poll doubles as
+			// the reconnection probe.
+			lost := navmsg.ConnectionLostMsg{Err: msg.err}
+			return true, []tea.Cmd{
+				func() tea.Msg { return lost },
+				m.scheduleTick(),
+			}
 		}
 		return true, m.processPoll(msg.builds)
 	}
@@ -171,6 +178,9 @@ func keysOf(kbs []keyedBuild) []string {
 // markArrivalsDirty is the dirty-tracking concern: for every newly-arrived
 // running build, invalidate the builds cache for its job, and the jobs
 // listing of its parent folder if the job is not already listed there.
+// It also evicts any stale test-report, artifact, and stage entries for the
+// build — disk-cached data from a previous run with the same number would
+// otherwise surface immediately as if the new build already had results.
 func (m *RunningBuildsMonitor) markArrivalsDirty(arrived []keyedBuild) {
 	if m.store == nil || len(arrived) == 0 {
 		return
@@ -183,6 +193,10 @@ func (m *RunningBuildsMonitor) markArrivalsDirty(arrived []keyedBuild) {
 		if e == nil || !jobInListing(e.Value, jobPath) {
 			m.store.MarkJobsDirty(folderPath)
 		}
+		cacheKey := fmt.Sprintf("%s:%d", kb.build.JobPath, kb.build.Number)
+		m.store.TestReports.Delete(cacheKey)
+		m.store.Artifacts.Delete(cacheKey)
+		m.store.Stages.Delete(cacheKey)
 	}
 }
 

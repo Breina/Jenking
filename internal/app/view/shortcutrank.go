@@ -20,7 +20,9 @@ const (
 
 	// Action group (Group=GroupAction): always-present actions first, then
 	// optional/contextual.
-	rankActionTrigger = 10 // "t"
-	rankActionCancel  = 20 // "x"
-	rankActionCopy    = 90 // "C" — optional, only when a selection exists
+	rankActionTrigger    = 10 // "t"
+	rankActionCancel     = 20 // "x"
+	rankActionInput      = 5  // Enter — only when cursor sits on a paused-input stage
+	rankActionAbortInput = 6  // "a" — only when cursor sits on a paused-input stage
+	rankActionCopy       = 90 // "C" — optional, only when a selection exists
 )

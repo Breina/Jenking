@@ -1,0 +1,25 @@
+{
+  "_class": "org.jenkinsci.plugins.workflow.job.WorkflowRun",
+  "number": 6,
+  "building": true,
+  "actions": [
+    {
+      "_class": "org.jenkinsci.plugins.workflow.support.steps.input.InputAction",
+      "executions": [
+        {
+          "id": "35d0c26e879530a0c76a5ed1430c7f65",
+          "displayName": "Restricted approval",
+          "settled": false,
+          "input": {
+            "message": "Restricted approval",
+            "ok": "Proceed",
+            "cancel": "Abort",
+            "submitter": "admin,release-managers",
+            "submitterParameter": null,
+            "parameters": []
+          }
+        }
+      ]
+    }
+  ]
+}

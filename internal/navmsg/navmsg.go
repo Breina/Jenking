@@ -124,6 +124,15 @@ type RunningBuildsUpdatedMsg struct {
 	Count    int
 }
 
+// ConnectionLostMsg is emitted by the RunningBuildsMonitor when a poll fails.
+// It lets the app notice a dropped Jenkins connection immediately (on the next
+// 1s poll) instead of only when the user navigates and triggers a fresh
+// request. The app decides via isConnError whether the failure is a genuine
+// connectivity problem.
+type ConnectionLostMsg struct {
+	Err error
+}
+
 // BuildCompletedMsg carries the final status of a build that just left the
 // running set.
 type BuildCompletedMsg struct {
@@ -214,6 +223,9 @@ func ResolveTarget(t command.Target, store *cache.Store, current NavigationConte
 }
 
 func MatchProjectSuffix(paths []string, suffix string) []string {
+	// Decode the suffix too, so an encoded path (e.g. "Code/git%2Fwebidm" as
+	// older output emitted) resolves the same as its decoded form.
+	suffix = DecodePath(suffix)
 	var out []string
 	prefixed := "/" + suffix
 	for _, p := range paths {

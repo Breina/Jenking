@@ -28,14 +28,15 @@ type StageLogKey struct {
 // The remaining Cache fields persist non-build-status data (jobs, stages,
 // test reports, artifacts) that has its own immutable-after-completion semantics.
 type Store struct {
-	Jobs        *Cache[string, []jmodel.Job]            // key: folderPath
-	Stages      *Cache[string, []jmodel.Stage]          // key: "jobPath:buildNum"
-	NodeLogs    *Cache[StageLogKey, NodeLogSnapshot]    // LRU(200)
-	WhenSkipped *Cache[string, map[string][]bool]       // key: "jobPath:buildNum"
-	TestReports *Cache[string, *jmodel.TestReport]      // key: "jobPath:buildNum"
-	Artifacts   *Cache[string, []jmodel.Artifact]       // key: "jobPath:buildNum"
-	BuildDetail *Cache[string, jmodel.Build]            // key: "jobPath:buildNum"
-	Symbols     *Cache[string, *pipelinesyntax.Symbols] // key: "jobPath#buildNum"
+	Jobs          *Cache[string, []jmodel.Job]            // key: folderPath
+	Stages        *Cache[string, []jmodel.Stage]          // key: "jobPath:buildNum"
+	NodeLogs      *Cache[StageLogKey, NodeLogSnapshot]    // LRU(200)
+	WhenSkipped   *Cache[string, map[string][]bool]       // key: "jobPath:buildNum"
+	TestReports   *Cache[string, *jmodel.TestReport]      // key: "jobPath:buildNum"
+	Artifacts     *Cache[string, []jmodel.Artifact]       // key: "jobPath:buildNum"
+	BuildDetail   *Cache[string, jmodel.Build]            // key: "jobPath:buildNum"
+	PendingInputs *Cache[string, []jmodel.PendingInput]   // key: "jobPath:buildNum"
+	Symbols       *Cache[string, *pipelinesyntax.Symbols] // key: "jobPath#buildNum"
 
 	// Registry is the single source of truth for build status.
 	Registry *buildregistry.Registry
@@ -49,17 +50,18 @@ type Store struct {
 // NewStore creates a Store with sensible defaults. disk may be nil to disable persistence.
 func NewStore(disk *DiskStore) *Store {
 	s := &Store{
-		Jobs:        New[string, []jmodel.Job](0),
-		Stages:      New[string, []jmodel.Stage](0),
-		NodeLogs:    New[StageLogKey, NodeLogSnapshot](200),
-		WhenSkipped: New[string, map[string][]bool](0),
-		TestReports: New[string, *jmodel.TestReport](100),
-		Artifacts:   New[string, []jmodel.Artifact](100),
-		BuildDetail: New[string, jmodel.Build](100),
-		Symbols:     New[string, *pipelinesyntax.Symbols](200),
-		Disk:        disk,
-		dirtyJobs:   make(map[string]bool),
-		dirtyBuilds: make(map[string]bool),
+		Jobs:          New[string, []jmodel.Job](0),
+		Stages:        New[string, []jmodel.Stage](0),
+		NodeLogs:      New[StageLogKey, NodeLogSnapshot](200),
+		WhenSkipped:   New[string, map[string][]bool](0),
+		TestReports:   New[string, *jmodel.TestReport](100),
+		Artifacts:     New[string, []jmodel.Artifact](100),
+		BuildDetail:   New[string, jmodel.Build](100),
+		PendingInputs: New[string, []jmodel.PendingInput](100),
+		Symbols:       New[string, *pipelinesyntax.Symbols](200),
+		Disk:          disk,
+		dirtyJobs:     make(map[string]bool),
+		dirtyBuilds:   make(map[string]bool),
 	}
 	// Registry: persistent build-status truth. Reconcile is wired by the app
 	// (which owns the JenkinsClient) via Registry.SetReconcile.
@@ -94,6 +96,7 @@ func (s *Store) TotalEntries() int {
 		s.TestReports.Size() +
 		s.Artifacts.Size() +
 		s.BuildDetail.Size() +
+		s.PendingInputs.Size() +
 		s.Symbols.Size() +
 		regSize
 }

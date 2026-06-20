@@ -274,6 +274,7 @@ var themeStyleFields = []styleField{
 	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Failed }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Failed = s }},
 	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Aborted }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Aborted = s }},
 	{func(t *Theme) lipgloss.Style { return t.BuildStatus.Unstable }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.Unstable = s }},
+	{func(t *Theme) lipgloss.Style { return t.BuildStatus.PausedInput }, func(t *Theme, s lipgloss.Style) { t.BuildStatus.PausedInput = s }},
 	// ProgressBar
 	{func(t *Theme) lipgloss.Style { return t.ProgressBar.Filled }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.Filled = s }},
 	{func(t *Theme) lipgloss.Style { return t.ProgressBar.Empty }, func(t *Theme, s lipgloss.Style) { t.ProgressBar.Empty = s }},

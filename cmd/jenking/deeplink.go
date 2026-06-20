@@ -72,20 +72,6 @@ func buildDeepLinkView(verb string, args []string, d deepLinkArgs) (view.View, e
 	}
 }
 
-// isDeepLinkVerb reports whether the first os.Arg looks like a navigation
-// verb. Used to distinguish a deep-link invocation from a bare `jenking`
-// launch.
-func isDeepLinkVerb(s string) bool {
-	switch s {
-	case "logs", "log", "l",
-		"stages", "stage", "s",
-		"builds", "build", "b",
-		"jobs", "job", "j":
-		return true
-	}
-	return false
-}
-
 // buildsViewForCLI mirrors App.buildsViewFor — kept separate to avoid
 // reaching into the tui package from main. The dispatch logic must stay
 // in sync with app.go's handleOpenTarget.

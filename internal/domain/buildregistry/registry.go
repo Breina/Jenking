@@ -537,6 +537,18 @@ func (r *Registry) HasRunning(filter Filter) bool {
 	return false
 }
 
+// IsTerminal reports whether the build is confirmed complete (a terminal
+// status has been observed). Returns false when the build is running, status
+// is unconfirmed, or the build is unknown to the registry. Callers use this to
+// avoid persisting data (e.g. artifact lists) that is only immutable after the
+// build completes.
+func (r *Registry) IsTerminal(jobPath string, buildNum int) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	rec, ok := r.records[Key{JobPath: jobPath, Number: buildNum}]
+	return ok && rec.Terminal
+}
+
 // RunningCount returns the size of the latest running-set snapshot.
 // This is the authoritative live count.
 func (r *Registry) RunningCount() int {

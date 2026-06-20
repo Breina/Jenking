@@ -71,42 +71,72 @@ func (v *ArtifactView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "end":
 			v.table.End()
 		case "enter":
-			idx := v.table.Cursor()
-			if idx >= 0 && idx < len(v.artifacts) {
-				url := v.artifacts[idx].URL
-				return v, func() tea.Msg {
-					_ = exec.Command("xdg-open", url).Start()
-					return nil
-				}
+			if cmd := v.openSelected(); cmd != nil {
+				return v, cmd
 			}
-		case "s":
-			return v, func() tea.Msg {
-				return SwapViewMsg{View: NewStageView(v.theme, v.client, v.store, v.nc, v.build)}
+		case "o":
+			if idx := v.table.Cursor(); idx >= 0 && idx < len(v.artifacts) {
+				return v, openURLCmd(v.artifacts[idx].URL)
 			}
-		case "l":
-			nc := v.nc
-			build := v.build
-			return v, func() tea.Msg {
-				cv := NewConsoleView(v.theme, v.client, nc)
-				cv.build = build
-				cv.store = v.store
-				return SwapViewMsg{View: cv}
-			}
-		case "d":
-			return v, func() tea.Msg {
-				return SwapViewMsg{View: NewDescribeView(v.theme, v.client, v.store, v.nc, v.build)}
-			}
-		case "T":
-			if v.store != nil {
-				key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
-				if entry := v.store.TestReports.Get(key); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
-					child := NewTestReportView(v.theme, *entry.Value, v.nc, v.build, v.client, v.store)
-					return v, func() tea.Msg { return SwapViewMsg{View: child} }
-				}
+		default:
+			if cmd, ok := v.handleTabKey(msg.String()); ok {
+				return v, cmd
 			}
 		}
 	}
 	return v, nil
+}
+
+// handleTabKey routes the sibling detail-view tab shortcuts (l/s/d/T). Returns
+// ok=false for any other key so the caller can keep handling it.
+func (v *ArtifactView) handleTabKey(key string) (tea.Cmd, bool) {
+	switch key {
+	case "s":
+		return func() tea.Msg {
+			return SwapViewMsg{View: NewStageView(v.theme, v.client, v.store, v.nc, v.build)}
+		}, true
+	case "l":
+		nc := v.nc
+		build := v.build
+		return func() tea.Msg {
+			cv := NewConsoleView(v.theme, v.client, nc)
+			cv.build = build
+			cv.store = v.store
+			return SwapViewMsg{View: cv}
+		}, true
+	case "d":
+		return func() tea.Msg {
+			return SwapViewMsg{View: NewDescribeView(v.theme, v.client, v.store, v.nc, v.build)}
+		}, true
+	case "T":
+		if v.store != nil {
+			storeKey := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
+			if entry := v.store.TestReports.Get(storeKey); entry != nil && entry.Value != nil && len(entry.Value.Suites) > 0 {
+				child := NewTestReportView(v.theme, *entry.Value, v.nc, v.build, v.client, v.store)
+				return func() tea.Msg { return SwapViewMsg{View: child} }, true
+			}
+		}
+		return nil, true
+	}
+	return nil, false
+}
+
+// openSelected opens the highlighted artifact: text files in the in-TUI viewer,
+// everything else in the system browser. Returns nil when no row is selected.
+func (v *ArtifactView) openSelected() tea.Cmd {
+	idx := v.table.Cursor()
+	if idx < 0 || idx >= len(v.artifacts) {
+		return nil
+	}
+	art := v.artifacts[idx]
+	if IsTextArtifact(art.DisplayPath) {
+		child := NewArtifactFileView(v.theme, v.client, v.store, v.nc, art, v.build, v.artifacts)
+		return func() tea.Msg { return PushViewMsg{View: child} }
+	}
+	return func() tea.Msg {
+		_ = exec.Command("xdg-open", art.URL).Start()
+		return nil
+	}
 }
 
 func (v *ArtifactView) View() string {
@@ -131,8 +161,13 @@ func (v *ArtifactView) Commands() []command.Command {
 
 func (v *ArtifactView) Shortcuts() []component.Shortcut {
 	sc := []component.Shortcut{component.Nav("esc", "builds")}
-	if v.table.Cursor() >= 0 && v.table.Cursor() < len(v.artifacts) {
-		sc = append(sc, component.Nav("enter", "open"))
+	if idx := v.table.Cursor(); idx >= 0 && idx < len(v.artifacts) {
+		action := "open"
+		if IsTextArtifact(v.artifacts[idx].DisplayPath) {
+			action = "view"
+		}
+		sc = append(sc, component.Nav("enter", action))
+		sc = append(sc, component.Nav("o", "browser"))
 	}
 	sc = append(sc, detailViewTabs("")...)
 	if v.store != nil {
@@ -142,7 +177,7 @@ func (v *ArtifactView) Shortcuts() []component.Shortcut {
 			sc = append(sc, component.ViewSCRanked("T", "tests: "+badge, false, rankViewTests))
 		}
 	}
-	sc = append(sc, component.ViewSCRanked("A", "artifacts", true, rankViewArtifacts))
+	sc = append(sc, component.ViewSCRanked("A", artifactShortcutAction(v.artifacts), true, rankViewArtifacts))
 	return sc
 }
 

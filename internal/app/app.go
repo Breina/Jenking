@@ -84,6 +84,19 @@ type openTargetMsg struct {
 	target command.Target
 }
 
+// openArtifactMsg is emitted by :artifact. name is the artifact to open
+// (empty = list all artifacts for the current build).
+type openArtifactMsg struct{ name string }
+
+// artifactsFetchedMsg carries the artifact list fetched asynchronously for the
+// current build so :artifact can resolve the requested file and open it.
+type artifactsFetchedMsg struct {
+	nc        view.NavigationContext
+	build     jmodel.Build
+	name      string
+	artifacts []jmodel.Artifact
+}
+
 type openRunningBuildsMsg struct{}
 type openHelpMsg struct{}
 type connCheckMsg struct{}
@@ -105,7 +118,7 @@ type App struct {
 	saveThemeFn          func(string) error
 	showPrefsDialog      bool
 	prefsDialog          view.PrefsDialog
-	savePrefsFn          func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error
+	savePrefsFn          func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string, textArtifactExtensions []string) error
 	refreshInterval      time.Duration
 	maxLogLines          int
 	logLevel             string
@@ -149,51 +162,53 @@ type App struct {
 	updateDialogYes      bool // which button is highlighted in the confirm dialog
 	isUpdating           bool
 	UpdatedTo            string // set on successful self-update; read by main after p.Run()
+
+	pendingDeeplink *view.DeepLink // last clipboard URL that parsed for this context
 }
 
 // NewApp creates the root application model.
-func NewApp(t theme.Theme, baseTheme theme.Theme, themeID theme.ThemeID, cbType theme.ColorblindnessType, keys KeyMap, client jmodel.JenkinsClient, store *cache.Store, username string, friendlyName string, gitUsernames []string, refreshInterval, slowInterval time.Duration, header component.Header, breadcrumb component.Breadcrumb, statusBar component.StatusBar, initialView view.View, saveFn func(theme.ColorblindnessType) error, saveThemeFn func(string) error, debug bool, sponsorKey string, notifications bool, maxLogLines int, logLevel string, contexts []config.ContextConfig, currentContextName string, diskStoreFn func(string) *cache.DiskStore, addCtxFn func(config.ContextConfig) error, delCtxFn func(string) error, setCtxFn func(string) error, savePrefsFn func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string) error) App {
-	registry := buildCommandRegistry(store, contexts)
+func NewApp(cfg AppConfig) App {
+	registry := buildCommandRegistry(cfg.Store, cfg.Contexts)
 
 	var dbg *debugStats
-	if debug {
+	if cfg.Debug {
 		dbg = &debugStats{}
 	}
 
 	return App{
-		theme:              t,
-		baseTheme:          baseTheme,
-		themeID:            themeID,
-		saveThemeFn:        saveThemeFn,
-		sponsorKey:         sponsorKey,
-		colorblindnessType: cbType,
-		saveFn:             saveFn,
-		keys:               keys,
-		client:             client,
-		store:              store,
-		monitor:            wireMonitor(client, store),
-		username:           username,
-		friendlyName:       friendlyName,
-		gitUsernames:       gitUsernames,
-		contexts:           contexts,
-		currentContextName: currentContextName,
-		diskStoreFn:        diskStoreFn,
-		addCtxFn:           addCtxFn,
-		delCtxFn:           delCtxFn,
-		setCtxFn:           setCtxFn,
-		savePrefsFn:        savePrefsFn,
-		refreshInterval:    refreshInterval,
-		slowInterval:       slowInterval,
-		maxLogLines:        maxLogLines,
-		logLevel:           logLevel,
+		theme:              cfg.Theme,
+		baseTheme:          cfg.BaseTheme,
+		themeID:            cfg.ThemeID,
+		saveThemeFn:        cfg.SaveThemeFn,
+		sponsorKey:         cfg.SponsorKey,
+		colorblindnessType: cfg.ColorblindnessType,
+		saveFn:             cfg.SaveColorblindnessFn,
+		keys:               cfg.Keys,
+		client:             cfg.Client,
+		store:              cfg.Store,
+		monitor:            wireMonitor(cfg.Client, cfg.Store),
+		username:           cfg.Username,
+		friendlyName:       cfg.FriendlyName,
+		gitUsernames:       cfg.GitUsernames,
+		contexts:           cfg.Contexts,
+		currentContextName: cfg.CurrentContextName,
+		diskStoreFn:        cfg.DiskStoreFn,
+		addCtxFn:           cfg.AddContextFn,
+		delCtxFn:           cfg.DeleteContextFn,
+		setCtxFn:           cfg.SetContextFn,
+		savePrefsFn:        cfg.SavePrefsFn,
+		refreshInterval:    cfg.RefreshInterval,
+		slowInterval:       cfg.SlowRefreshInterval,
+		maxLogLines:        cfg.MaxLogLines,
+		logLevel:           cfg.LogLevel,
 		registry:           registry,
-		header:             header,
-		breadcrumb:         breadcrumb,
-		statusBar:          statusBar,
-		navTags:            component.NewNavTags(t),
-		currentView:        initialView,
-		initialView:        initialView,
-		notifications:      notifications,
+		header:             cfg.Header,
+		breadcrumb:         cfg.Breadcrumb,
+		statusBar:          cfg.StatusBar,
+		navTags:            component.NewNavTags(cfg.Theme),
+		currentView:        cfg.InitialView,
+		initialView:        cfg.InitialView,
+		notifications:      cfg.Notifications,
 		termFocused:        true, // assume focused until a BlurMsg says otherwise
 		connected:          true,
 		dbg:                dbg,
@@ -227,6 +242,7 @@ func (a App) Init() tea.Cmd {
 	}
 	cmds = append(cmds, a.monitor.Init())
 	cmds = append(cmds, checkForUpdateCmd())
+	cmds = append(cmds, clipboardPollCmd(a.currentContextURL(), a.store))
 	return tea.Batch(cmds...)
 }
 
@@ -326,8 +342,9 @@ func (a App) modalPrefs(keyMsg tea.KeyMsg) (App, tea.Cmd, bool) {
 		a.slowInterval = p.SlowRefreshInterval
 		a.maxLogLines = p.MaxLogLines
 		a.logLevel = p.LogLevel
+		view.SetTextArtifactExtensions(p.TextArtifactExtensions)
 		if a.savePrefsFn != nil {
-			if err := a.savePrefsFn(p.Notifications, p.GitUsernames, p.RefreshInterval, p.SlowRefreshInterval, p.MaxLogLines, p.LogLevel); err != nil {
+			if err := a.savePrefsFn(p.Notifications, p.GitUsernames, p.RefreshInterval, p.SlowRefreshInterval, p.MaxLogLines, p.LogLevel, view.TextArtifactExtensionList()); err != nil {
 				a.statusBar.SetError(fmt.Sprintf("save preferences: %v", err))
 			}
 		}
@@ -431,6 +448,11 @@ func (a App) handleGlobalKey(msg tea.KeyMsg) (App, tea.Cmd, bool) {
 		a.showUpdateDialog = true
 		a.updateDialogYes = true
 		return a, nil, true
+	case msg.String() == "V" && a.pendingDeeplink != nil:
+		dl := a.pendingDeeplink
+		a.pendingDeeplink = nil
+		next, cmd := a.openDeeplink(dl)
+		return next.(App), cmd, true
 	case key.Matches(msg, a.keys.RunningBuilds):
 		if bv, ok := a.activeView().(*view.BuildsView); ok && bv.NC().Level == view.CtxRoot {
 			bv.ToggleRunning()
@@ -528,6 +550,10 @@ func (a App) handleTypedMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if next, cmd, done := a.handleErrorAndSearch(msg); done {
 		return next, cmd
 	}
+	if dm, ok := msg.(deeplinkCheckedMsg); ok {
+		a.pendingDeeplink = dm.dl
+		return a, clipboardPollCmd(a.currentContextURL(), a.store)
+	}
 
 	// Delegate non-key messages to active view.
 	if v := a.activeView(); v != nil {
@@ -612,6 +638,14 @@ func (a App) handleViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 		m, cmd := a.handleOpenTarget(otm)
 		return m.(App), cmd, true
 	}
+	if oam, ok := msg.(openArtifactMsg); ok {
+		m, cmd := a.handleOpenArtifact(oam)
+		return m.(App), cmd, true
+	}
+	if afm, ok := msg.(artifactsFetchedMsg); ok {
+		m, cmd := a.handleArtifactsFetched(afm)
+		return m.(App), cmd, true
+	}
 	if _, ok := msg.(openRunningBuildsMsg); ok {
 		if bv, ok := a.activeView().(*view.BuildsView); ok && bv.NC().Level == view.CtxRoot {
 			bv.ToggleRunning()
@@ -629,6 +663,16 @@ func (a App) handleViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 		nc.FriendlyName = a.friendlyName
 		nc.GitUsernames = a.gitUsernames
 		mv := view.NewMyBuildsView(a.theme, a.client, a.store, nc, a.slowInterval)
+		a.replaceView(mv)
+		a.updateBreadcrumb()
+		return a, mv.Init(), true
+	}
+	if ocm, ok := msg.(view.OpenScopedConsoleMsg); ok {
+		nc := ocm.NC
+		nc.Username = a.username
+		nc.FriendlyName = a.friendlyName
+		nc.GitUsernames = a.gitUsernames
+		mv := view.NewMyConsoleView(a.theme, a.client, a.store, nc, a.slowInterval)
 		a.replaceView(mv)
 		a.updateBreadcrumb()
 		return a, mv.Init(), true
@@ -816,12 +860,13 @@ func (a App) handleDialogOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 	}
 	if _, ok := msg.(openPrefsMsg); ok {
 		a.prefsDialog = view.NewPrefsDialog(a.theme, view.PrefsValues{
-			Notifications:       a.notifications,
-			GitUsernames:        a.gitUsernames,
-			RefreshInterval:     a.refreshInterval,
-			SlowRefreshInterval: a.slowInterval,
-			MaxLogLines:         a.maxLogLines,
-			LogLevel:            a.logLevel,
+			Notifications:          a.notifications,
+			GitUsernames:           a.gitUsernames,
+			RefreshInterval:        a.refreshInterval,
+			SlowRefreshInterval:    a.slowInterval,
+			MaxLogLines:            a.maxLogLines,
+			LogLevel:               a.logLevel,
+			TextArtifactExtensions: view.TextArtifactExtensionList(),
 		})
 		a.prefsDialog.SetSize(a.width, a.height)
 		a.showPrefsDialog = true
@@ -869,6 +914,15 @@ func (a App) handleThemeChange(msg tea.Msg) (App, tea.Cmd, bool) {
 
 // handleConnection — periodic WhoAmI probe + user-info-after-reconnect.
 func (a App) handleConnection(msg tea.Msg) (App, tea.Cmd, bool) {
+	if clm, ok := msg.(view.ConnectionLostMsg); ok {
+		if a.connected && isConnError(clm.Err) {
+			a.connected = false
+			a.header.SetConnected(false)
+			a.statusBar.SetError(clm.Err.Error())
+			return a, scheduleConnCheck(), true
+		}
+		return a, nil, true
+	}
 	if _, ok := msg.(connCheckMsg); ok {
 		if !a.connected {
 			return a, probeCurrentConn(a.client), true
@@ -1089,6 +1143,9 @@ func (a App) viewShortcutsForHeader(v view.View) []component.Shortcut {
 	hasActiveNav := false
 	if nc, ok := v.(view.NavigationClearable); ok {
 		hasActiveNav = nc.HasActiveNavigation()
+	}
+	if dl := a.pendingDeeplink; dl != nil {
+		sc = append(sc, component.Nav("V", dl.Label))
 	}
 	if !inSearch && !hasActiveNav {
 		return sc
@@ -1536,6 +1593,77 @@ func (a App) handleOpenTarget(otm openTargetMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// handleOpenArtifact resolves the current build context and fetches its
+// artifacts asynchronously; handleArtifactsFetched then opens the requested
+// file (text → in-TUI viewer, else browser) or lists them all when no name
+// was given.
+func (a App) handleOpenArtifact(oam openArtifactMsg) (tea.Model, tea.Cmd) {
+	nc := a.currentContextNC()
+	if nc.Level != view.CtxBuild || nc.Build.Number == 0 {
+		return a, errCmd(fmt.Errorf("no build in current context; navigate to a build first"))
+	}
+	jobPath := nc.JobPath()
+	buildNum := nc.Build.Number
+	client := a.client
+	name := oam.name
+	return a, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		arts, err := client.GetArtifacts(ctx, jobPath, buildNum)
+		if err != nil {
+			return view.ErrorMsg{Err: err}
+		}
+		return artifactsFetchedMsg{nc: nc, build: jmodel.Build{Number: buildNum}, name: name, artifacts: arts}
+	}
+}
+
+func (a App) handleArtifactsFetched(afm artifactsFetchedMsg) (tea.Model, tea.Cmd) {
+	if afm.name == "" {
+		return a.openView(view.NewArtifactView(a.theme, afm.artifacts, afm.nc, afm.build, a.client, a.store))
+	}
+	art, ok := view.FindArtifact(afm.artifacts, afm.name)
+	if !ok {
+		return a, errCmd(fmt.Errorf("artifact %q not found in build #%d", afm.name, afm.build.Number))
+	}
+	if view.IsTextArtifact(art.DisplayPath) {
+		v := view.NewArtifactFileView(a.theme, a.client, a.store, afm.nc, art, afm.build, afm.artifacts)
+		return a.openView(v)
+	}
+	return a, view.OpenURLCmd(art.URL)
+}
+
+// openDeeplink navigates to the view described by a clipboard-derived
+// DeepLink. The NC carries folder/project/branch/build; identity fields are
+// re-stamped from the current App state so the destination view inherits the
+// authenticated user.
+func (a App) openDeeplink(dl *view.DeepLink) (tea.Model, tea.Cmd) {
+	nc := dl.NC
+	nc.Username = a.username
+	nc.FriendlyName = a.friendlyName
+	nc.GitUsernames = a.gitUsernames
+
+	switch dl.Kind {
+	case view.DeepLinkBuilds:
+		return a.openView(a.buildsViewFor(nc))
+	case view.DeepLinkStages:
+		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
+			return a.openView(view.NewStageView(a.theme, a.client, a.store, nc, jmodel.Build{Number: nc.Build.Number}))
+		}
+		return a.openView(view.NewMyBuildsView(a.theme, a.client, a.store, nc.AtScope(), a.slowInterval))
+	case view.DeepLinkLogs:
+		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
+			return a.openView(view.NewConsoleView(a.theme, a.client, nc))
+		}
+		return a.openView(view.NewMyConsoleView(a.theme, a.client, a.store, nc.AtScope(), a.slowInterval))
+	case view.DeepLinkJobs:
+		if jl := a.jobListForTarget(nc); jl != nil {
+			return a.openView(jl)
+		}
+		return a, nil
+	}
+	return a, nil
+}
+
 // openView is the "replace current view, refresh breadcrumb, kick off Init"
 // trio used by every command-driven view jump. Centralising the sequence
 // avoids skewed-by-one drift between paths.
@@ -1622,6 +1750,18 @@ func (a *App) jobListForCurrentContext() view.View {
 		}
 		return a.initialView
 	}
+}
+
+// currentContextURL returns the base URL of the currently active Jenkins
+// context, or "" when none is configured. Used by the clipboard deeplink
+// check to validate that a clipboard URL points at this server.
+func (a *App) currentContextURL() string {
+	for _, c := range a.contexts {
+		if c.Name == a.currentContextName {
+			return c.URL
+		}
+	}
+	return ""
 }
 
 // currentContextNC infers the NavigationContext from the active view.

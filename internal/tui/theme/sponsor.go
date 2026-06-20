@@ -16,7 +16,7 @@ var sponsorPublicKey = ed25519.PublicKey{
 	0x47, 0xb1, 0xb2, 0xe3, 0x94, 0x3c, 0x49, 0x15,
 }
 
-// IsSponsor reports whether key is a valid sponsor token for the given Jenkins username.
+// IsSponsor reports whether key is a valid sponsor token for the given username.
 // Generate a token with generate-key.sh (requires the private key).
 func IsSponsor(username, key string) bool {
 	sig, err := hex.DecodeString(key)

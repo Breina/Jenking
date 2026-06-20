@@ -55,7 +55,7 @@ func (sl *StageLogView) SetScopedParent(scope NavigationContext, slowInterval ti
 func NewStageLogView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool) *StageLogView {
 	sl := &StageLogView{
 		BaseView:     NewBaseView(t, client, store, nc, CtxStage),
-		lv:           widget.NewLogViewer(t),
+		lv:           widget.NewLogViewer(t, widget.WithInternalLineCheck(widget.IsInternalLine)),
 		nodeIDs:      nodeIDs,
 		nodes:        make(map[int]*nodeLogState),
 		buildRunning: buildRunning,

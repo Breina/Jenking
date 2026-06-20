@@ -52,7 +52,7 @@ func (cv *ConsoleView) SetScopedParent(scope NavigationContext, slowInterval tim
 func NewConsoleView(t theme.Theme, client jmodel.JenkinsClient, nc NavigationContext) *ConsoleView {
 	cv := &ConsoleView{
 		BaseView: NewBaseView(t, client, nil, nc, CtxBuild),
-		lv:       widget.NewLogViewer(t),
+		lv:       widget.NewLogViewer(t, widget.WithInternalLineCheck(widget.IsInternalLine)),
 		trigger:  newTriggerMixin(t, client, nc),
 	}
 	// build is set lazily by callers; fixedBuildAccessor falls back to nc.Build.Number.

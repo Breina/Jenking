@@ -1,0 +1,51 @@
+{
+  "_class": "org.jenkinsci.plugins.workflow.job.WorkflowRun",
+  "number": 5,
+  "building": true,
+  "actions": [
+    {
+      "_class": "org.jenkinsci.plugins.workflow.support.steps.input.InputAction",
+      "executions": [
+        {
+          "id": "E70be085c8a2a0c2321caa281463a117",
+          "displayName": "Choose deployment options",
+          "settled": false,
+          "input": {
+            "message": "Choose deployment options",
+            "ok": "Deploy",
+            "cancel": "Abort",
+            "submitter": null,
+            "submitterParameter": "APPROVER",
+            "parameters": [
+              {
+                "_class": "hudson.model.StringParameterDefinition",
+                "name": "TARGET",
+                "description": "Deploy target",
+                "defaultParameterValue": {"value": "staging"}
+              },
+              {
+                "_class": "hudson.model.BooleanParameterDefinition",
+                "name": "DRY_RUN",
+                "description": "Dry-run mode",
+                "defaultParameterValue": {"value": true}
+              },
+              {
+                "_class": "hudson.model.ChoiceParameterDefinition",
+                "name": "TIER",
+                "description": "Tier",
+                "choices": ["low", "medium", "high"],
+                "defaultParameterValue": {"value": "low"}
+              },
+              {
+                "_class": "hudson.model.PasswordParameterDefinition",
+                "name": "TOKEN",
+                "description": "Secret token",
+                "defaultParameterValue": {}
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -31,11 +31,17 @@ type ParamForm struct {
 
 // NewParamForm creates a form from parameter definitions.
 func NewParamForm(t theme.Theme, params []jmodel.ParameterDefinition) ParamForm {
+	return NewParamFormWithTitle(t, "Trigger Build", params)
+}
+
+// NewParamFormWithTitle creates a form with a custom popup title — used by
+// flows other than "Trigger Build" (e.g. pipeline `input` step approval).
+func NewParamFormWithTitle(t theme.Theme, title string, params []jmodel.ParameterDefinition) ParamForm {
 	defs := make([]component.Field, len(params))
 	for i, p := range params {
 		defs[i] = paramToField(p)
 	}
-	return ParamForm{form: component.NewPopupForm(t, "Trigger Build", defs)}
+	return ParamForm{form: component.NewPopupForm(t, title, defs)}
 }
 
 func paramToField(p jmodel.ParameterDefinition) component.Field {

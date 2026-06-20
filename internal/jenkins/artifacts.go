@@ -75,3 +75,32 @@ func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int)
 	}
 	return out, nil
 }
+
+// GetArtifactContent downloads the raw bytes of a single artifact. artifactURL
+// is the absolute URL stored on jmodel.Artifact (already includes the host), so
+// it is requested directly rather than through doRequest's baseURL-relative
+// path. Returns the body and the response Content-Type header.
+func (c *Client) GetArtifactContent(ctx context.Context, artifactURL string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, artifactURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("creating artifact request: %w", err)
+	}
+	req.SetBasicAuth(c.username, c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("fetching artifact: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("jenkins API error: GET %s returned %d", artifactURL, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("reading artifact content: %w", err)
+	}
+
+	return string(data), resp.Header.Get("Content-Type"), nil
+}

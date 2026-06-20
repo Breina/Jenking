@@ -14,12 +14,13 @@ import (
 
 // PrefsValues holds all preferences managed by PrefsDialog.
 type PrefsValues struct {
-	Notifications       bool
-	GitUsernames        []string
-	RefreshInterval     time.Duration
-	SlowRefreshInterval time.Duration
-	MaxLogLines         int
-	LogLevel            string // "off" or "debug"
+	Notifications          bool
+	GitUsernames           []string
+	RefreshInterval        time.Duration
+	SlowRefreshInterval    time.Duration
+	MaxLogLines            int
+	LogLevel               string   // "off" or "debug"
+	TextArtifactExtensions []string // extensions that open in the in-TUI viewer
 }
 
 // PrefsStatus is the outcome of a PrefsDialog.Update call.
@@ -44,6 +45,7 @@ const (
 	prefsKeyRefresh       = "refresh_interval"
 	prefsKeySlowRefresh   = "slow_refresh_interval"
 	prefsKeyMaxLogLines   = "max_log_lines"
+	prefsKeyArtifactExts  = "text_artifact_extensions"
 )
 
 // PrefsDialog is a modal form for editing user preferences.
@@ -100,6 +102,11 @@ func NewPrefsDialog(t theme.Theme, v PrefsValues) PrefsDialog {
 			Default:     strconv.Itoa(v.MaxLogLines),
 			Description: "Maximum number of log lines retained in the log viewer.",
 			Validator:   parsePositiveInt,
+		},
+		{
+			Key: prefsKeyArtifactExts, Label: "text artifact extensions", Kind: component.FieldText,
+			Default:     strings.Join(v.TextArtifactExtensions, ", "),
+			Description: "Comma-separated file extensions that open in the in-TUI viewer instead of the browser. Empty restores defaults.",
 		},
 	}
 
@@ -162,13 +169,21 @@ func (d PrefsDialog) collectValues() PrefsValues {
 		}
 	}
 
+	var artifactExts []string
+	for _, s := range strings.Split(v[prefsKeyArtifactExts], ",") {
+		if e := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), ".")); e != "" {
+			artifactExts = append(artifactExts, e)
+		}
+	}
+
 	return PrefsValues{
-		Notifications:       v[prefsKeyNotifications] == "true",
-		GitUsernames:        gitUsernames,
-		RefreshInterval:     refresh,
-		SlowRefreshInterval: slow,
-		MaxLogLines:         maxLog,
-		LogLevel:            v[prefsKeyLogLevel],
+		Notifications:          v[prefsKeyNotifications] == "true",
+		GitUsernames:           gitUsernames,
+		RefreshInterval:        refresh,
+		SlowRefreshInterval:    slow,
+		MaxLogLines:            maxLog,
+		LogLevel:               v[prefsKeyLogLevel],
+		TextArtifactExtensions: artifactExts,
 	}
 }
 

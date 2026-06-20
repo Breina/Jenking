@@ -83,20 +83,20 @@ func ActionRanked(key, action string, rank int) Shortcut {
 
 // Header renders the top panel with connection info and shortcuts.
 type Header struct {
-	theme          theme.Theme
-	url            string
-	user           string
-	jenkinsVersion string
-	appVersion     string // current build version, injected by the caller
-	connected      bool
-	updateVersion  string     // non-empty when a newer version is available
-	shortcuts      []Shortcut // global, always shown
-	viewShortcuts  []Shortcut // context-sensitive, set by app per active view
-	width          int
-	runningCount   int
-	runningKey     string // key letter shown next to count when > 0
-	filterMine     bool
-	debug          bool
+	theme         theme.Theme
+	url           string
+	user          string
+	remoteVersion string
+	appVersion    string // current build version, injected by the caller
+	connected     bool
+	updateVersion string     // non-empty when a newer version is available
+	shortcuts     []Shortcut // global, always shown
+	viewShortcuts []Shortcut // context-sensitive, set by app per active view
+	width         int
+	runningCount  int
+	runningKey    string // key letter shown next to count when > 0
+	filterMine    bool
+	debug         bool
 	// debug counters (only used when debug=true)
 	dbgRenderMs    int64
 	dbgUpdateMs    int64
@@ -105,16 +105,16 @@ type Header struct {
 	dbgViewType    string
 }
 
-// NewHeader creates a new header component. appVersion is the current build
-// version (passed in to keep this package Jenking-agnostic).
-func NewHeader(t theme.Theme, url, user, jenkinsVersion, appVersion string, debug bool) Header {
+// NewHeader creates a new header component. remoteVersion is the server version
+// string shown in the info panel; appVersion is the current build version.
+func NewHeader(t theme.Theme, url, user, remoteVersion, appVersion string, debug bool) Header {
 	return Header{
-		theme:          t,
-		url:            url,
-		user:           user,
-		jenkinsVersion: jenkinsVersion,
-		appVersion:     appVersion,
-		connected:      true,
+		theme:         t,
+		url:           url,
+		user:          user,
+		remoteVersion: remoteVersion,
+		appVersion:    appVersion,
+		connected:     true,
 		shortcuts: []Shortcut{
 			Action(":", "command"),
 		},
@@ -210,7 +210,7 @@ func (h Header) View() string {
 	infoLines := []string{
 		fmt.Sprintf("%s %s", t.Header.Label.Render("       URL:"), t.Header.URL.Render(h.url)),
 		fmt.Sprintf("%s %s", t.Header.Label.Render(monarchLabel), userValue),
-		fmt.Sprintf("%s %s", t.Header.Label.Render("   Jenkins:"), t.Header.Value.Render(h.jenkinsVersion)),
+		fmt.Sprintf("%s %s", t.Header.Label.Render("    Remote:"), t.Header.Value.Render(h.remoteVersion)),
 		h.jenkingVersionLine(t),
 		fmt.Sprintf("%s %s", t.Header.Label.Render("    Status:"), status),
 		fmt.Sprintf("%s %s", t.Header.Label.Render("   Running:"), runningStr),

@@ -21,9 +21,12 @@ import (
 )
 
 // JobsMsg carries fetched jobs to the view.
+// FolderPath identifies which JobList instance this message belongs to so
+// a background fetch for a parent view cannot overwrite a child view's data.
 type JobsMsg struct {
-	Jobs []jmodel.Job
-	Err  error
+	FolderPath string
+	Jobs       []jmodel.Job
+	Err        error
 }
 
 // typeIcon returns a single icon character for the job type, respecting theme overrides.
@@ -150,23 +153,16 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 		if !ok {
 			return NavigationContext{}, jmodel.Build{}, false
 		}
-		nc := jl.jobNC(j).AtBuild(j.LastBuild.Number)
+		nc := jl.jobNC(j)
+		nc.Level = CtxBuild
+		nc.Build = NavBuildRef{IsLast: true}
 		return nc, jmodel.Build{
 			Number: j.LastBuild.Number,
 			Status: jenkins.ColorToBuildStatus(j.Color),
 		}, true
 	}
-	// navigate pushes the test/artifact child on top of a freshly-constructed
-	// BuildsView for the selected job so ESC lands the user on the build list
-	// they conceptually drilled into.
 	navigate := func(child View) tea.Cmd {
-		j, ok := selectedJob()
-		if !ok {
-			return pushTo(child)
-		}
-		branchNC := jl.jobNC(j)
-		bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
-		return func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
+		return pushTo(child)
 	}
 	storeFn := func() *cache.Store { return jl.store }
 	jl.trigger = newTriggerMixin(t, client, NavigationContext{})
@@ -181,24 +177,29 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 	// + gating into its closure; host.HandleKey consumes the key before the
 	// view's own switch sees it, and host.AppendShortcuts contributes the
 	// header entry — gated on accessor ok so unavailable actions disappear.
-	// `l` and `d` reuse `selectedJob` (requires non-container + LastBuild);
-	// `s` and `b` use looser lookups (selectedNonContainer / selectedMultibranch).
+	// `l` and `d` reuse `selectedJob` (requires non-container + LastBuild).
 	jl.host.Add(widget.NewNavBehavior("l", "full log", func() (tea.Cmd, bool) {
-		j, ok := selectedJob()
+		j, ok := jl.selectedNonFolder()
 		if !ok {
 			return nil, false
 		}
-		return jl.openLogCmd(j), true
+		nc := jl.jobNC(j)
+		return func() tea.Msg { return OpenScopedConsoleMsg{NC: nc} }, true
 	}).WithRank(rankViewFullLog))
 	jl.host.Add(widget.NewNavBehavior("d", "describe", func() (tea.Cmd, bool) {
 		j, ok := selectedJob()
 		if !ok {
 			return nil, false
 		}
-		return jl.openDescribeCmd(j), true
+		nc := jl.jobNC(j)
+		nc.Level = CtxBuild
+		nc.Build = NavBuildRef{IsLast: true}
+		build := jmodel.Build{Number: j.LastBuild.Number}
+		child := NewDescribeView(jl.theme, jl.client, jl.store, nc, build)
+		return func() tea.Msg { return PushViewMsg{View: child} }, true
 	}).WithRank(rankViewDescribe))
 	jl.host.Add(widget.NewNavBehavior("s", "stages", func() (tea.Cmd, bool) {
-		j, ok := jl.selectedNonContainer()
+		j, ok := jl.selectedNonFolder()
 		if !ok {
 			return nil, false
 		}
@@ -217,17 +218,16 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 	return jl
 }
 
-// selectedNonContainer returns the job under the cursor, gated on the row
-// being a real job (not a folder or multibranch project). Used by the stages
-// navigation behavior which works on any pipeline/freestyle row even without
-// a LastBuild — selectedJob is stricter and excludes LastBuild==nil.
-func (jl *JobList) selectedNonContainer() (jmodel.Job, bool) {
+// selectedNonFolder returns the job under the cursor for any job that can
+// produce builds — non-containers (pipeline/freestyle) and multibranch projects.
+// Pure folders are excluded because they have no build history.
+func (jl *JobList) selectedNonFolder() (jmodel.Job, bool) {
 	di := jl.dataIndex(jl.table.Cursor())
 	if di < 0 || di >= len(jl.jobs) {
 		return jmodel.Job{}, false
 	}
 	j := jl.jobs[di]
-	if isContainer(j.Type) {
+	if j.Type == jmodel.JobTypeFolder {
 		return jmodel.Job{}, false
 	}
 	return j, true
@@ -245,27 +245,6 @@ func (jl *JobList) selectedMultibranch() (jmodel.Job, bool) {
 		return jmodel.Job{}, false
 	}
 	return j, true
-}
-
-// openLogCmd builds the two-view push (BuildsView + ConsoleView) so ESC lands
-// on the build list the user conceptually drilled into.
-func (jl *JobList) openLogCmd(j jmodel.Job) tea.Cmd {
-	nc := jl.jobNC(j)
-	childNC := nc.AtBuild(j.LastBuild.Number)
-	bv := NewBuildsView(jl.theme, jl.client, jl.store, nc, NewBranchBuildsProvider(jl.client, jl.store, nc))
-	child := NewConsoleView(jl.theme, jl.client, childNC)
-	child.store = jl.store
-	return func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
-}
-
-// openDescribeCmd builds the two-view push (BuildsView + DescribeView).
-func (jl *JobList) openDescribeCmd(j jmodel.Job) tea.Cmd {
-	branchNC := jl.jobNC(j)
-	nc := branchNC.AtBuild(j.LastBuild.Number)
-	build := jmodel.Build{Number: j.LastBuild.Number}
-	bv := NewBuildsView(jl.theme, jl.client, jl.store, branchNC, NewBranchBuildsProvider(jl.client, jl.store, branchNC))
-	child := NewDescribeView(jl.theme, jl.client, jl.store, nc, build)
-	return func() tea.Msg { return PushViewsMsg{Views: []View{bv, child}} }
 }
 
 func (jl *JobList) ApplySearch(pattern string) tea.Cmd {
@@ -331,11 +310,12 @@ func (jl *JobList) Init() tea.Cmd {
 }
 
 func (jl *JobList) fetchJobs() tea.Msg {
-	jobs, err := jl.client.ListJobs(jl.ctx, jl.folderPath)
+	fp := jl.folderPath
+	jobs, err := jl.client.ListJobs(jl.ctx, fp)
 	if jl.ctx.Err() != nil {
 		return nil
 	}
-	return JobsMsg{Jobs: jobs, Err: err}
+	return JobsMsg{FolderPath: fp, Jobs: jobs, Err: err}
 }
 
 func (jl *JobList) refreshInterval() time.Duration {
@@ -439,6 +419,9 @@ func (jl *JobList) jobStatusText(j jmodel.Job) string {
 			fmt.Sprintf("%s %d running", iconOr(jl.theme.Icons.StatusRunning, "●"), j.RunningCount))
 	case j.RunningCount == 1:
 		if jenkins.ColorToBuildStatus(j.Color) == jmodel.BuildStatusRunning && j.LastBuild != nil {
+			if isBuildPausedOnInput(jl.store, j.FullPath, j.LastBuild.Number) {
+				return renderStatus(jl.theme, jmodel.BuildStatusPausedInput)
+			}
 			elapsed := time.Since(j.LastBuild.Timestamp)
 			return renderRunningStatus(jl.theme, jl.progressBar, colStatusWidth, elapsed, j.LastBuild.EstimatedDuration)
 		}
@@ -522,6 +505,9 @@ func (jl *JobList) maybeFetchSelected() tea.Cmd {
 	if jl.store.Artifacts.Get(key) == nil {
 		cmds = append(cmds, fetchArtifacts(jl.client, jl.store, selected.FullPath, selected.LastBuild.Number))
 	}
+	if selected.RunningCount > 0 && jl.store.PendingInputs.Get(key) == nil {
+		cmds = append(cmds, fetchPendingInputs(jl.client, jl.store, selected.FullPath, selected.LastBuild.Number))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -586,6 +572,9 @@ func (jl *JobList) handleRunningBuildsUpdated(msg RunningBuildsUpdatedMsg) tea.C
 }
 
 func (jl *JobList) handleJobsMsg(msg JobsMsg) tea.Cmd {
+	if msg.FolderPath != jl.folderPath {
+		return nil
+	}
 	if msg.Err != nil {
 		return func() tea.Msg { return ErrorMsg{Err: msg.Err} }
 	}

@@ -94,12 +94,19 @@ func (f *fakeClient) GetTestReport(ctx context.Context, jobPath string, n int) (
 func (f *fakeClient) GetArtifacts(_ context.Context, _ string, _ int) ([]jmodel.Artifact, error) {
 	return nil, nil
 }
+func (f *fakeClient) GetArtifactContent(_ context.Context, _ string) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeClient) TriggerBuild(_ context.Context, _ string, _ map[string]string) error {
 	return nil
 }
 func (f *fakeClient) ReplayBuild(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeClient) CancelBuild(_ context.Context, _ string, _ int) error           { return nil }
-func (f *fakeClient) WhoAmI(_ context.Context) (*jmodel.User, error)                 { return nil, nil }
+func (f *fakeClient) ProceedInput(_ context.Context, _ string, _ int, _ string, _ map[string]string) error {
+	return nil
+}
+func (f *fakeClient) AbortInput(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (f *fakeClient) WhoAmI(_ context.Context) (*jmodel.User, error)                { return nil, nil }
 
 func TestDiffSnapshotComputesArrivalsAndDepartures(t *testing.T) {
 	prev := map[string]jmodel.UserBuild{
@@ -200,5 +207,31 @@ func TestCompletionCmdsPropagatesGetBuildError(t *testing.T) {
 	}
 	if bcm.JobPath != "j" || bcm.Number != 7 {
 		t.Fatalf("identity lost on error path: %+v", bcm)
+	}
+}
+
+// A failed poll must surface a ConnectionLostMsg (so the app can mark itself
+// disconnected) and keep polling, rather than silently rescheduling.
+func TestHandleMsgPollErrorEmitsConnectionLost(t *testing.T) {
+	wantErr := errors.New("executing request: connection refused")
+	m := NewRunningBuildsMonitor(&fakeClient{}, nil)
+
+	handled, cmds := m.HandleMsg(monitorPollMsg{err: wantErr})
+	if !handled {
+		t.Fatal("expected poll error to be handled")
+	}
+	if len(cmds) != 2 {
+		t.Fatalf("len(cmds) = %d, want 2 (connection-lost + reschedule)", len(cmds))
+	}
+	clm, ok := cmds[0]().(navmsg.ConnectionLostMsg)
+	if !ok {
+		t.Fatalf("expected first cmd to emit ConnectionLostMsg, got %T", cmds[0]())
+	}
+	if !errors.Is(clm.Err, wantErr) {
+		t.Fatalf("Err = %v, want %v", clm.Err, wantErr)
+	}
+	// Second cmd is the reschedule tick; it must keep the poll loop alive.
+	if _, ok := cmds[1]().(monitorTickMsg); !ok {
+		t.Fatalf("expected second cmd to emit monitorTickMsg, got %T", cmds[1]())
 	}
 }

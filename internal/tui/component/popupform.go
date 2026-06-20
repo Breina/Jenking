@@ -119,6 +119,7 @@ func newPopupField(t theme.Theme, def Field, contentW int) popupField {
 		}
 	default: // FieldText, FieldPassword
 		ti := textinput.New()
+		ti.Prompt = ""
 		ti.CharLimit = 512
 		ti.Width = textInputWidth(contentW)
 		ti.TextStyle = t.Popup.Normal
@@ -137,7 +138,9 @@ func newPopupField(t theme.Theme, def Field, contentW int) popupField {
 }
 
 func textInputWidth(contentW int) int {
-	w := contentW - 4
+	// The textinput View() renders Width+1 visible chars (cursor-padding invariant
+	// in bubbles v1), so leave room for the 4-char indent + that extra char.
+	w := contentW - 5
 	if w < 10 {
 		w = 10
 	}
@@ -502,7 +505,12 @@ func (pf PopupForm) renderTextValue(f popupField, active bool, st popupStyles) s
 		return "    " + f.textInput.View()
 	}
 	if v := f.stringVal; v != "" {
-		return "    " + v
+		wrapped := wrapText(v, pf.contentW-4)
+		out := make([]string, len(wrapped))
+		for i, l := range wrapped {
+			out[i] = "    " + l
+		}
+		return strings.Join(out, "\n")
 	}
 	return "    " + st.hint.Render("(empty)")
 }

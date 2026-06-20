@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
@@ -24,12 +25,21 @@ type Client struct {
 
 // NewClient creates a new Jenkins API client.
 func NewClient(baseURL, username, token string, insecure bool) *Client {
-	// Re-attach Basic Auth on every redirect. Go strips the Authorization header
-	// by default, which causes an infinite redirect loop when Jenkins responds
-	// with a relative redirect to securityRealm/commenceLogin.
+	// Re-attach Basic Auth on same-host redirects. Go strips the Authorization
+	// header by default, which causes an infinite redirect loop when Jenkins
+	// responds with a relative redirect to securityRealm/commenceLogin.
+	//
+	// Only reattach when the redirect stays on the original host. When Jenkins
+	// is configured with a "Resource Root URL", artifact requests redirect to a
+	// separate domain with a signed token in the URL; that server authorizes via
+	// the token and rejects requests carrying credentials with HTTP 400, so we
+	// must let Go's default header-stripping stand for cross-host hops.
 	reattachAuth := func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if !strings.EqualFold(req.URL.Host, via[0].URL.Host) {
+			return nil
 		}
 		if u, p, ok := via[0].BasicAuth(); ok {
 			req.SetBasicAuth(u, p)
@@ -48,6 +58,19 @@ func NewClient(baseURL, username, token string, insecure bool) *Client {
 		token:      token,
 		httpClient: httpClient,
 	}
+}
+
+// HTTPError is returned for non-2xx responses that aren't auth- or
+// redirect-related, carrying the status code so callers can react to it
+// (e.g. enrich a 404 with context) via errors.As.
+type HTTPError struct {
+	StatusCode int
+	Method     string
+	Path       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("HTTP %d: %s %s", e.StatusCode, e.Method, e.Path)
 }
 
 // doRequest builds and executes an HTTP request with Basic Auth.
@@ -75,7 +98,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body io.Rea
 		case http.StatusFound, http.StatusMovedPermanently:
 			return nil, fmt.Errorf("unexpected redirect to %s — check server URL and credentials: %s %s", resp.Header.Get("Location"), method, path)
 		default:
-			return nil, fmt.Errorf("HTTP %d: %s %s", resp.StatusCode, method, path)
+			return nil, &HTTPError{StatusCode: resp.StatusCode, Method: method, Path: path}
 		}
 	}
 

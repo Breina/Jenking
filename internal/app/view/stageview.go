@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -28,11 +27,12 @@ const (
 
 // stageRefreshMsg carries the result of a periodic stage refresh.
 type stageRefreshMsg struct {
-	stages       []jmodel.Stage
-	build        *jmodel.Build // official build status from Jenkins API
-	err          error
-	logChunk     string // incremental console log chunk for when-skip detection
-	logNextStart int    // byte offset for next progressive fetch
+	stages        []jmodel.Stage
+	build         *jmodel.Build // official build status from Jenkins API
+	pendingInputs []jmodel.PendingInput
+	err           error
+	logChunk      string // incremental console log chunk for when-skip detection
+	logNextStart  int    // byte offset for next progressive fetch
 }
 
 // stageProgressTickMsg triggers a re-render for smooth progress bar animation.
@@ -59,8 +59,9 @@ type whenSkipDetectedMsg struct {
 
 // buildDetailMsg carries the result of a build detail fetch.
 type buildDetailMsg struct {
-	build jmodel.Build
-	err   error
+	build         jmodel.Build
+	pendingInputs []jmodel.PendingInput
+	err           error
 }
 
 // StageView shows the pipeline stages of a single build.
@@ -125,7 +126,13 @@ type StageView struct {
 	// are owned by behaviors registered on host. The trigger machinery lives
 	// in triggerMixin; the behavior wrapper delegates host-callable parts.
 	trigger triggerMixin
+	input   *inputBehavior // pipeline `input` step approval
 	host    widget.BehaviorHost
+
+	// pendingInputs is the latest snapshot of input steps awaiting decision.
+	// Sourced from BuildDetail.PendingInputs on every detail/refresh tick;
+	// drives ApplyPendingInputs (stage rendering) and the Enter shortcut.
+	pendingInputs []jmodel.PendingInput
 }
 
 func NewStageView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, build jmodel.Build) *StageView {
@@ -152,7 +159,84 @@ func NewStageView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store
 // (artifact, test, cancel, trigger) onto this view's host. Called by both
 // stage-view constructors so the wiring lives in one place.
 func (sv *StageView) registerBehaviors() {
+	sv.input = newInputBehavior(sv.theme, sv.client, sv.resolveFocusedInput, sv.dropPendingInput)
+	sv.host.Add(sv.input)
+	sv.host.Add(inputAbortShortcut{b: sv.input})
 	addFixedBuildActions(&sv.host, sv.theme, sv.client, &sv.nc, &sv.build, &sv.store, &sv.trigger, swapTo)
+}
+
+// dropPendingInput removes the resolved input from the local snapshot and
+// rebuilds stage status, so the paused-input badge disappears immediately
+// after a successful proceed/abort instead of waiting for the next refresh
+// tick. Persists the trimmed list to the cache too.
+func (sv *StageView) dropPendingInput(inputID string) {
+	if inputID == "" {
+		return
+	}
+	filtered := make([]jmodel.PendingInput, 0, len(sv.pendingInputs))
+	for _, p := range sv.pendingInputs {
+		if p.ID != inputID {
+			filtered = append(filtered, p)
+		}
+	}
+	sv.pendingInputs = filtered
+	sv.recomputeStageStatusForInputs()
+	sv.populateTable()
+	sv.cachePendingInputs(filtered)
+}
+
+// recomputeStageStatusForInputs re-projects pendingInputs onto stage statuses.
+// Stages previously flipped to PausedInput must revert to Running when their
+// input is gone; ApplyPendingInputs only flips forward, so we reset first.
+func (sv *StageView) recomputeStageStatusForInputs() {
+	for i := range sv.stages {
+		if sv.stages[i].Status == jmodel.BuildStatusPausedInput {
+			sv.stages[i].Status = jmodel.BuildStatusRunning
+		}
+	}
+	jmodel.ApplyPendingInputs(sv.stages, sv.pendingInputs)
+}
+
+// resolveFocusedInput returns the pending input that matches the currently
+// focused stage, if any. Used by inputBehavior to drive Enter handling and
+// the Shortcut gate.
+func (sv *StageView) resolveFocusedInput() (jmodel.PendingInput, NavigationContext, int, bool) {
+	if len(sv.pendingInputs) == 0 {
+		return jmodel.PendingInput{}, NavigationContext{}, 0, false
+	}
+	realIdx := sv.realStageIdx(sv.table.Cursor())
+	if realIdx < 0 || realIdx >= len(sv.stages) {
+		return jmodel.PendingInput{}, NavigationContext{}, 0, false
+	}
+	if sv.stages[realIdx].Status != jmodel.BuildStatusPausedInput {
+		return jmodel.PendingInput{}, NavigationContext{}, 0, false
+	}
+	pi := sv.pickPendingInputForStage(realIdx)
+	if pi == nil {
+		return jmodel.PendingInput{}, NavigationContext{}, 0, false
+	}
+	return *pi, sv.nc, sv.build.Number, true
+}
+
+// pickPendingInputForStage picks which pending input belongs to the focused
+// stage. Jenkins does not expose a flow-node id on the InputAction, so for
+// the single-input case we return that one input. With multiple parallel
+// inputs we pick by index of the paused stage among paused stages — best
+// effort until we can correlate node ids properly.
+func (sv *StageView) pickPendingInputForStage(stageIdx int) *jmodel.PendingInput {
+	if len(sv.pendingInputs) == 1 {
+		return &sv.pendingInputs[0]
+	}
+	pausedOrder := 0
+	for i := 0; i < stageIdx; i++ {
+		if sv.stages[i].Status == jmodel.BuildStatusPausedInput {
+			pausedOrder++
+		}
+	}
+	if pausedOrder >= len(sv.pendingInputs) {
+		return &sv.pendingInputs[0]
+	}
+	return &sv.pendingInputs[pausedOrder]
 }
 
 // NewPendingStageView creates a StageView that waits for Jenkins to create
@@ -224,6 +308,7 @@ func (sv *StageView) Init() tea.Cmd {
 		return sv.pollForNewBuild()
 	}
 	sv.syncBuildDetailCache()
+	sv.restorePendingInputsCache()
 	if len(sv.stages) > 0 {
 		return sv.initReentry()
 	}
@@ -251,6 +336,19 @@ func (sv *StageView) syncBuildDetailCache() {
 	}
 	slog.Debug("stageview.Init: caching build", "status", sv.build.Status, "key", sv.stageCacheKey())
 	sv.store.BuildDetail.Put(sv.stageCacheKey(), sv.build)
+}
+
+// restorePendingInputsCache seeds sv.pendingInputs from the store cache so
+// the paused-input badge renders on first paint when re-entering the view,
+// without waiting for the next 2 s build-detail tick.
+func (sv *StageView) restorePendingInputsCache() {
+	if sv.store == nil {
+		return
+	}
+	if e := sv.store.PendingInputs.Get(sv.stageCacheKey()); e != nil {
+		sv.pendingInputs = e.Value
+		sv.recomputeStageStatusForInputs()
+	}
 }
 
 // initReentry handles the path where stages are already loaded (returning
@@ -286,7 +384,11 @@ func (sv *StageView) initFromCachedStages() (tea.Cmd, bool) {
 	sv.setInitialCursorFromCache()
 
 	cmds := []tea.Cmd{sv.fetchStages, sv.preview.UpdateForCursor(sv.previewIdxForCursor(sv.table.Cursor()), sv.stages)}
-	if sv.build.Status == "" {
+	if sv.build.Status == "" || sv.isRunning() {
+		// For running builds we kick a build-detail fetch up front so the
+		// PendingInputs snapshot arrives in ~200ms — without it the top bar
+		// and stage rows briefly show progress before the first refresh tick
+		// (2s later) flips them to Paused.
 		cmds = append(cmds, sv.fetchBuildDetail())
 	}
 	if sv.isRunning() {
@@ -318,7 +420,9 @@ func (sv *StageView) initFresh() tea.Cmd {
 		sv.fetchStages,
 		sv.preview.UpdateForCursor(pipelinePreviewIdx, sv.stages),
 	}
-	if sv.build.Status == "" {
+	if sv.build.Status == "" || sv.build.Status == jmodel.BuildStatusRunning {
+		// See initFromCachedStages: a fresh fetch surfaces PendingInputs
+		// quickly so the paused indicator paints on first refresh, not 2s in.
 		cmds = append(cmds, sv.fetchBuildDetail())
 	}
 	if sv.build.Status == jmodel.BuildStatusRunning {
@@ -362,7 +466,7 @@ func (sv *StageView) fetchBuildDetail() tea.Cmd {
 			}
 			return buildDetailMsg{err: err}
 		}
-		return buildDetailMsg{build: detail.Build}
+		return buildDetailMsg{build: detail.Build, pendingInputs: detail.PendingInputs}
 	}
 }
 
@@ -450,8 +554,10 @@ func (sv *StageView) scheduleRefresh() tea.Cmd {
 		// stage data flowing than to abort the whole tick on a transient
 		// build-detail error.
 		var build *jmodel.Build
+		var pending []jmodel.PendingInput
 		if detail, berr := client.GetBuild(ctx, jobPath, buildNumber); berr == nil {
 			build = &detail.Build
+			pending = detail.PendingInputs
 		} else {
 			slog.Warn("stageview.refresh: GetBuild failed", "job", jobPath, "build", buildNumber, "err", berr)
 		}
@@ -462,7 +568,7 @@ func (sv *StageView) scheduleRefresh() tea.Cmd {
 			logChunk = pl.Text
 			logNext = pl.NextStart
 		}
-		return stageRefreshMsg{stages: stages, build: build, err: err, logChunk: logChunk, logNextStart: logNext}
+		return stageRefreshMsg{stages: stages, build: build, pendingInputs: pending, err: err, logChunk: logChunk, logNextStart: logNext}
 	}
 }
 
@@ -679,6 +785,7 @@ func (sv *StageView) applyRefreshState(msg stageRefreshMsg) {
 		sv.currentSkipOccs = jenkins.ParseSkippedStages(sv.consoleSkipText)
 	}
 	jenkins.MarkSkipped(sv.stages, sv.currentSkipOccs)
+	sv.setPendingInputs(msg.pendingInputs)
 	sv.computeGhostValidity()
 	sv.populateTable()
 }
@@ -748,6 +855,7 @@ func (sv *StageView) handleBuildDetail(msg buildDetailMsg) tea.Cmd {
 		return nil
 	}
 	sv.setBuild(msg.build)
+	sv.setPendingInputs(msg.pendingInputs)
 	sv.populateTable()
 	// Jenkins sometimes reports a terminal status before it has written the
 	// final Duration. Retry (bounded) until the duration materialises.
@@ -757,6 +865,55 @@ func (sv *StageView) handleBuildDetail(msg buildDetailMsg) tea.Cmd {
 		return sv.scheduleBuildDetailRetry()
 	}
 	return nil
+}
+
+// setPendingInputs updates the pending-inputs snapshot, re-projects stage
+// status, and lets the input behavior auto-close its dialog when the input
+// is no longer pending. Persists to the store cache so subsequent visits to
+// this view see the paused state on first render rather than after the next
+// 2 s refresh tick.
+func (sv *StageView) setPendingInputs(pending []jmodel.PendingInput) {
+	sv.pendingInputs = pending
+	sv.recomputeStageStatusForInputs()
+	if sv.input != nil {
+		sv.input.SyncPending(pending)
+	}
+	sv.cachePendingInputs(pending)
+}
+
+// cachePendingInputs writes the snapshot under the branch's own cache key
+// and under each ancestor path with the same build number. Parent joblist
+// rows look up `<ancestorPath>:<buildNum>` where buildNum is the parent's
+// rolled-up lastBuild number — for a paused branch build this matches the
+// rolled-up number, letting the multibranch / folder row render the paused
+// badge without an extra HTTP call.
+func (sv *StageView) cachePendingInputs(pending []jmodel.PendingInput) {
+	if sv.store == nil || sv.store.PendingInputs == nil {
+		return
+	}
+	for path := sv.nc.JobPath(); path != ""; path = parentJobPath(path) {
+		sv.store.PendingInputs.Put(fmt.Sprintf("%s:%d", path, sv.build.Number), pending)
+	}
+}
+
+// parentJobPath returns the parent of a slash-separated job path, or "" when
+// jobPath has no parent. The path keeps URL-encoded segments intact ("%2F"
+// stays as one segment — splitting is by literal "/").
+func parentJobPath(jobPath string) string {
+	idx := indexLastSlash(jobPath)
+	if idx <= 0 {
+		return ""
+	}
+	return jobPath[:idx]
+}
+
+func indexLastSlash(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
 }
 
 // handleBuildCompleted is delivered by RunningBuildsMonitor within ~1s of the
@@ -847,7 +1004,9 @@ func (sv *StageView) openSelectedStage() (tea.Model, tea.Cmd, bool) {
 	if realIdx >= 0 && realIdx < len(sv.stages) {
 		stage := sv.stages[realIdx]
 		if len(stage.NodeIDs) > 0 {
-			child := NewStageLogViewWithBuild(sv.theme, sv.client, sv.store, sv.nc.AtStage(stage.Name), stage.NodeIDs, sv.build.Status == jmodel.BuildStatusRunning, sv.build)
+			stageNC := sv.nc.AtStage(stage.Name)
+			stageNC.StageParent = parentStageName(sv.stages, realIdx)
+			child := NewStageLogViewWithBuild(sv.theme, sv.client, sv.store, stageNC, stage.NodeIDs, sv.build.Status == jmodel.BuildStatusRunning, sv.build)
 			return sv, func() tea.Msg { return PushViewMsg{View: child} }, true
 		}
 	}
@@ -1061,17 +1220,34 @@ func (sv *StageView) populateTable() {
 func (sv *StageView) pipelineRow() component.Row {
 	return component.Row{
 		"▸ Pipeline",
-		renderStatus(sv.theme, sv.build.Status),
+		renderStatus(sv.theme, sv.effectiveBuildStatus()),
 		sv.pipelineDurationCell(),
 	}
 }
 
-// pipelineDurationCell renders the pipeline duration with progress bar when running.
+// effectiveBuildStatus promotes Running → PausedInput when the build has any
+// pending input. Lets the Pipeline row + status badge reflect "waiting for
+// human" without storing a separate flag.
+func (sv *StageView) effectiveBuildStatus() jmodel.BuildStatus {
+	if sv.build.Status == jmodel.BuildStatusRunning && len(sv.pendingInputs) > 0 {
+		return jmodel.BuildStatusPausedInput
+	}
+	return sv.build.Status
+}
+
+// pipelineDurationCell renders the pipeline duration. While running, the
+// duration counter keeps advancing as plain elapsed text instead of the
+// progress bar when the build is paused on input — the paused state is
+// signalled by the status column and the top bar, leaving the duration
+// column as a plain wall-clock counter the user can trust.
 func (sv *StageView) pipelineDurationCell() string {
 	if sv.build.Status != jmodel.BuildStatusRunning {
 		return formatDuration(sv.build.Duration)
 	}
 	elapsed := time.Since(sv.build.Timestamp)
+	if len(sv.pendingInputs) > 0 {
+		return formatDuration(elapsed)
+	}
 	if estimate := sv.effectiveEstimate(); estimate > 0 {
 		return sv.progressBar.DualRenderWithText(colStageDurationWidth, elapsed, estimate)
 	}
@@ -1099,7 +1275,20 @@ func stageIcon(s jmodel.Stage) string {
 
 // stageDurationCell formats the duration cell, using wall-clock interpolation
 // for running stages so Jenkins' coarse Duration jumps don't make the bar leap.
+// Paused-input stages render as plain elapsed text (no progress bar) — the
+// "Input" label lives in the status column.
 func (sv *StageView) stageDurationCell(i int, s jmodel.Stage) string {
+	if s.Status == jmodel.BuildStatusPausedInput {
+		if sv.stageStartWall == nil {
+			sv.stageStartWall = make(map[int]time.Time)
+		}
+		start, ok := sv.stageStartWall[i]
+		if !ok {
+			start = time.Now().Add(-s.Duration)
+			sv.stageStartWall[i] = start
+		}
+		return formatDuration(time.Since(start))
+	}
 	if s.Status != jmodel.BuildStatusRunning {
 		return formatDuration(s.Duration)
 	}
@@ -1156,122 +1345,6 @@ func (sv *StageView) markSkippedDisabled(disabled map[int]bool) map[int]bool {
 	return disabled
 }
 
-// pipelineTreePrefix wraps buildTreePrefix with an extra root level so all
-// stages appear as children of the synthetic Pipeline row.
-func pipelineTreePrefix(stages []jmodel.Stage, idx int) string {
-	s := stages[idx]
-
-	// Is this the last depth-0 stage (or nested under the last depth-0)?
-	lastTopLevel := true
-	for j := idx + 1; j < len(stages); j++ {
-		if stages[j].Depth == 0 {
-			lastTopLevel = false
-			break
-		}
-	}
-
-	var rootConnector string
-	if s.Depth == 0 {
-		if lastTopLevel {
-			rootConnector = "└─"
-		} else {
-			rootConnector = "├─"
-		}
-		return rootConnector
-	}
-
-	// For nested stages, prepend the Pipeline continuation line.
-	var pipelineCont string
-	if lastTopLevel {
-		pipelineCont = "  " // Pipeline branch ended
-	} else {
-		pipelineCont = "│ " // Pipeline branch continues
-	}
-	return pipelineCont + buildTreePrefix(stages, idx)
-}
-
-// buildTreePrefix generates tree-drawing characters for a stage.
-// Parallel branches use heavy box-drawing (┃, ┣━, ┗━) to visually
-// distinguish them from sequential branches (│, ├─, └─).
-func buildTreePrefix(stages []jmodel.Stage, idx int) string {
-	s := stages[idx]
-	if s.Depth == 0 {
-		return ""
-	}
-	isLast := !hasSiblingAfter(stages, idx, s.Depth)
-	parentIsParallel := isParentParallel(stages, idx)
-
-	var buf strings.Builder
-	for d := 1; d < s.Depth; d++ {
-		if hasSiblingAfter(stages, idx, d) {
-			if isAncestorParentParallel(stages, idx, d) {
-				buf.WriteString("┃ ")
-			} else {
-				buf.WriteString("│ ")
-			}
-		} else {
-			buf.WriteString("  ")
-		}
-	}
-	buf.WriteString(treeBranchGlyph(parentIsParallel, isLast))
-	return buf.String()
-}
-
-// hasSiblingAfter returns true when stages[idx+1:] still contains a stage at
-// exactly the given depth before falling below it — meaning the row at idx
-// is not the last sibling at that depth.
-func hasSiblingAfter(stages []jmodel.Stage, idx, depth int) bool {
-	for j := idx + 1; j < len(stages); j++ {
-		if stages[j].Depth < depth {
-			return false
-		}
-		if stages[j].Depth == depth {
-			return true
-		}
-	}
-	return false
-}
-
-// treeBranchGlyph returns the leaf box-drawing glyph for a stage row. Parallel
-// branches use the heavy variant (┗━/┣━) to set them apart from sequential
-// branches (└─/├─). isLast picks the leaf-terminator over the tee.
-func treeBranchGlyph(parallel, isLast bool) string {
-	switch {
-	case parallel && isLast:
-		return "┗━"
-	case parallel:
-		return "┣━"
-	case isLast:
-		return "└─"
-	default:
-		return "├─"
-	}
-}
-
-// isParentParallel checks if the direct parent stage of stages[idx] is parallel.
-func isParentParallel(stages []jmodel.Stage, idx int) bool {
-	for j := idx - 1; j >= 0; j-- {
-		if stages[j].Depth < stages[idx].Depth {
-			return stages[j].Depth == stages[idx].Depth-1 && stages[j].Parallel
-		}
-	}
-	return false
-}
-
-// isAncestorParentParallel checks if the ancestor at the given depth
-// has a parallel parent.
-func isAncestorParentParallel(stages []jmodel.Stage, idx, depth int) bool {
-	for j := idx - 1; j >= 0; j-- {
-		if stages[j].Depth < depth {
-			break
-		}
-		if stages[j].Depth == depth {
-			return isParentParallel(stages, j)
-		}
-	}
-	return false
-}
-
 const stageBarHeight = 3
 
 func (sv *StageView) View() string {
@@ -1291,10 +1364,13 @@ func (sv *StageView) View() string {
 			barWidth = 1
 		}
 		var bar string
-		estimate := sv.effectiveEstimate()
-		if estimate > 0 {
-			bar = sv.progressBar.RenderWithTextTall(barWidth, elapsed, estimate)
-		} else {
+		switch {
+		case len(sv.pendingInputs) > 0:
+			label := iconOr(sv.theme.Icons.StatusPausedInput, "⏸") + " " + sv.pausedBarLabel()
+			bar = sv.progressBar.RenderCompleteTall(barWidth, label, sv.theme.BuildStatus.PausedInput)
+		case sv.effectiveEstimate() > 0:
+			bar = sv.progressBar.RenderWithTextTall(barWidth, elapsed, sv.effectiveEstimate())
+		default:
 			bar = sv.progressBar.RenderPendingTall(barWidth, "First run - no estimate")
 		}
 		content = bar + "\n" + sv.table.View()
@@ -1310,6 +1386,16 @@ func (sv *StageView) View() string {
 
 func (sv *StageView) PopupView() string {
 	return sv.host.PopupView()
+}
+
+// pausedBarLabel returns the centre label for the paused top bar, naming the
+// pending input's message when there is exactly one (single confirm-only or
+// parameterised input) and falling back to a generic label otherwise.
+func (sv *StageView) pausedBarLabel() string {
+	if len(sv.pendingInputs) == 1 && sv.pendingInputs[0].Message != "" {
+		return "Paused — " + sv.pendingInputs[0].Message
+	}
+	return "Paused — awaiting input"
 }
 
 // renderFinishedBar renders a static full-width bar for a completed build.

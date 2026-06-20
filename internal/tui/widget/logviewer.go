@@ -33,6 +33,12 @@ var (
 	urlRe = regexp.MustCompile(`https?://[^\s]+`)
 	// Covers CSI sequences (\x1b[...X) and other ESC two-char sequences.
 	ansiRe = regexp.MustCompile(`\x1b(?:[@-Z\\-_]|\[[0-9;?]*[@-~])`)
+	// Matches an ANSI hidden-text block: \x1b[8m...\x1b[0m. Jenkins embeds
+	// base64-encoded XStream metadata between these markers (e.g. inside the
+	// `input` step log). Must be stripped BEFORE the generic ANSI strip so the
+	// hidden content does not bleed into the surrounding plain text — when it
+	// does, xstreamRe can't find a boundary and consumes adjacent words.
+	ansiHiddenBlockRe = regexp.MustCompile("\x1b\\[8m[^\x1b]*\x1b\\[0m")
 	// Matches a Jenkins XStream object reference (serialised Java object).
 	xstreamRe = regexp.MustCompile(`ha:////[A-Za-z0-9+/=]+`)
 	// Matches a line that consists ENTIRELY of one or more xstream refs (plus optional whitespace).
@@ -73,6 +79,10 @@ type LineRenderFn func(dl DisplayLine, wrap bool, hOffset, width int, searchRe *
 // ClassifyFn supplies a LineKind for a raw line. Set via WithClassifier when
 // classification comes from external data (e.g. validation issues by line number).
 type ClassifyFn func(rawIdx int, raw string) LineKind
+
+// InternalLineFn reports whether a raw line is "internal" noise that should be
+// hidden by default. Set via WithInternalLineCheck. Default: no lines are hidden.
+type InternalLineFn func(line string) bool
 
 // NavItemsFn returns the n/N navigation sequence as rawIdx values in display
 // order. Duplicates allowed — multiple items can target the same line.
@@ -117,6 +127,7 @@ type LogViewer struct {
 	renderFn           LineRenderFn
 	classifyFn         ClassifyFn
 	navItemsFn         NavItemsFn
+	internalFn         InternalLineFn
 }
 
 // Option configures a LogViewer at construction time.
@@ -131,9 +142,21 @@ func WithNavigationItems(fn NavItemsFn) Option { return func(lv *LogViewer) { lv
 // WithLineRenderer installs a caller-supplied line renderer.
 func WithLineRenderer(fn LineRenderFn) Option { return func(lv *LogViewer) { lv.renderFn = fn } }
 
+// WithInternalLineCheck installs a caller-supplied predicate for lines that
+// should be hidden by default (toggleable via ToggleShowInternal).
+func WithInternalLineCheck(fn InternalLineFn) Option {
+	return func(lv *LogViewer) { lv.internalFn = fn }
+}
+
 // NewLogViewer constructs a LogViewer in its initial empty state.
 func NewLogViewer(t theme.Theme, opts ...Option) LogViewer {
-	lv := LogViewer{theme: t, highlightErrors: true, currentMatchLine: -1, currentNavIdx: -1}
+	lv := LogViewer{
+		theme:            t,
+		highlightErrors:  true,
+		currentMatchLine: -1,
+		currentNavIdx:    -1,
+		internalFn:       func(string) bool { return false },
+	}
 	for _, o := range opts {
 		o(&lv)
 	}
@@ -149,7 +172,7 @@ func (lv *LogViewer) Wrap() bool { return lv.wrap }
 // HighlightErrors reports whether error/warning highlighting is enabled.
 func (lv *LogViewer) HighlightErrors() bool { return lv.highlightErrors }
 
-// ShowInternal reports whether Jenkins-internal lines are visible.
+// ShowInternal reports whether lines matched by the InternalLineFn are visible.
 func (lv *LogViewer) ShowInternal() bool { return lv.showInternal }
 
 // HasSearch reports whether a search pattern is currently active.
@@ -303,7 +326,7 @@ func (lv *LogViewer) rebuildDisplayLines() map[int]int {
 	prevKind := LineKindNormal
 	useNavItems := lv.navItemsFn != nil
 	for rawIdx, raw := range lv.rawLines {
-		internal := isInternalLine(raw)
+		internal := lv.internalFn(raw)
 		if !lv.showInternal && internal {
 			continue
 		}
@@ -402,7 +425,7 @@ func (lv *LogViewer) findDisplayLineForRaw(rawIdx int) int {
 
 // toDisplayLines converts one raw log line to one or more display rows.
 func (lv *LogViewer) toDisplayLines(rawIdx int, raw string) []DisplayLine {
-	dim := isInternalLine(raw)
+	dim := lv.internalFn(raw)
 	kind := LineKindNormal
 	if !dim {
 		kind = lv.classify(rawIdx, raw)
@@ -461,7 +484,7 @@ func renderErrWarnBadge(t theme.Theme, warnCount, errCount int) string {
 func (lv *LogViewer) CopyLogCmd() tea.Cmd {
 	var lines []string
 	for _, raw := range lv.rawLines {
-		if !lv.showInternal && isInternalLine(raw) {
+		if !lv.showInternal && lv.internalFn(raw) {
 			continue
 		}
 		lines = append(lines, raw)
@@ -473,14 +496,56 @@ func (lv *LogViewer) CopyLogCmd() tea.Cmd {
 }
 
 // CopySelectionCmd copies the cached primary selection text to the clipboard.
+// When wrap is enabled, artificial wrap-induced newlines are removed so the
+// copied text matches the original log content.
 func (lv *LogViewer) CopySelectionCmd() tea.Cmd {
-	text := lv.selectionText
+	text := lv.unwrapSelection(lv.selectionText)
 	return func() tea.Msg {
 		if strings.TrimSpace(text) != "" {
 			writeToClipboard(text)
 		}
 		return CopyFlashMsg{IsSel: true}
 	}
+}
+
+// unwrapSelection reconstructs raw log lines from a terminal selection that
+// may contain artificial newlines due to soft-wrapping. When wrap is off or
+// no display-line match is found, the original text is returned unchanged.
+func (lv *LogViewer) unwrapSelection(selText string) string {
+	if !lv.wrap || len(lv.lines) == 0 {
+		return selText
+	}
+	selLines := strings.Split(selText, "\n")
+	var result []string
+	prevRawIdx := -1
+	dlIdx := 0
+	for _, selLine := range selLines {
+		stripped := strings.TrimRight(selLine, " \t")
+		if stripped == "" {
+			prevRawIdx = -1
+			result = append(result, "")
+			continue
+		}
+		found := -1
+		for i := dlIdx; i < len(lv.lines); i++ {
+			dlText := strings.TrimRight(ansiRe.ReplaceAllString(lv.lines[i].Text, ""), " \t")
+			if dlText == stripped {
+				found = i
+				dlIdx = i + 1
+				break
+			}
+		}
+		if found == -1 {
+			return selText
+		}
+		rawIdx := lv.lines[found].RawIdx
+		if rawIdx == prevRawIdx {
+			continue
+		}
+		prevRawIdx = rawIdx
+		result = append(result, lv.rawLines[rawIdx])
+	}
+	return strings.Join(result, "\n")
 }
 
 // SelectionCheckCmd reads the primary selection every 300 ms, cleans it, and
@@ -531,7 +596,7 @@ func (lv *LogViewer) LogLabel() string {
 	if !lv.showInternal {
 		count = 0
 		for _, raw := range lv.rawLines {
-			if !isInternalLine(raw) {
+			if !lv.internalFn(raw) {
 				count++
 			}
 		}
@@ -806,6 +871,14 @@ func (lv *LogViewer) ScrollByCols(delta int) {
 	lv.hOffset = max(0, lv.hOffset+delta)
 }
 
+// SetHOffset sets the horizontal scroll offset to an absolute column (no-op when wrap).
+func (lv *LogViewer) SetHOffset(col int) {
+	if lv.wrap {
+		return
+	}
+	lv.hOffset = max(0, col)
+}
+
 // ScrollToTop snaps the viewport to the first line.
 func (lv *LogViewer) ScrollToTop() { lv.offset = 0 }
 
@@ -831,7 +904,7 @@ func (lv *LogViewer) ToggleHighlightErrors() {
 	lv.recomputeLines()
 }
 
-// ToggleShowInternal flips visibility of Jenkins-internal lines.
+// ToggleShowInternal flips visibility of lines matched by the InternalLineFn.
 func (lv *LogViewer) ToggleShowInternal() {
 	lv.showInternal = !lv.showInternal
 	lv.recomputeLines()
@@ -924,7 +997,7 @@ func (lv *LogViewer) AppendRawLines(newLines []string) {
 	for _, raw := range newLines {
 		rawIdx := len(lv.rawLines)
 		lv.rawLines = append(lv.rawLines, raw)
-		internal := isInternalLine(raw)
+		internal := lv.internalFn(raw)
 		if !lv.showInternal && internal {
 			continue
 		}
@@ -987,8 +1060,8 @@ func classifyLine(raw string) LineKind {
 	return LineKindNormal
 }
 
-// IsInternalLine reports whether a line is Jenkins-internal noise that should
-// be hidden by default ([Pipeline] bookkeeping lines).
+// IsInternalLine reports whether a line is a Jenkins [Pipeline] bookkeeping line.
+// Pass this to WithInternalLineCheck when using the LogViewer for Jenkins logs.
 func IsInternalLine(line string) bool { return isInternalLine(line) }
 
 func isInternalLine(line string) bool {
@@ -1010,6 +1083,7 @@ func SplitLogLines(text string) []string {
 	for _, line := range parts {
 		line = strings.TrimRight(line, "\r")
 		line = strings.ReplaceAll(line, "\t", "    ")
+		line = ansiHiddenBlockRe.ReplaceAllString(line, "")
 		line = ansiRe.ReplaceAllString(line, "")
 
 		if xstreamOnlyRe.MatchString(line) {

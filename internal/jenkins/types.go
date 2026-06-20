@@ -2,6 +2,7 @@ package jenkins
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -49,6 +50,25 @@ type jsonAction struct {
 	Class      string          `json:"_class"`
 	Parameters []jsonParameter `json:"parameters"`
 	Causes     []jsonCause     `json:"causes"`
+	Executions []jsonInputExec `json:"executions"`
+}
+
+// jsonInputExec is one entry of an InputAction.executions array, populated
+// when a pipeline is paused at an `input` step.
+type jsonInputExec struct {
+	ID          string        `json:"id"`
+	DisplayName string        `json:"displayName"`
+	Settled     bool          `json:"settled"`
+	Input       jsonInputStep `json:"input"`
+}
+
+type jsonInputStep struct {
+	Message            string                    `json:"message"`
+	OK                 string                    `json:"ok"`
+	Cancel             string                    `json:"cancel"`
+	Submitter          string                    `json:"submitter"`
+	SubmitterParameter string                    `json:"submitterParameter"`
+	Parameters         []jsonParameterDefinition `json:"parameters"`
 }
 
 type jsonCause struct {
@@ -128,6 +148,7 @@ type jsonDefaultValue struct {
 }
 
 type jsonParameterDefinition struct {
+	Class                 string            `json:"_class"`
 	Name                  string            `json:"name"`
 	Type                  string            `json:"type"`
 	DefaultParameterValue *jsonDefaultValue `json:"defaultParameterValue"`
@@ -230,8 +251,67 @@ func (j *jsonBuildDetail) toDomain() jmodel.BuildDetail {
 				bd.Params[p.Name] = p.stringValue()
 			}
 		}
+		if strings.Contains(action.Class, "InputAction") && len(action.Executions) > 0 {
+			for i := range action.Executions {
+				e := &action.Executions[i]
+				if e.Settled || e.ID == "" {
+					continue
+				}
+				bd.PendingInputs = append(bd.PendingInputs, e.toDomain())
+			}
+		}
 	}
 	return bd
+}
+
+func (e *jsonInputExec) toDomain() jmodel.PendingInput {
+	pi := jmodel.PendingInput{
+		ID:                 e.ID,
+		Message:            e.Input.Message,
+		OkLabel:            e.Input.OK,
+		AbortLabel:         e.Input.Cancel,
+		Submitter:          e.Input.Submitter,
+		SubmitterParameter: e.Input.SubmitterParameter,
+	}
+	if pi.Message == "" {
+		pi.Message = e.DisplayName
+	}
+	if pi.OkLabel == "" {
+		pi.OkLabel = "Proceed"
+	}
+	if pi.AbortLabel == "" {
+		pi.AbortLabel = "Abort"
+	}
+	pi.Parameters = parseParamDefs(e.Input.Parameters)
+	return pi
+}
+
+// parseParamDefs converts adapter-side parameter definitions into the domain
+// shape, handling both the `type` field (job parameter definitions) and the
+// `_class` field (input step parameter definitions).
+func parseParamDefs(defs []jsonParameterDefinition) []jmodel.ParameterDefinition {
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make([]jmodel.ParameterDefinition, 0, len(defs))
+	for _, pd := range defs {
+		discriminator := pd.Type
+		if discriminator == "" {
+			discriminator = pd.Class
+		}
+		def := ""
+		if pd.DefaultParameterValue != nil && pd.DefaultParameterValue.Value != nil {
+			def = fmt.Sprintf("%v", pd.DefaultParameterValue.Value)
+		}
+		out = append(out, jmodel.ParameterDefinition{
+			Name:        pd.Name,
+			Type:        parseParamType(discriminator),
+			Default:     def,
+			Description: pd.Description,
+			Choices:     pd.Choices,
+		})
+	}
+	return out
 }
 
 func ParseJobType(class string) jmodel.JobType {

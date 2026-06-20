@@ -77,6 +77,7 @@ type DescribeView struct {
 	// toggled (which changes scriptLV's effective height by one row) without
 	// the parent view re-asserting size.
 	scriptW, scriptH int
+	lineCount        int // total raw lines in the script; drives gutter width
 
 	// Parameters pane (main / top).
 	paramLines  []string
@@ -126,7 +127,27 @@ func NewDescribeView(t theme.Theme, client jmodel.JenkinsClient, store *cache.St
 					startInComment = scanCommentState(dl.Src[:dl.SrcOffset], startInComment)
 				}
 			}
-			return renderGroovyLogLine(dl, wrap, hOffset, width, searchRe, t, isCurrent, dv.overlay, startInComment)
+			content := renderGroovyLogLine(dl, wrap, hOffset, width, searchRe, t, isCurrent, dv.overlay, startInComment)
+
+			numDigits := len(fmt.Sprintf("%d", dv.lineCount))
+			if numDigits == 0 {
+				return content
+			}
+			var gutter string
+			if dl.SrcOffset == 0 {
+				gutterStyle := t.Log.Dim
+				if isCurrent {
+					gutterStyle = t.Log.CurrentHighlight
+				} else if dl.Kind == widget.LineKindError {
+					gutterStyle = t.Log.Error
+				} else if dl.Kind == widget.LineKindWarning {
+					gutterStyle = t.Log.Warning
+				}
+				gutter = gutterStyle.Render(fmt.Sprintf("%*d", numDigits, dl.RawIdx+1)) + " "
+			} else {
+				gutter = strings.Repeat(" ", numDigits+1)
+			}
+			return gutter + content
 		}),
 	)
 	access := fixedBuildAccessor(&dv.nc, &dv.build)
@@ -285,8 +306,19 @@ func (dv *DescribeView) buildScriptLines() {
 	if dv.script != "" {
 		rawLines = strings.Split(dv.script, "\n")
 	}
+	dv.lineCount = len(rawLines)
 	dv.scriptCommentFlags = ComputeBlockCommentStartFlags(rawLines)
 	dv.scriptLV.SetRawLines(rawLines)
+	dv.layoutScript()
+}
+
+// lineNumberGutterWidth returns the visual column width of the line-number gutter
+// (digits + one space separator). Returns 0 when there are no lines.
+func lineNumberGutterWidth(lineCount int) int {
+	if lineCount <= 0 {
+		return 0
+	}
+	return len(fmt.Sprintf("%d", lineCount)) + 1
 }
 
 // applyValidationResult records issues from the last validate run, then asks
@@ -303,7 +335,44 @@ func (dv *DescribeView) applyValidationResult(res jmodel.ValidationResult) {
 	dv.scriptLV.Recompute()
 	if dv.scriptLV.NavItemsCount() > 0 {
 		dv.scriptLV.NextHighlight(true)
+		dv.scrollToCurrentIssueCol()
 	}
+}
+
+// navIssue returns the validation issue for the given navigation index. The
+// nav index is the position in the filtered sequence emitted by navItemsFn,
+// which skips whole-file issues (Line <= 0). Direct indexing into dv.issues
+// would return the wrong entry when global issues precede line-specific ones.
+func (dv *DescribeView) navIssue(navIdx int) (jmodel.ValidationIssue, bool) {
+	n := 0
+	for _, iss := range dv.issues {
+		if iss.Line <= 0 {
+			continue
+		}
+		if n == navIdx {
+			return iss, true
+		}
+		n++
+	}
+	return jmodel.ValidationIssue{}, false
+}
+
+// scrollToCurrentIssueCol sets the horizontal offset to reveal the column of the
+// currently selected validation issue. No-op in wrap mode or when there is no
+// column information on the issue.
+func (dv *DescribeView) scrollToCurrentIssueCol() {
+	if dv.scriptLV.Wrap() {
+		return
+	}
+	idx := dv.scriptLV.CurrentNavIdx()
+	if idx < 0 {
+		return
+	}
+	iss, ok := dv.navIssue(idx)
+	if !ok || iss.Col <= 0 {
+		return
+	}
+	dv.scriptLV.SetHOffset(iss.Col - 1)
 }
 
 // hasIssueOnLine reports whether any validation issue targets rawIdx (0-based
@@ -325,13 +394,14 @@ func (dv *DescribeView) hasIssueOnLine(rawIdx int) bool {
 func (dv *DescribeView) footerActive() bool { return len(dv.issues) > 0 }
 
 // layoutScript pushes the cached script dimensions to scriptLV, reserving one
-// row for the validation footer when active.
+// row for the validation footer when active and leaving the gutter column.
 func (dv *DescribeView) layoutScript() {
 	h := dv.scriptH
 	if dv.footerActive() {
 		h--
 	}
-	dv.scriptLV.SetSize(dv.scriptW, max(0, h))
+	gw := lineNumberGutterWidth(dv.lineCount)
+	dv.scriptLV.SetSize(max(0, dv.scriptW-gw), max(0, h))
 }
 
 // renderFooter returns the footer row showing the active issue's message.
@@ -340,10 +410,14 @@ func (dv *DescribeView) layoutScript() {
 // itself shows the location, so the message stands alone (no "line N:" prefix).
 func (dv *DescribeView) renderFooter() string {
 	cur := dv.scriptLV.CurrentNavIdx()
-	if cur < 0 || cur >= len(dv.issues) {
+	if cur < 0 {
 		return ""
 	}
-	msg := dv.issues[cur].Message
+	iss, ok := dv.navIssue(cur)
+	if !ok {
+		return ""
+	}
+	msg := iss.Message
 	if dv.scriptW > 0 {
 		msg, _ = widget.TruncateToColumns(msg, dv.scriptW)
 	}
@@ -534,8 +608,10 @@ func (dv *DescribeView) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		dv.scriptLV.ToggleWrap()
 	case "f2", "n":
 		dv.scriptLV.NextHighlight(true)
+		dv.scrollToCurrentIssueCol()
 	case "N":
 		dv.scriptLV.NextHighlight(false)
+		dv.scrollToCurrentIssueCol()
 	case "t":
 		return dv, dv.startTriggerCmd()
 	case "e":

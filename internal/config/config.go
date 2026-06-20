@@ -46,6 +46,10 @@ type PreferencesConfig struct {
 	SponsorKey          string               `mapstructure:"sponsor_key"`
 	Notifications       bool                 `mapstructure:"notifications"`
 	VimIntegration      VimIntegrationConfig `mapstructure:"vim_integration"`
+	// TextArtifactExtensions overrides the default allowlist of file extensions
+	// (without leading dot) that open in the in-TUI artifact viewer instead of
+	// the browser. Empty keeps the package default.
+	TextArtifactExtensions []string `mapstructure:"text_artifact_extensions"`
 }
 
 // VimIntegrationConfig gates the per-build vim runtime and Jenkinsfile
@@ -101,19 +105,29 @@ func (m *Manager) SetColorblindnessType(t string) error {
 // SetPreferences persists a subset of user preferences to the config file.
 // Only the fields managed by the preferences dialog are updated; theme and
 // colorblindness_type are left untouched.
-func (m *Manager) SetPreferences(notifications bool, gitUsernames []string, refreshInterval, slowRefreshInterval time.Duration, maxLogLines int, logLevel string) error {
+func (m *Manager) SetPreferences(notifications bool, gitUsernames []string, refreshInterval, slowRefreshInterval time.Duration, maxLogLines int, logLevel string, textArtifactExtensions []string) error {
 	m.Preferences.Notifications = notifications
 	m.Preferences.GitUsernames = gitUsernames
 	m.Preferences.RefreshInterval = refreshInterval
 	m.Preferences.SlowRefreshInterval = slowRefreshInterval
 	m.Preferences.MaxLogLines = maxLogLines
 	m.Preferences.LogLevel = logLevel
+	m.Preferences.TextArtifactExtensions = textArtifactExtensions
 	m.v.Set("preferences.notifications", notifications)
 	m.v.Set("preferences.git_usernames", gitUsernames)
 	m.v.Set("preferences.refresh_interval", refreshInterval.String())
 	m.v.Set("preferences.slow_refresh_interval", slowRefreshInterval.String())
 	m.v.Set("preferences.max_log_lines", maxLogLines)
 	m.v.Set("preferences.log_level", logLevel)
+	m.v.Set("preferences.text_artifact_extensions", textArtifactExtensions)
+	return m.v.WriteConfig()
+}
+
+// SetTextArtifactExtensions persists just the artifact-extension allowlist. Used
+// at startup to seed the config file with defaults when the key is absent.
+func (m *Manager) SetTextArtifactExtensions(exts []string) error {
+	m.Preferences.TextArtifactExtensions = exts
+	m.v.Set("preferences.text_artifact_extensions", exts)
 	return m.v.WriteConfig()
 }
 

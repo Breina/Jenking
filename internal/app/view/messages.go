@@ -117,6 +117,15 @@ type StageLogMsg struct {
 // CancelBuildResultMsg carries the outcome of a cancel operation.
 type CancelBuildResultMsg struct{ Err error }
 
+// InputDecisionResultMsg carries the outcome of a pipeline `input` step
+// decision (proceed or abort). Proceeded is true on a successful proceed,
+// false on a successful abort. Err is non-nil on HTTP error.
+type InputDecisionResultMsg struct {
+	InputID   string
+	Proceeded bool
+	Err       error
+}
+
 // JobParamsMsg carries fetched parameter definitions for a job.
 type JobParamsMsg struct {
 	NC     NavigationContext
@@ -175,6 +184,16 @@ type RunningBuildsUpdatedMsg = navmsg.RunningBuildsUpdatedMsg
 type OpenScopedStagesMsg struct {
 	NC NavigationContext
 }
+
+// OpenScopedConsoleMsg asks the app to open a scoped last-build console view.
+// Emitted by views (e.g. JobList) that know the scope but not the gitUsernames.
+type OpenScopedConsoleMsg struct {
+	NC NavigationContext
+}
+
+// ConnectionLostMsg is emitted by the RunningBuildsMonitor when a poll fails.
+// Aliased from navmsg so the monitor can emit it without importing the view layer.
+type ConnectionLostMsg = navmsg.ConnectionLostMsg
 
 // ConnectionRestoredMsg is broadcast by the app when the Jenkins connection
 // recovers after a failure. Streaming views use it to resume where they stopped.

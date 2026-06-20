@@ -2,7 +2,28 @@ package view
 
 import (
 	"testing"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
+
+func TestArtifactShortcutAction(t *testing.T) {
+	tests := []struct {
+		name string
+		arts []jmodel.Artifact
+		want string
+	}{
+		{"single shows name", []jmodel.Artifact{{DisplayPath: "trivy-report.html"}}, "trivy-report.html"},
+		{"single truncates long name", []jmodel.Artifact{{DisplayPath: "a-very-long-artifact-name.html"}}, "a-very-long-artifa…"},
+		{"multiple shows count", []jmodel.Artifact{{DisplayPath: "a"}, {DisplayPath: "b"}}, "artifacts [2]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := artifactShortcutAction(tt.arts); got != tt.want {
+				t.Errorf("artifactShortcutAction() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestNavigationContext_JobPath(t *testing.T) {
 	tests := []struct {
@@ -83,6 +104,22 @@ func TestBreadcrumbFor(t *testing.T) {
 			scope:        CtxStage,
 			wantViewType: "log",
 			wantParts:    4, // project + branch + build number + stage
+		},
+		{
+			name:         "log at stage level with parent",
+			viewType:     "log",
+			nc:           NavigationContext{Level: CtxStage, ProjectName: "my-project", BranchName: "main", Build: NavBuildRef{Number: 5}, StageName: "Build", StageParent: "Matrix - JDK = 'jdk21'"},
+			scope:        CtxStage,
+			wantViewType: "log",
+			wantParts:    5, // project + branch + build + parent + leaf
+		},
+		{
+			name:         "stage parent clipped when view owns only the build",
+			viewType:     "describe",
+			nc:           NavigationContext{Level: CtxStage, ProjectName: "my-project", BranchName: "main", Build: NavBuildRef{Number: 5}, StageName: "Build", StageParent: "Matrix - JDK = 'jdk21'"},
+			scope:        CtxBuild,
+			wantViewType: "describe",
+			wantParts:    3, // project + branch + build (stage + parent dropped)
 		},
 		{
 			name:         "builds at project level (standalone)",

@@ -97,12 +97,22 @@ func (c *Client) ListUserBuilds(ctx context.Context, username string) ([]jmodel.
 	return nil, nil
 }
 
+// buildDetailTree is the tree query for GetBuild. Includes everything
+// jsonBuildDetail.toDomain reads, plus the InputAction.executions branch so
+// PendingInputs is populated when the pipeline is paused.
+const buildDetailTree = "number,result,building,duration,estimatedDuration,timestamp,url," +
+	"actions[_class," +
+	"parameters[name,value]," +
+	"causes[_class,shortDescription,userId,userName]," +
+	"executions[id,displayName,settled," +
+	"input[message,ok,cancel,submitter,submitterParameter," +
+	"parameters[_class,name,description,choices,defaultParameterValue[value]]]]]"
+
 // GetBuild returns detailed build information including stages.
 func (c *Client) GetBuild(ctx context.Context, jobPath string, number int) (*jmodel.BuildDetail, error) {
 	basePath := fmt.Sprintf("%s/%d", jmodel.JobPathToURL(jobPath), number)
 
-	// Get build details
-	data, err := c.get(ctx, basePath+"/api/json")
+	data, err := c.get(ctx, basePath+"/api/json?tree="+url.QueryEscape(buildDetailTree))
 	if err != nil {
 		return nil, fmt.Errorf("get build: %w", err)
 	}
@@ -139,7 +149,7 @@ var (
 	flowGraphPaddingRe  = regexp.MustCompile(`padding-left:\s*calc\([^*]*\*\s*(\d+)\)`)
 
 	stageEnterRe   = regexp.MustCompile(`^\[Pipeline\] \{ \((.+)\)$`)
-	stageSkippedRe = regexp.MustCompile(`jmodel.Stage "(.+)" skipped due to (when conditional|earlier failure)`)
+	stageSkippedRe = regexp.MustCompile(`Stage "(.+)" skipped due to (when conditional|earlier failure)`)
 
 	// ansiHiddenBlockRe strips ANSI hidden text blocks: \x1b[8m...content...\x1b[0m.
 	// Jenkins embeds base64 metadata inside these blocks in progressive log output.
@@ -327,5 +337,39 @@ func (c *Client) TriggerBuild(ctx context.Context, jobPath string, params map[st
 // CancelBuild stops a running build.
 func (c *Client) CancelBuild(ctx context.Context, jobPath string, number int) error {
 	path := fmt.Sprintf("%s/%d/stop", jmodel.JobPathToURL(jobPath), number)
+	return c.post(ctx, path, nil)
+}
+
+// ProceedInput approves a pipeline `input` step. params is nil/empty for a
+// confirm-only input; otherwise the values are form-encoded into the JSON
+// payload Jenkins expects on /submit.
+func (c *Client) ProceedInput(ctx context.Context, jobPath string, buildNumber int, inputID string, params map[string]string) error {
+	if inputID == "" {
+		return fmt.Errorf("proceed input: empty input id")
+	}
+	base := fmt.Sprintf("%s/%d/input/%s", jmodel.JobPathToURL(jobPath), buildNumber, url.PathEscape(inputID))
+	if len(params) == 0 {
+		return c.post(ctx, base+"/proceedEmpty", nil)
+	}
+	jsonArr := make([]map[string]string, 0, len(params))
+	for k, v := range params {
+		jsonArr = append(jsonArr, map[string]string{"name": k, "value": v})
+	}
+	body, err := json.Marshal(map[string]interface{}{"parameter": jsonArr})
+	if err != nil {
+		return fmt.Errorf("encode input params: %w", err)
+	}
+	form := url.Values{}
+	form.Set("json", string(body))
+	form.Set("proceed", "Proceed")
+	return c.post(ctx, base+"/submit?"+form.Encode(), nil)
+}
+
+// AbortInput rejects a pipeline `input` step.
+func (c *Client) AbortInput(ctx context.Context, jobPath string, buildNumber int, inputID string) error {
+	if inputID == "" {
+		return fmt.Errorf("abort input: empty input id")
+	}
+	path := fmt.Sprintf("%s/%d/input/%s/abort", jmodel.JobPathToURL(jobPath), buildNumber, url.PathEscape(inputID))
 	return c.post(ctx, path, nil)
 }

@@ -109,6 +109,12 @@ func (b *artifactBehavior) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	}
 	if len(arts) == 1 {
+		if IsTextArtifact(arts[0].DisplayPath) {
+			// Always push the viewer (not the origin's swap) so its sideways
+			// navigation can popSwap the parent, mirroring StageLogView.
+			child := NewArtifactFileView(b.theme, b.client, b.store(), nc, arts[0], build, arts)
+			return true, pushTo(child)
+		}
 		return true, openURLCmd(arts[0].URL)
 	}
 	child := NewArtifactView(b.theme, arts, nc, build, b.client, b.store())

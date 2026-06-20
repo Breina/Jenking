@@ -65,6 +65,14 @@ func buildCommandRegistry(store *cache.Store, contexts []config.ContextConfig) *
 		ArgSuggest: projectSuggest,
 	})
 	r.Register(command.Command{
+		Name: "artifact", Aliases: []string{"artifacts"},
+		Help: "Open a build artifact [<file>] (text in viewer, else browser; no arg lists all)",
+		Execute: func(args []string) tea.Cmd {
+			name := strings.TrimSpace(strings.Join(args, " "))
+			return func() tea.Msg { return openArtifactMsg{name: name} }
+		},
+	})
+	r.Register(command.Command{
 		Name: "running", Aliases: []string{"r"}, Help: "Show running builds",
 		Execute: func(args []string) tea.Cmd {
 			return func() tea.Msg { return openRunningBuildsMsg{} }

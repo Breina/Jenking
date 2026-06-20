@@ -110,7 +110,8 @@ func (sv *ScopedView) resolveWith(latest *jmodel.UserBuild) tea.Cmd {
 	nc := ncFromJobPath(latest.JobPath)
 	nc.Username = sv.resolver.username
 	nc.GitUsernames = sv.resolver.gitUsernames
-	nc = nc.AtBuild(latest.Number)
+	nc.Level = CtxBuild
+	nc.Build = NavBuildRef{IsLast: true, Number: latest.Number}
 	sv.inner = sv.cfg.NewInner(nc, *latest)
 	sv.inner.SetSize(sv.width, sv.height)
 	return sv.inner.Init()

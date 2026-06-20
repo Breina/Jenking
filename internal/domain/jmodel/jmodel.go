@@ -58,14 +58,15 @@ type ParameterDefinition struct {
 type BuildStatus string
 
 const (
-	BuildStatusRunning  BuildStatus = "running"
-	BuildStatusSuccess  BuildStatus = "success"
-	BuildStatusFailed   BuildStatus = "failed"
-	BuildStatusAborted  BuildStatus = "aborted"
-	BuildStatusUnstable BuildStatus = "unstable"
-	BuildStatusSkipped  BuildStatus = "skipped"
-	BuildStatusNotBuilt BuildStatus = "not_built"
-	BuildStatusUnknown  BuildStatus = "unknown"
+	BuildStatusRunning     BuildStatus = "running"
+	BuildStatusSuccess     BuildStatus = "success"
+	BuildStatusFailed      BuildStatus = "failed"
+	BuildStatusAborted     BuildStatus = "aborted"
+	BuildStatusUnstable    BuildStatus = "unstable"
+	BuildStatusSkipped     BuildStatus = "skipped"
+	BuildStatusNotBuilt    BuildStatus = "not_built"
+	BuildStatusPausedInput BuildStatus = "paused_input"
+	BuildStatusUnknown     BuildStatus = "unknown"
 )
 
 // BuildRef is a lightweight reference to a build.
@@ -106,7 +107,22 @@ type Build struct {
 // BuildDetail extends Build with stage information.
 type BuildDetail struct {
 	Build
-	Stages []Stage
+	Stages        []Stage
+	PendingInputs []PendingInput
+}
+
+// PendingInput describes a paused `input` step awaiting decision.
+// Lives at the run level — a single build may have multiple pending inputs
+// (one per parallel branch). Use ApplyPendingInputs to project this onto
+// per-stage status for rendering.
+type PendingInput struct {
+	ID                 string                // input step id
+	Message            string                // prompt text
+	OkLabel            string                // proceed button label
+	AbortLabel         string                // abort button label
+	Submitter          string                // submitter restriction; "" = any
+	SubmitterParameter string                // optional param name to receive the submitter id
+	Parameters         []ParameterDefinition // empty for confirm-only
 }
 
 // Stage represents a pipeline stage.
@@ -232,10 +248,31 @@ type JenkinsClient interface {
 	GetBuildParameters(ctx context.Context, jobPath string, buildNumber int) (map[string]string, error)
 	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*TestReport, error)
 	GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]Artifact, error)
+	GetArtifactContent(ctx context.Context, artifactURL string) (content, contentType string, err error)
 	TriggerBuild(ctx context.Context, jobPath string, params map[string]string) error
 	ReplayBuild(ctx context.Context, jobPath string, buildNum int, script string) error
 	CancelBuild(ctx context.Context, jobPath string, number int) error
+	ProceedInput(ctx context.Context, jobPath string, buildNumber int, inputID string, params map[string]string) error
+	AbortInput(ctx context.Context, jobPath string, buildNumber int, inputID string) error
 	WhoAmI(ctx context.Context) (*User, error)
+}
+
+// ApplyPendingInputs marks any currently-running stage as PausedInput when
+// the build has at least one pending input. The Jenkins JSON does not surface
+// a flow-node id on the input execution, so this is a best-effort projection:
+// the input lives inside whatever stage is currently running.
+//
+// Returns the modified slice (same underlying array). Pure function — no I/O.
+func ApplyPendingInputs(stages []Stage, inputs []PendingInput) []Stage {
+	if len(inputs) == 0 {
+		return stages
+	}
+	for i := range stages {
+		if stages[i].Status == BuildStatusRunning {
+			stages[i].Status = BuildStatusPausedInput
+		}
+	}
+	return stages
 }
 
 // BuildKey returns a stable string key for deduplicating builds across sources.

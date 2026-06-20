@@ -6,22 +6,25 @@ import (
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
 
-// navHierarchy defines the canonical left-to-right order of navigation tags.
-var navHierarchy = []string{"jobs", "builds", "stages", "stagelog"}
-
-// navAlternates maps view types that share a position with a canonical entry.
-var navAlternates = map[string]string{
-	"tests":     "stages",
-	"artifacts": "stages",
-	"matrix":    "stagelog",
-	"describe":  "stages",
-	"log":       "stages", // full console log sits at the same depth as stages
-}
-
-// navDisplayNames overrides the label shown in the active nav tag when the
-// internal key differs from what should be displayed to the user.
-var navDisplayNames = map[string]string{
-	"stagelog": "log",
+// navChains declares, per view type, the full left-to-right ancestor trail of
+// navigation tags ending in the active view. The labels are exactly what is
+// rendered; the last entry is the active tag, the rest are dimmed ancestors.
+//
+// This replaces the old single linear hierarchy + alternates model: each view
+// owns its trail, so sibling leaves at the same depth can have different
+// parents (e.g. "stagelog" sits under "stages", "artifact" under "artifacts")
+// rather than all collapsing onto one canonical chain.
+var navChains = map[string][]string{
+	"jobs":      {"jobs"},
+	"builds":    {"jobs", "builds"},
+	"stages":    {"jobs", "builds", "stages"},
+	"stagelog":  {"jobs", "builds", "stages", "log"},
+	"matrix":    {"jobs", "builds", "stages", "matrix"},
+	"tests":     {"jobs", "builds", "tests"},
+	"describe":  {"jobs", "builds", "describe"},
+	"log":       {"jobs", "builds", "log"},
+	"artifacts": {"jobs", "builds", "artifacts"},
+	"artifact":  {"jobs", "builds", "artifacts", "file"},
 }
 
 // NavTags renders k9s-style navigation tags at the bottom of the TUI.
@@ -39,70 +42,42 @@ func NewNavTags(t theme.Theme) NavTags {
 // SetTheme updates the theme used for rendering.
 func (n *NavTags) SetTheme(t theme.Theme) { n.theme = t }
 
-// SetViewType sets the current view's ViewType (e.g. "builds+running").
+// SetViewType sets the current view's ViewType (e.g. "stagelog", "artifact").
 func (n *NavTags) SetViewType(vt string) { n.viewType = vt }
 
 // SetRooted marks whether the current view is root-scoped (e.g. builds(*)).
 // Root-scoped views show only the active tag, no ancestors.
 func (n *NavTags) SetRooted(r bool) { n.rooted = r }
 
-// baseType returns the bare view name (kept for backward compatibility).
-func baseType(vt string) string {
-	return vt
+// chainFor returns the ancestor trail for a view type, falling back to a lone
+// tag bearing the view's own name for types without a declared chain.
+func chainFor(vt string) []string {
+	if vt == "" {
+		vt = "jobs"
+	}
+	if chain, ok := navChains[vt]; ok {
+		return chain
+	}
+	return []string{vt}
 }
 
 // View renders the navigation tag line.
 func (n NavTags) View() string {
-	base := baseType(n.viewType)
-	if base == "" {
-		base = "jobs"
-	}
+	chain := chainFor(n.viewType)
 
-	// Resolve alternate to its canonical position.
-	canonical := base
-	if alt, ok := navAlternates[base]; ok {
-		canonical = alt
-	}
-
-	// Find the index of the current view in the hierarchy.
-	activeIdx := -1
-	for i, h := range navHierarchy {
-		if h == canonical {
-			activeIdx = i
-			break
-		}
-	}
-	if activeIdx < 0 {
-		activeIdx = 0
-	}
-
-	// Root-scoped views (e.g. builds(*)) show only the active tag.
-	startIdx := 0
+	// Root-scoped views (e.g. builds(*)) show only the active (last) tag.
+	start := 0
 	if n.rooted {
-		startIdx = activeIdx
+		start = len(chain) - 1
 	}
 
-	// Build the tag trail from startIdx to activeIdx.
-	// Replace the entry at activeIdx with the actual base type if it differs
-	// (e.g., "tests" instead of "log").
 	var tags []string
-	for i := startIdx; i <= activeIdx; i++ {
-		label := navHierarchy[i]
-		if i == activeIdx && base != canonical {
-			label = base
-		}
-
-		var rendered string
-		if i == activeIdx {
-			displayLabel := base
-			if dn, ok := navDisplayNames[base]; ok {
-				displayLabel = dn
-			}
-			rendered = n.theme.NavTag.Active.Render("<" + displayLabel + ">")
+	for i := start; i < len(chain); i++ {
+		if i == len(chain)-1 {
+			tags = append(tags, n.theme.NavTag.Active.Render("<"+chain[i]+">"))
 		} else {
-			rendered = n.theme.NavTag.Ancestor.Render("<" + label + ">")
+			tags = append(tags, n.theme.NavTag.Ancestor.Render("<"+chain[i]+">"))
 		}
-		tags = append(tags, rendered)
 	}
 
 	return " " + strings.Join(tags, " ")

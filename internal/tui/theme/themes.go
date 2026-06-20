@@ -156,11 +156,12 @@ func fromPalette(id ThemeID, name string, p palette) Theme {
 			Suggestion: lipgloss.NewStyle().Foreground(p.dim),
 		},
 		BuildStatus: BuildStatusStyles{
-			Running:  lipgloss.NewStyle().Foreground(p.running),
-			Success:  lipgloss.NewStyle().Foreground(p.green),
-			Failed:   lipgloss.NewStyle().Foreground(p.failed),
-			Aborted:  lipgloss.NewStyle().Foreground(p.dim),
-			Unstable: lipgloss.NewStyle().Foreground(p.unstable),
+			Running:     lipgloss.NewStyle().Foreground(p.running),
+			Success:     lipgloss.NewStyle().Foreground(p.green),
+			Failed:      lipgloss.NewStyle().Foreground(p.failed),
+			Aborted:     lipgloss.NewStyle().Foreground(p.dim),
+			Unstable:    lipgloss.NewStyle().Foreground(p.unstable),
+			PausedInput: lipgloss.NewStyle().Foreground(p.unstable).Bold(true),
 		},
 		ProgressBar: ProgressBarStyles{
 			Filled:      lipgloss.NewStyle().Foreground(p.progFill).Background(p.progBG),
@@ -215,7 +216,7 @@ func fromPalette(id ThemeID, name string, p palette) Theme {
 func Royal() Theme {
 	return fromPalette(ThemeRoyal, "Royal", palette{
 		accent:   c("178"), // gold
-		green:    c("106"), // olive green
+		green:    c("100"), // olive (same hue as nav tag bg, readable as text fg)
 		dim:      c("101"), // dark khaki
 		bright:   c("223"), // cream
 		running:  c("178"), // gold
@@ -223,15 +224,15 @@ func Royal() Theme {
 		unstable: c("172"), // amber-gold
 		selBG:    c("53"),  // velvet purple
 		selFG:    c("220"), // bright gold
-		border:   c("136"), // dark gold
-		crown:    c("220"), // bright gold
+		border:   c("58"),  // dark olive (ties to nav tag bg)
+		crown:    c("100"), // olive — visually distinct from gold text
 		popup:    c("220"), // bright gold
-		progFill: c("178"),
+		progFill: c("178"), // matches running
 		progBG:   c("238"),
 		progOver: c("172"),
-		wSun:     c("220"),
+		wSun:     c("220"), // golden sun
 		wWarn:    c("172"),
-		wStorm:   c("97"),  // dull purple
+		wStorm:   c("97"),  // purple storm
 		navActFG: c("232"), // black on gold
 		navActBG: c("178"),
 		navAncFG: c("223"),
@@ -279,23 +280,24 @@ func Matrix() Theme {
 		ID:   ThemeMatrix,
 		Name: "Matrix",
 		Icons: Icons{
-			StatusRunning:   "\u221e", // ∞
-			StatusSuccess:   "\u221a", // √
-			StatusFailed:    "\u2205", // ∅
-			StatusAborted:   "\u25aa", // ▪
-			StatusUnstable:  "\u25b3", // △
-			StatusSkipped:   "\u25c7", // ◇
-			StatusNotBuilt:  "\u25ab", // ▫
-			StatusUnknown:   "\u25cb", // ○
-			WeatherSun:      "\u25b3", // △
-			WeatherUnstable: "\u25c7", // ◇
-			WeatherStorm:    "\u25bd", // ▽
-			TypeFolder:      "\u25b8", // ▸ (keep)
-			TypePipeline:    "\u220f", // ∏
-			TypeMultiBranch: "\u2295", // ⊕
-			TypeFreeStyle:   "\u2217", // ∗
-			Warning:         "\u25b3", // △
-			Error:           "\u2205", // ∅
+			StatusRunning:     "\u221e", // ∞
+			StatusSuccess:     "\u221a", // √
+			StatusFailed:      "\u2205", // ∅
+			StatusAborted:     "\u25aa", // ▪
+			StatusUnstable:    "\u25b3", // △
+			StatusSkipped:     "\u25c7", // ◇
+			StatusNotBuilt:    "\u25ab", // ▫
+			StatusPausedInput: "\u25d0", // ◐ half-filled circle, "waiting on human"
+			StatusUnknown:     "\u25cb", // ○
+			WeatherSun:        "\u25b3", // △
+			WeatherUnstable:   "\u25c7", // ◇
+			WeatherStorm:      "\u25bd", // ▽
+			TypeFolder:        "\u25b8", // ▸ (keep)
+			TypePipeline:      "\u220f", // ∏
+			TypeMultiBranch:   "\u2295", // ⊕
+			TypeFreeStyle:     "\u2217", // ∗
+			Warning:           "\u25b3", // △
+			Error:             "\u2205", // ∅
 		},
 		Header: HeaderStyles{
 			Title:        lipgloss.NewStyle().Bold(true).Foreground(neon),
@@ -338,11 +340,12 @@ func Matrix() Theme {
 			Suggestion: lipgloss.NewStyle().Foreground(dim),
 		},
 		BuildStatus: BuildStatusStyles{
-			Running:  lipgloss.NewStyle().Foreground(neon).Bold(true),
-			Success:  lipgloss.NewStyle().Foreground(med),
-			Failed:   lipgloss.NewStyle().Foreground(neon).Bold(true).Italic(true),
-			Aborted:  lipgloss.NewStyle().Foreground(dim),
-			Unstable: lipgloss.NewStyle().Foreground(lime),
+			Running:     lipgloss.NewStyle().Foreground(neon).Bold(true),
+			Success:     lipgloss.NewStyle().Foreground(med),
+			Failed:      lipgloss.NewStyle().Foreground(neon).Bold(true).Italic(true),
+			Aborted:     lipgloss.NewStyle().Foreground(dim),
+			Unstable:    lipgloss.NewStyle().Foreground(lime),
+			PausedInput: lipgloss.NewStyle().Foreground(lime).Bold(true).Blink(true),
 		},
 		ProgressBar: ProgressBarStyles{
 			Filled:         lipgloss.NewStyle().Foreground(med).Background(bg),
