@@ -264,9 +264,16 @@ func dumpSyntaxFetch(
 	globalsURL string, globalsBytes []byte, globalsErr error,
 	sym *pipelinesyntax.Symbols,
 ) {
-	root, err := os.UserCacheDir()
-	if err != nil {
-		return
+	// Honor XDG_CACHE_HOME explicitly: os.UserCacheDir only consults it on
+	// Linux, but the dump location is documented as $XDG_CACHE_HOME-based on
+	// every platform.
+	root := os.Getenv("XDG_CACHE_HOME")
+	if root == "" {
+		var err error
+		root, err = os.UserCacheDir()
+		if err != nil {
+			return
+		}
 	}
 	dir := filepath.Join(root, "jenking", "syntax-debug")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
