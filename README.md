@@ -32,25 +32,36 @@ A terminal UI for Jenkins, inspired by [k9s](https://k9scli.io). Navigate jobs, 
 
 ## Installation
 
-### Pre-built binary (recommended)
+### Install script (recommended)
 
-**Linux (amd64):**
+Installs the latest release into `~/.local/bin` (no `sudo`), so the built-in
+self-updater can upgrade in place later without elevated rights:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Breina/Jenking/master/install.sh | sh
+```
+
+Supports Linux and macOS (amd64/arm64). Override the location with
+`JENKING_INSTALL_DIR=/somewhere/on/PATH`. If `~/.local/bin` is not on your
+`PATH`, the script prints the line to add to your shell profile.
+
+Run with `jenking`
+
+### Manual binary
+
+Download from the [Releases page](../../releases) and place the binary in a
+user-owned directory on your `PATH` so self-update works without `sudo`:
+
 ```sh
 curl -Lo jenking.tar.gz https://github.com/Breina/Jenking/releases/latest/download/jenking_linux_amd64.tar.gz
 tar -xf jenking.tar.gz jenking && rm jenking.tar.gz
-chmod u+x jenking && sudo mv jenking /usr/local/bin/
+mkdir -p ~/.local/bin
+chmod u+x jenking && mv jenking ~/.local/bin/
 ```
 
-**macOS (Apple Silicon):**
-```sh
-curl -Lo jenking.tar.gz https://github.com/Breina/Jenking/releases/latest/download/jenking_darwin_arm64.tar.gz
-tar -xf jenking.tar.gz jenking && rm jenking.tar.gz
-chmod u+x jenking && sudo mv jenking /usr/local/bin/
-```
-
-Other platforms (macOS Intel, Windows, Linux arm64) are available on the [Releases page](../../releases).
-
-Run with `jenking`
+> Installing into a root-owned directory such as `/usr/local/bin` (e.g. with
+> `sudo mv`) will make the self-updater fail with a permission error; you would
+> then have to re-run updates with `sudo jenking`.
 
 ### Via `go install`
 

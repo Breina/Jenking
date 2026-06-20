@@ -125,20 +125,55 @@ func SelfUpdate(latestTag string) error {
 		return fmt.Errorf("resolve binary path: %w", err)
 	}
 
+	// The binary's directory must be writable to stage and rename in place.
+	// When it is root-owned (e.g. /usr/local/bin) a non-privileged update
+	// cannot replace the binary, so fail early with an actionable message.
+	dir := filepath.Dir(exe)
+	if !writable(dir) {
+		return permissionError(exe)
+	}
+
 	// Write a staging file next to the binary so the rename stays on the same
 	// filesystem (avoids "invalid cross-device link" when /tmp is a tmpfs).
 	stagePath := exe + ".update-tmp"
 	if err := copyFile(tmpPath, stagePath, 0755); err != nil {
 		os.Remove(stagePath)
+		if os.IsPermission(err) {
+			return permissionError(exe)
+		}
 		return fmt.Errorf("stage binary: %w", err)
 	}
 	os.Remove(tmpPath)
 
 	if err := os.Rename(stagePath, exe); err != nil {
 		os.Remove(stagePath)
+		if os.IsPermission(err) {
+			return permissionError(exe)
+		}
 		return fmt.Errorf("replace binary: %w", err)
 	}
 	return nil
+}
+
+// writable reports whether the current process can create files in dir.
+func writable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".jenking-write-test-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
+}
+
+// permissionError builds an actionable message for the common case where the
+// binary lives in a root-owned directory and cannot be replaced unprivileged.
+func permissionError(exe string) error {
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("cannot replace %s: permission denied; re-run jenking as Administrator and update again", exe)
+	}
+	return fmt.Errorf("cannot replace %s: permission denied; the binary lives in a protected directory, re-run with: sudo jenking", exe)
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
