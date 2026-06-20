@@ -98,6 +98,7 @@ type artifactsFetchedMsg struct {
 }
 
 type openRunningBuildsMsg struct{}
+type openInspectMsg struct{}
 type openHelpMsg struct{}
 type connCheckMsg struct{}
 type connProbeResultMsg struct{ ok bool }
@@ -657,6 +658,20 @@ func (a App) handleViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 		a.replaceView(av)
 		a.updateBreadcrumb()
 		return a, av.Init(), true
+	}
+	if _, ok := msg.(openInspectMsg); ok {
+		ip, ok := a.activeView().(view.InspectProvider)
+		if !ok {
+			return a, nil, true
+		}
+		nc, ok := ip.InspectTarget()
+		if !ok {
+			return a, nil, true
+		}
+		mv := view.NewMetadataView(a.theme, a.client, a.store, nc, a.parentNavChain())
+		a.pushView(mv)
+		a.updateBreadcrumb()
+		return a, mv.Init(), true
 	}
 	if osm, ok := msg.(view.OpenScopedStagesMsg); ok {
 		nc := osm.NC
@@ -1824,6 +1839,24 @@ func (a *App) applyTheme(id theme.ThemeID, persist bool, degraded bool) {
 	}
 }
 
+// parentNavChain returns the nav-tag trail of the active view, so a pushed
+// metadata inspector can show <…parent trail…> <metadata> rather than a lone
+// top-level tag.
+func (a App) parentNavChain() []string {
+	if bp, ok := a.activeView().(view.BreadcrumbProvider); ok {
+		seg := bp.Breadcrumb()
+		vt := seg.ViewType
+		if seg.NavTag != "" {
+			vt = seg.NavTag
+		}
+		if len(seg.NavChain) > 0 {
+			return seg.NavChain
+		}
+		return component.NavChainFor(vt)
+	}
+	return nil
+}
+
 func (a *App) updateBreadcrumb() {
 	v := a.activeView()
 	if v == nil {
@@ -1845,6 +1878,7 @@ func (a *App) updateBreadcrumb() {
 			navTag = seg.NavTag
 		}
 		a.navTags.SetViewType(navTag)
+		a.navTags.SetChain(seg.NavChain)
 		a.navTags.SetRooted(len(seg.Context) > 0 && seg.Context[0].Text == "*")
 	} else {
 		a.breadcrumb.SetSegment(nil)

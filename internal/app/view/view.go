@@ -385,6 +385,10 @@ type BreadcrumbSegment struct {
 	// NavTag, when non-empty, overrides ViewType for the bottom-left nav tag only.
 	// Use when the breadcrumb label and the nav position label should differ.
 	NavTag string
+	// NavChain, when non-empty, overrides the derived nav-tag trail entirely.
+	// Used by views whose ancestor chain depends on where they were opened
+	// (e.g. metadata: <jobs> <builds> <stages> <metadata>).
+	NavChain []string
 	// NoTail, when set on a PreviewBreadcrumb, suppresses [tail] and shows [count] instead.
 	NoTail bool
 }

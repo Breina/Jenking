@@ -74,6 +74,15 @@ func (f *fakeClient) GetNodeLogProgressive(_ context.Context, _ string, _, _, _ 
 func (f *fakeClient) GetJobParameters(_ context.Context, _ string) ([]jmodel.ParameterDefinition, error) {
 	return nil, nil
 }
+func (f *fakeClient) GetJobMetadata(_ context.Context, _ string, _ int) (jmodel.MetaNode, error) {
+	return jmodel.MetaNode{}, nil
+}
+func (f *fakeClient) GetBuildMetadata(_ context.Context, _ string, _, _ int) (jmodel.MetaNode, error) {
+	return jmodel.MetaNode{}, nil
+}
+func (f *fakeClient) GetJobSCMURL(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
 func (f *fakeClient) GetBuildScript(_ context.Context, _ string, _ int) (string, error) {
 	return "", nil
 }

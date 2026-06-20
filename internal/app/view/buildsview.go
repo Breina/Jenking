@@ -215,16 +215,20 @@ func (bv *BuildsView) maybeFetchSelected() tea.Cmd {
 		return nil
 	}
 	b := builds[di]
+	var cmds []tea.Cmd
+	// Prefetch the selected build's job SCM URL so "open repo" is ready.
+	if c := fetchRepoURL(bv.client, bv.store, b.JobPath); c != nil {
+		cmds = append(cmds, c)
+	}
 	if b.Queued {
-		// No build exists yet — nothing to fetch.
-		return nil
+		// No build exists yet — nothing else to fetch.
+		return tea.Batch(cmds...)
 	}
 	key := fmt.Sprintf("%s:%d", b.JobPath, b.Number)
 	if key == bv.lastFetchedKey {
-		return nil
+		return tea.Batch(cmds...)
 	}
 	bv.lastFetchedKey = key
-	var cmds []tea.Cmd
 	if bv.store.TestReports.Get(key) == nil {
 		cmds = append(cmds, fetchTestReport(bv.client, bv.store, b.JobPath, b.Number))
 	}
@@ -333,6 +337,10 @@ func (bv *BuildsView) handleKeyMsg(msg tea.KeyMsg) (tea.Cmd, bool) {
 		bv.table.Home()
 	case "end":
 		bv.table.End()
+	case "o":
+		if url := cachedRepoURL(bv.store, bv.selectedJobPath()); url != "" {
+			return openURLCmd(url), true
+		}
 	case "t":
 		return bv.startTriggerCmd()
 	case "m":
@@ -356,6 +364,16 @@ func (bv *BuildsView) startTriggerCmd() (tea.Cmd, bool) {
 		lastKnown = builds[0].Number
 	}
 	return bv.trigger.startTriggerFor(bv.nc, lastKnown), true
+}
+
+// selectedJobPath returns the job path of the selected row, or "".
+func (bv *BuildsView) selectedJobPath() string {
+	builds := bv.provider.Builds()
+	di := bv.dataIndex(bv.table.Cursor())
+	if di < 0 || di >= len(builds) {
+		return ""
+	}
+	return builds[di].JobPath
 }
 
 // selectedQueued returns the currently selected row iff it is a queued item.
@@ -463,18 +481,26 @@ func (bv *BuildsView) Commands() []command.Command {
 
 func (bv *BuildsView) Shortcuts() []component.Shortcut {
 	if _, ok := bv.selectedQueued(); ok {
-		return []component.Shortcut{
+		sc := []component.Shortcut{
 			component.Nav("enter", "job"),
 			component.Nav("esc", "jobs"),
+		}
+		if cachedRepoURL(bv.store, bv.selectedJobPath()) != "" {
+			sc = append(sc, component.Nav("o", "open repo"))
+		}
+		return append(sc,
 			component.Action("x", "cancel"),
 			component.Filter("/", "search", false),
 			component.Filter("m", "mine", bv.filters.Mine),
 			component.Filter("r", "running", bv.filters.Running),
-		}
+		)
 	}
 	sc := []component.Shortcut{
 		component.Nav("enter", "stages"),
 		component.Nav("esc", "jobs"),
+	}
+	if cachedRepoURL(bv.store, bv.selectedJobPath()) != "" {
+		sc = append(sc, component.Nav("o", "open repo"))
 	}
 	builds := bv.provider.Builds()
 	if len(builds) == 0 {
@@ -536,6 +562,21 @@ func (bv *BuildsView) SetSize(width, height int) {
 
 func (bv *BuildsView) ScrollInfo() widget.ScrollInfo {
 	return widget.ScrollInfo{Offset: bv.table.ScrollOffset(), TotalLines: bv.table.TotalRows(), ViewHeight: bv.table.ContentHeight()}
+}
+
+// InspectTarget returns the nc for the :inspect command — build-level for a
+// resolvable row, job-level for a queued row (no build number yet).
+func (bv *BuildsView) InspectTarget() (NavigationContext, bool) {
+	builds := bv.provider.Builds()
+	di := bv.dataIndex(bv.table.Cursor())
+	if di < 0 || di >= len(builds) {
+		return NavigationContext{}, false
+	}
+	selected := builds[di]
+	if selected.Queued {
+		return bv.ncForSelected(selected), true
+	}
+	return bv.ncForSelected(selected).AtBuild(selected.Number), true
 }
 
 // ncForSelected returns the NavigationContext to use for navigating into a build.

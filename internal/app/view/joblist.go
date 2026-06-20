@@ -218,6 +218,26 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 	return jl
 }
 
+// selectedAnyJob returns the job under the cursor regardless of type, or
+// ok=false when the cursor is on an empty row.
+func (jl *JobList) selectedAnyJob() (jmodel.Job, bool) {
+	di := jl.dataIndex(jl.table.Cursor())
+	if di < 0 || di >= len(jl.jobs) {
+		return jmodel.Job{}, false
+	}
+	return jl.jobs[di], true
+}
+
+// InspectTarget returns the nc for the :inspect command — the selected job
+// (folder, multibranch, branch, or leaf), since every job has raw JSON.
+func (jl *JobList) InspectTarget() (NavigationContext, bool) {
+	j, ok := jl.selectedAnyJob()
+	if !ok {
+		return NavigationContext{}, false
+	}
+	return jl.jobNC(j), true
+}
+
 // selectedNonFolder returns the job under the cursor for any job that can
 // produce builds — non-containers (pipeline/freestyle) and multibranch projects.
 // Pure folders are excluded because they have no build history.
@@ -490,15 +510,20 @@ func (jl *JobList) maybeFetchSelected() tea.Cmd {
 		return nil
 	}
 	selected := jl.jobs[di]
+	var cmds []tea.Cmd
+	// Prefetch the SCM project URL for the selected job (any type) so the
+	// "open repo" shortcut is ready without opening the inspector.
+	if c := fetchRepoURL(jl.client, jl.store, selected.FullPath); c != nil {
+		cmds = append(cmds, c)
+	}
 	if isContainer(selected.Type) || selected.LastBuild == nil {
-		return nil
+		return tea.Batch(cmds...)
 	}
 	key := fmt.Sprintf("%s:%d", selected.FullPath, selected.LastBuild.Number)
 	if key == jl.lastFetchedKey {
-		return nil
+		return tea.Batch(cmds...)
 	}
 	jl.lastFetchedKey = key
-	var cmds []tea.Cmd
 	if jl.store.TestReports.Get(key) == nil {
 		cmds = append(cmds, fetchTestReport(jl.client, jl.store, selected.FullPath, selected.LastBuild.Number))
 	}
@@ -657,6 +682,10 @@ func (jl *JobList) handleKeyMsg(msg tea.KeyMsg) (tea.Cmd, bool) {
 		jl.table.End()
 	case "enter":
 		return jl.openSelectedJobUnderCursor()
+	case "o":
+		if url := cachedRepoURL(jl.store, jl.selectedJobPath()); url != "" {
+			return openURLCmd(url), true
+		}
 	case "t":
 		return jl.triggerSelectedJobUnderCursor()
 	case "D":
@@ -766,6 +795,9 @@ func (jl *JobList) Shortcuts() []component.Shortcut {
 	}
 	if jl.folderPath != "" || jl.branchContext {
 		sc = append(sc, component.Nav("esc", "jobs"))
+	}
+	if cachedRepoURL(jl.store, selected.FullPath) != "" {
+		sc = append(sc, component.Nav("o", "open repo"))
 	}
 	sc = append(sc, component.Filter("/", "search", false))
 	sc = append(sc, component.Filter("D", "disabled", jl.showDisabled))

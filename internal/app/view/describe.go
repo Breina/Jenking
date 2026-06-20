@@ -350,6 +350,74 @@ func lineNumberGutterWidth(lineCount int) int {
 	return len(fmt.Sprintf("%d", lineCount)) + 1
 }
 
+// gutterKind classifies the first gw columns of a selected row.
+type gutterKind int
+
+const (
+	gutterNone         gutterKind = iota // no gutter (e.g. a partial mid-line selection)
+	gutterNumbered                       // "<pad><digits> " — start of a source line
+	gutterContinuation                   // gw blanks — a wrap-continuation row
+)
+
+// stripSelectionGutter turns a terminal selection of the script pane back into
+// the bare script. It strips the line-number gutter (keeping the line's own
+// indentation, which follows the gutter) and, in wrap mode, re-joins
+// wrap-continuation rows onto their source line so the copy has no artificial
+// wrap newlines. Applied to the polled primary selection before it is recorded,
+// which also lets checkSelectionInLog match the raw script lines.
+func (dv *DescribeView) stripSelectionGutter(text string) string {
+	gw := lineNumberGutterWidth(dv.lineCount)
+	if gw <= 0 || text == "" {
+		return text
+	}
+	wrap := dv.scriptLV.Wrap()
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		switch classifyGutter(line, gw) {
+		case gutterNumbered:
+			out = append(out, line[gw:])
+		case gutterContinuation:
+			switch {
+			case wrap && len(out) > 0:
+				out[len(out)-1] += line[gw:] // rejoin the wrapped chunk
+			case wrap:
+				out = append(out, line[gw:])
+			default:
+				out = append(out, line) // no-wrap: leading spaces are indentation
+			}
+		default: // gutterNone
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// classifyGutter inspects the leading gw columns of line. A numbered gutter is
+// "<pad spaces><digits><space>"; a continuation gutter is gw spaces. Anything
+// else (including a row shorter than the gutter) is gutterNone.
+func classifyGutter(line string, gw int) gutterKind {
+	if len(line) < gw || line[gw-1] != ' ' {
+		return gutterNone
+	}
+	seenDigit := false
+	for i := 0; i < gw-1; i++ {
+		switch c := line[i]; {
+		case c == ' ':
+			if seenDigit {
+				return gutterNone // space after a digit: not the gutter shape
+			}
+		case c >= '0' && c <= '9':
+			seenDigit = true
+		default:
+			return gutterNone
+		}
+	}
+	if seenDigit {
+		return gutterNumbered
+	}
+	return gutterContinuation
+}
+
 // applyValidationResult records issues from the last validate run, then asks
 // the LogViewer to rebuild — classifyFn and navItemsFn both close over
 // dv.issues, so nothing else needs to be wired here. Auto-lands on the first
@@ -491,7 +559,7 @@ func (dv *DescribeView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case widget.SelectionCheckMsg:
-		dv.scriptLV.RecordSelection(msg.Text, msg.LineCount)
+		dv.scriptLV.RecordSelection(dv.stripSelectionGutter(msg.Text), msg.LineCount)
 		return dv, widget.SelectionCheckCmd()
 	case widget.CopyFlashMsg:
 		return dv, dv.handleCopyFlash(msg)

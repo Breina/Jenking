@@ -218,6 +218,55 @@ type Artifact struct {
 	URL         string
 }
 
+// MetaEntry is one flattened scalar field from a job's raw Jenkins JSON,
+// addressed by its JSON path (e.g. "actions[0].remoteUrls[0]"). It carries no
+// plugin knowledge — the inspector renders whatever the API returns.
+type MetaEntry struct {
+	Path  string
+	Value string
+}
+
+// MetaNode is a node in the raw Jenkins JSON tree. Containers (objects/arrays)
+// carry Children; scalar leaves carry Value. Key is the local field name or
+// array index label (e.g. "actions" or "[0]"); the root node has an empty Key.
+// Like MetaEntry it is plugin-agnostic — just a view over whatever the API
+// returned at the fetched depth.
+type MetaNode struct {
+	Key       string
+	Value     string
+	Container bool
+	Children  []MetaNode
+}
+
+// Flatten returns the scalar leaves of the tree as dotted-path MetaEntry rows,
+// matching the flat inspector/CLI output. Array indices render as "[i]" and
+// object keys join with ".".
+func (n MetaNode) Flatten() []MetaEntry {
+	var out []MetaEntry
+	n.flatten("", &out)
+	return out
+}
+
+func (n MetaNode) flatten(prefix string, out *[]MetaEntry) {
+	path := prefix
+	if n.Key != "" {
+		if strings.HasPrefix(n.Key, "[") {
+			path = prefix + n.Key
+		} else if prefix == "" {
+			path = n.Key
+		} else {
+			path = prefix + "." + n.Key
+		}
+	}
+	if !n.Container {
+		*out = append(*out, MetaEntry{Path: path, Value: n.Value})
+		return
+	}
+	for _, c := range n.Children {
+		c.flatten(path, out)
+	}
+}
+
 // ProgressiveLog is a chunk of console output from the progressive API.
 type ProgressiveLog struct {
 	Text      string
@@ -264,6 +313,9 @@ type JenkinsClient interface {
 	GetNodeLog(ctx context.Context, jobPath string, buildNumber, nodeID int) (string, error)
 	GetNodeLogProgressive(ctx context.Context, jobPath string, buildNumber, nodeID, start int) (*NodeLog, error)
 	GetJobParameters(ctx context.Context, jobPath string) ([]ParameterDefinition, error)
+	GetJobMetadata(ctx context.Context, jobPath string, depth int) (MetaNode, error)
+	GetBuildMetadata(ctx context.Context, jobPath string, number, depth int) (MetaNode, error)
+	GetJobSCMURL(ctx context.Context, jobPath string) (string, error)
 	GetBuildScript(ctx context.Context, jobPath string, buildNumber int) (string, error)
 	FetchPipelineSyntax(ctx context.Context, jobPath string, buildNumber int) (*pipelinesyntax.Symbols, error)
 	ValidateJenkinsfile(ctx context.Context, content string) (ValidationResult, error)

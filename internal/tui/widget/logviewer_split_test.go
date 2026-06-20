@@ -27,3 +27,41 @@ func TestSplitLogLines_PlainXStreamLineStripped(t *testing.T) {
 		t.Errorf("xstream-only line should be dropped, got %#v", lines)
 	}
 }
+
+// TestSplitLogLines_EmbeddedCarriageReturns regresses apt/dpkg/Docker build
+// progress lines that overwrite themselves in place with bare '\r'. The final
+// visible text is what the terminal would show after all overwrites.
+func TestSplitLogLines_EmbeddedCarriageReturns(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "later redraw is longer",
+			raw:  "(Reading database ... 30%\r(Reading database ... 65%\r(Reading database ... 100%",
+			want: "(Reading database ... 100%",
+		},
+		{
+			name: "partial overwrite leaves tail",
+			raw:  "Progress: 100%\rDone",
+			want: "Doneress: 100%",
+		},
+		{
+			name: "trailing carriage return dropped",
+			raw:  "building...\r",
+			want: "building...",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := SplitLogLines(tt.raw + "\n")
+			if len(lines) != 1 {
+				t.Fatalf("lines = %d, want 1: %#v", len(lines), lines)
+			}
+			if lines[0] != tt.want {
+				t.Errorf("line = %q, want %q", lines[0], tt.want)
+			}
+		})
+	}
+}

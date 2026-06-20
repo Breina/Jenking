@@ -235,6 +235,17 @@ func (sv *ScopedView) Breadcrumb() BreadcrumbSegment {
 	return seg
 }
 
+// InspectTarget delegates to the inner view so the `:inspect` command targets
+// the resolved build shown by this scoped view.
+func (sv *ScopedView) InspectTarget() (NavigationContext, bool) {
+	if sv.inner != nil {
+		if ip, ok := sv.inner.(InspectProvider); ok {
+			return ip.InspectTarget()
+		}
+	}
+	return NavigationContext{}, false
+}
+
 // Badge delegates to inner if it implements HasBadge.
 func (sv *ScopedView) Badge() string {
 	if sv.inner != nil {

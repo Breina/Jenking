@@ -37,6 +37,7 @@ type Store struct {
 	BuildDetail   *Cache[string, jmodel.Build]            // key: "jobPath:buildNum"
 	PendingInputs *Cache[string, []jmodel.PendingInput]   // key: "jobPath:buildNum"
 	Symbols       *Cache[string, *pipelinesyntax.Symbols] // key: "jobPath#buildNum"
+	RepoURLs      *Cache[string, string]                  // key: jobPath; "" = no SCM URL
 
 	// Registry is the single source of truth for build status.
 	Registry *buildregistry.Registry
@@ -62,6 +63,7 @@ func NewStore(disk *DiskStore) *Store {
 		BuildDetail:   New[string, jmodel.Build](100),
 		PendingInputs: New[string, []jmodel.PendingInput](100),
 		Symbols:       New[string, *pipelinesyntax.Symbols](200),
+		RepoURLs:      New[string, string](200),
 		Queue:         NewQueueStore(),
 		Disk:          disk,
 		dirtyJobs:     make(map[string]bool),

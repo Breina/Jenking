@@ -265,6 +265,10 @@ type recomputeState struct {
 	savedMatchIdx int
 	savedNavIdx   int
 	savedRawIdx   int
+	// savedSubOffset is how many wrap-continuation rows of savedRawIdx sit
+	// above the viewport top. Without it a raw line that wraps taller than the
+	// viewport would snap back to its first chunk on every rebuild.
+	savedSubOffset int
 }
 
 // recomputeLines rebuilds display lines from rawLines using current settings.
@@ -307,6 +311,9 @@ func (lv *LogViewer) snapshotRecomputeState() recomputeState {
 	}
 	if !state.atBottom && lv.offset < len(lv.lines) {
 		state.savedRawIdx = lv.lines[lv.offset].RawIdx
+		for i := lv.offset - 1; i >= 0 && lv.lines[i].RawIdx == state.savedRawIdx; i-- {
+			state.savedSubOffset++
+		}
 	}
 	return state
 }
@@ -406,7 +413,7 @@ func (lv *LogViewer) restoreScrollPosition(state recomputeState) {
 	case state.atBottom:
 		lv.offset = newMax
 	case state.savedRawIdx >= 0:
-		lv.offset = min(lv.findDisplayLineForRaw(state.savedRawIdx), newMax)
+		lv.offset = min(lv.findDisplayLineForRaw(state.savedRawIdx)+state.savedSubOffset, newMax)
 	default:
 		lv.offset = min(lv.offset, newMax)
 	}
@@ -642,6 +649,17 @@ func cleanBorderChars(text string) string {
 		lines[i] = line
 	}
 	return strings.Join(lines, "\n")
+}
+
+// CopyTextCmd copies arbitrary text to the clipboard and emits CopyFlashMsg so
+// callers reuse the same "Copied" flash feedback as the log/selection copies.
+func CopyTextCmd(text string, isSel bool) tea.Cmd {
+	return func() tea.Msg {
+		if strings.TrimSpace(text) != "" {
+			writeToClipboard(text)
+		}
+		return CopyFlashMsg{IsSel: isSel}
+	}
 }
 
 // CopyFlashTimer returns a cmd that fires CopyFlashDoneMsg after 1 second.
@@ -1068,8 +1086,37 @@ func isInternalLine(line string) bool {
 	return strings.HasPrefix(line, "[Pipeline]")
 }
 
+// collapseCarriageReturns emulates terminal carriage-return overwriting within a
+// single line. Tools like apt/dpkg and Docker build output emit a bare '\r' to
+// redraw a progress line in place (e.g. "(Reading database ... 30%\r(Reading
+// database ... 65%\r..."). Without emulation the embedded '\r' survives into the
+// rendered output and garbles the line. Each '\r' returns the write cursor to
+// column 0; following runes overwrite whatever was already there, so the result
+// matches what the terminal would actually display (including partial overwrites
+// where a shorter redraw leaves a tail of the previous content).
+func collapseCarriageReturns(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	buf := make([]rune, 0, len(s))
+	pos := 0
+	for _, r := range s {
+		if r == '\r' {
+			pos = 0
+			continue
+		}
+		if pos < len(buf) {
+			buf[pos] = r
+		} else {
+			buf = append(buf, r)
+		}
+		pos++
+	}
+	return string(buf)
+}
+
 // SplitLogLines splits raw progressive-log text into individual lines, cleaning
-// each one (CR stripped, ANSI escapes removed, XStream refs dropped/stripped).
+// each one (CR collapsed, ANSI escapes removed, XStream refs dropped/stripped).
 func SplitLogLines(text string) []string {
 	if text == "" {
 		return nil
@@ -1081,7 +1128,7 @@ func SplitLogLines(text string) []string {
 
 	result := make([]string, 0, len(parts))
 	for _, line := range parts {
-		line = strings.TrimRight(line, "\r")
+		line = collapseCarriageReturns(line)
 		line = strings.ReplaceAll(line, "\t", "    ")
 		line = ansiHiddenBlockRe.ReplaceAllString(line, "")
 		line = ansiRe.ReplaceAllString(line, "")

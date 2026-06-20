@@ -79,6 +79,13 @@ func buildCommandRegistry(store *cache.Store, contexts []config.ContextConfig) *
 		},
 	})
 	r.Register(command.Command{
+		Name: "inspect", Aliases: []string{"i"},
+		Help: "Inspect raw Jenkins metadata of the selected job/build",
+		Execute: func(args []string) tea.Cmd {
+			return func() tea.Msg { return openInspectMsg{} }
+		},
+	})
+	r.Register(command.Command{
 		Name: "matrix", Help: "The Matrix has you...", Hidden: true,
 		Execute: openTargetCmd(kindMatrix),
 	})
