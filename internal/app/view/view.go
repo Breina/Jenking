@@ -517,6 +517,37 @@ func renderStatus(t theme.Theme, s jmodel.BuildStatus) string {
 	}
 }
 
+// renderQueueStatus renders the STATUS badge for a waiting build-queue row,
+// mapping the sub-state onto an existing BuildStatus style so no new theme
+// fields are needed.
+func renderQueueStatus(t theme.Theme, state string) string {
+	switch state {
+	case "stuck":
+		return t.BuildStatus.Unstable.Render("⚠ stuck")
+	case "blocked":
+		return t.BuildStatus.PausedInput.Render("⏸ blocked")
+	case "pending":
+		return t.BuildStatus.Running.Render("● starting")
+	default:
+		return t.BuildStatus.Aborted.Render("⧖ queued")
+	}
+}
+
+// queueStateLabel renders the inline "badge · why" label used by the pending
+// StageView while a queued build waits for an executor.
+func queueStateLabel(it jmodel.QueueItem) string {
+	badge := map[string]string{
+		"stuck":     "⚠ stuck",
+		"blocked":   "⏸ blocked",
+		"pending":   "● starting",
+		"buildable": "⧖ queued",
+	}[queueSubState(it)]
+	if it.Why != "" {
+		return badge + " · " + it.Why
+	}
+	return badge
+}
+
 // isBuildPausedOnInput reports whether the given build has cached pending
 // input data — i.e. the StageView (or a sibling) has seen the build paused
 // on an `input` step. Build/job lists use this to swap the progress bar for

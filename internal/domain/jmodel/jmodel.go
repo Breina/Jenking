@@ -66,6 +66,7 @@ const (
 	BuildStatusSkipped     BuildStatus = "skipped"
 	BuildStatusNotBuilt    BuildStatus = "not_built"
 	BuildStatusPausedInput BuildStatus = "paused_input"
+	BuildStatusQueued      BuildStatus = "queued"
 	BuildStatusUnknown     BuildStatus = "unknown"
 )
 
@@ -148,6 +149,26 @@ type UserBuild struct {
 	Node        string
 	DisplayName string
 	Build
+}
+
+// QueueItem is a build waiting in the Jenkins queue. It has no build number
+// yet (the build does not exist until an executor picks it up). The four
+// boolean flags are mutually-informative sub-states reported by Jenkins; Why
+// is the human-readable waiting reason.
+type QueueItem struct {
+	ID              int64
+	JobPath         string
+	DisplayName     string
+	Why             string
+	Blocked         bool
+	Buildable       bool
+	Stuck           bool
+	Pending         bool
+	InQueueSince    time.Time
+	Params          map[string]string
+	Cause           string
+	TriggeredBy     string
+	TriggeredByName string
 }
 
 // User represents a Jenkins user.
@@ -233,6 +254,7 @@ type JenkinsClient interface {
 	ListProjectBuilds(ctx context.Context, projectPath string) ([]ProjectBuild, error)
 	ListUserBuilds(ctx context.Context, username string) ([]UserBuild, error)
 	ListRunningBuilds(ctx context.Context) ([]UserBuild, error)
+	ListQueue(ctx context.Context) ([]QueueItem, error)
 	ScanAllBuilds(ctx context.Context, maxPerJob int) ([]UserBuild, error)
 	ListStages(ctx context.Context, jobPath string, buildNumber int) ([]Stage, error)
 	GetBuild(ctx context.Context, jobPath string, number int) (*BuildDetail, error)
@@ -252,6 +274,7 @@ type JenkinsClient interface {
 	TriggerBuild(ctx context.Context, jobPath string, params map[string]string) error
 	ReplayBuild(ctx context.Context, jobPath string, buildNum int, script string) error
 	CancelBuild(ctx context.Context, jobPath string, number int) error
+	CancelQueueItem(ctx context.Context, id int64) error
 	ProceedInput(ctx context.Context, jobPath string, buildNumber int, inputID string, params map[string]string) error
 	AbortInput(ctx context.Context, jobPath string, buildNumber int, inputID string) error
 	WhoAmI(ctx context.Context) (*User, error)

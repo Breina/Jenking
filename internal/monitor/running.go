@@ -17,8 +17,10 @@ import (
 // Internal message types — never leave this package.
 type monitorTickMsg struct{}
 type monitorPollMsg struct {
-	builds []jmodel.UserBuild
-	err    error
+	builds   []jmodel.UserBuild
+	queue    []jmodel.QueueItem
+	queueErr error
+	err      error
 }
 
 // RunningBuildsMonitor polls ListRunningBuilds every 1s and feeds the
@@ -64,15 +66,25 @@ func (m *RunningBuildsMonitor) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 				m.scheduleTick(),
 			}
 		}
+		// Refresh the queue snapshot (cheap, same poll cycle). On a queue-only
+		// error keep the previous snapshot rather than clearing it.
+		if msg.queueErr == nil && m.store != nil && m.store.Queue != nil {
+			m.store.Queue.Replace(msg.queue)
+		}
 		return true, m.processPoll(msg.builds)
 	}
 	return false, nil
 }
 
-// poll is the tea.Cmd that fetches running builds. Runs in a goroutine.
+// poll is the tea.Cmd that fetches running builds and the build queue in one
+// cycle. Runs in a goroutine.
 func (m *RunningBuildsMonitor) poll() tea.Msg {
 	builds, err := m.client.ListRunningBuilds(context.Background())
-	return monitorPollMsg{builds: builds, err: err}
+	if err != nil {
+		return monitorPollMsg{builds: builds, err: err}
+	}
+	queue, queueErr := m.client.ListQueue(context.Background())
+	return monitorPollMsg{builds: builds, queue: queue, queueErr: queueErr}
 }
 
 func buildKeyJobPath(key string) string {
@@ -122,11 +134,23 @@ func (m *RunningBuildsMonitor) processPoll(builds []jmodel.UserBuild) []tea.Cmd 
 
 	arrivedKeys := keysOf(arrived)
 	departedKeys := keysOf(departed)
+	queued := 0
+	if m.store != nil && m.store.Queue != nil {
+		// Exclude queued items whose job is already running — they are hidden
+		// in the list (folded into the running build), so the header counter
+		// must not count them either.
+		isRunning := func(jobPath string) bool {
+			return m.store.Registry != nil &&
+				m.store.Registry.HasRunning(buildregistry.Filter{JobPath: jobPath})
+		}
+		queued = m.store.Queue.CountVisible(isRunning)
+	}
 	updatedMsg := navmsg.RunningBuildsUpdatedMsg{
-		Builds:   builds,
-		Arrived:  arrivedKeys,
-		Departed: departedKeys,
-		Count:    len(builds),
+		Builds:      builds,
+		Arrived:     arrivedKeys,
+		Departed:    departedKeys,
+		Count:       len(builds),
+		QueuedCount: queued,
 	}
 	cmds := make([]tea.Cmd, 0, len(completionCmds)+2)
 	cmds = append(cmds, func() tea.Msg { return updatedMsg })

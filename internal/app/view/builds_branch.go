@@ -142,14 +142,16 @@ func (p *BranchBuildsProvider) Builds() []UnifiedBuild {
 	// Prefer registry-backed view (applies invariant 2 for stale Running entries).
 	if p.store != nil && p.store.Registry != nil {
 		ubs := p.store.Registry.Query(p.registryFilter())
-		result := make([]UnifiedBuild, len(ubs))
-		for i, ub := range ubs {
-			result[i] = UnifiedBuild{
+		queued := queuedUnifiedBuilds(p.store, p.registryFilter())
+		result := make([]UnifiedBuild, 0, len(queued)+len(ubs))
+		result = append(result, queued...)
+		for _, ub := range ubs {
+			result = append(result, UnifiedBuild{
 				Build:      ub.Build,
 				JobPath:    p.nc.JobPath(),
 				TestResult: p.tt.get(p.nc.JobPath(), ub.Number),
 				Artifacts:  p.at.get(p.nc.JobPath(), ub.Number),
-			}
+			})
 		}
 		return result
 	}

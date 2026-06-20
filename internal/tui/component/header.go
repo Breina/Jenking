@@ -95,6 +95,7 @@ type Header struct {
 	width         int
 	runningCount  int
 	runningKey    string // key letter shown next to count when > 0
+	queuedCount   int
 	filterMine    bool
 	debug         bool
 	// debug counters (only used when debug=true)
@@ -150,6 +151,11 @@ func (h *Header) SetRunningBuilds(count int, key string) {
 	h.runningKey = key
 }
 
+// SetQueuedBuilds updates the queued builds count shown in the header.
+func (h *Header) SetQueuedBuilds(count int) {
+	h.queuedCount = count
+}
+
 // SetURL updates the server URL shown in the header.
 func (h *Header) SetURL(url string) {
 	h.url = url
@@ -198,6 +204,12 @@ func (h Header) View() string {
 		runningStr = badge + " " + keyHint
 	} else {
 		runningStr = t.Header.Value.Faint(true).Render("0")
+	}
+
+	// Queued count is shown inline on the same line as Running, only when > 0.
+	if h.queuedCount > 0 {
+		runningStr += "   " + t.Header.Label.Render("Queued:") + " " +
+			t.Header.RunningBadge.Render(fmt.Sprintf("⏳ %d", h.queuedCount))
 	}
 
 	userValue := t.Header.Value.Render(h.user)

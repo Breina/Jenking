@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/theme"
@@ -151,154 +151,41 @@ func overlayCenter(bg, overlay string, bgWidth, bgHeight int) string {
 	return strings.Join(result, "\n")
 }
 
-// skipEsc advances i past the escape sequence starting at s[i] (which must be '\033').
-// Handles CSI (\033[...final), OSC (\033]...BEL or \033\\), and 2-char sequences.
-func skipEsc(s string, i int) int {
-	i++ // skip ESC itself
-	if i >= len(s) {
-		return i
-	}
-	switch s[i] {
-	case '[': // CSI — ends at a byte in 0x40–0x7E (inclusive)
-		i++
-		for i < len(s) && (s[i] < 0x40 || s[i] > 0x7E) {
-			i++
-		}
-		if i < len(s) {
-			i++
-		}
-	case ']': // OSC — ends at BEL (\a) or ST (\033\\)
-		i++
-		for i < len(s) {
-			if s[i] == '\007' {
-				i++
-				break
-			}
-			if s[i] == '\033' && i+1 < len(s) && s[i+1] == '\\' {
-				i += 2
-				break
-			}
-			i++
-		}
-	default: // 2-char sequence (\033c, \033M, …)
-		i++
-	}
-	return i
-}
-
-// visualLen returns the number of visible columns in s (ignoring all ANSI escapes).
+// visualLen returns the number of visible terminal columns in s, accounting for
+// wide (multi-cell) glyphs and grapheme clusters, and ignoring ANSI escapes.
+// It is consistent with lipgloss.Width (both measure via x/ansi).
 func visualLen(s string) int {
-	n := 0
-	for i := 0; i < len(s); {
-		if s[i] == '\033' {
-			i = skipEsc(s, i)
-			continue
-		}
-		if s[i] < 0x20 { // other control chars — skip
-			i++
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		n++
-		i += size
-	}
-	return n
+	return ansi.StringWidth(s)
 }
 
-// ansiTakeLeft returns the leftmost n visible columns of s.
-// All escape sequences are passed through unchanged; SGR colour state is closed
-// with \033[0m if any colour was opened before the cut point.
+// ansiTakeLeft returns the leftmost n visible columns of s, padding with spaces
+// if s is narrower than n. ANSI styling is preserved and reset at the cut.
+// A wide glyph straddling the cut is dropped and the gap filled with spaces.
 func ansiTakeLeft(s string, n int) string {
-	var out strings.Builder
-	col := 0
-	i := 0
-	openSGR := false
-	for i < len(s) && col < n {
-		if s[i] == '\033' {
-			j := skipEsc(s, i)
-			seq := s[i:j]
-			out.WriteString(seq)
-			// Track SGR open state (CSI sequences only; resets close it).
-			if i+1 < len(s) && s[i+1] == '[' {
-				if seq == "\033[0m" || seq == "\033[m" {
-					openSGR = false
-				} else {
-					openSGR = true
-				}
-			}
-			i = j
-			continue
-		}
-		if s[i] < 0x20 { // non-escape control chars: pass through, don't count
-			out.WriteByte(s[i])
-			i++
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		out.WriteString(s[i : i+size])
-		col++
-		i += size
+	if n <= 0 {
+		return ""
 	}
-	for col < n {
-		out.WriteByte(' ')
-		col++
+	out := ansi.Truncate(s, n, "")
+	if w := ansi.StringWidth(out); w < n {
+		out += strings.Repeat(" ", n-w)
 	}
-	if openSGR {
-		out.WriteString("\033[0m")
-	}
-	return out.String()
+	return out
 }
 
-// ansiTakeRange returns visible columns [from, to) of s, preserving ANSI escapes.
+// ansiTakeRange returns visible columns [from, to) of s, preserving ANSI escapes
+// and padding to the full (to-from) width.
 func ansiTakeRange(s string, from, to int) string {
 	if from >= to {
 		return ""
 	}
-	mid := ansiTakeRight(s, from)
-	return ansiTakeLeft(mid, to-from)
+	return ansiTakeLeft(ansiTakeRight(s, from), to-from)
 }
 
-// ansiTakeRight returns the visible content starting at column skip.
-// SGR sequences before the cut point are replayed so colours aren't lost;
-// non-SGR sequences (OSC 8 hyperlinks, etc.) are discarded before the cut.
+// ansiTakeRight returns the visible content starting at column skip, replaying
+// any SGR styling active at that point so colours aren't lost.
 func ansiTakeRight(s string, skip int) string {
-	var sgrPending strings.Builder // SGR sequences before cut point
-	var out strings.Builder
-	col := 0
-	i := 0
-	past := false
-	for i < len(s) {
-		if s[i] == '\033' {
-			j := skipEsc(s, i)
-			seq := s[i:j]
-			if !past {
-				// Only replay SGR sequences (CSI ending in 'm') — skip OSC etc.
-				if i+1 < len(s) && s[i+1] == '[' {
-					sgrPending.WriteString(seq)
-				}
-			} else {
-				out.WriteString(seq)
-			}
-			i = j
-			continue
-		}
-		if s[i] < 0x20 {
-			if past {
-				out.WriteByte(s[i])
-			}
-			i++
-			continue
-		}
-		_, size := utf8.DecodeRuneInString(s[i:])
-		if col >= skip {
-			if !past {
-				past = true
-				out.WriteString(sgrPending.String())
-			}
-			out.WriteString(s[i : i+size])
-		}
-		col++
-		i += size
+	if skip <= 0 {
+		return s
 	}
-	return out.String()
+	return ansi.TruncateLeft(s, skip, "")
 }

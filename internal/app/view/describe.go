@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
@@ -288,16 +289,44 @@ func (dv *DescribeView) buildParamLines() {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			lines = append(lines, fmt.Sprintf("  %s  %s",
-				t.Popup.Label.Render(k+":"),
-				t.Log.Normal.Render(dv.params[k]),
-			))
+			lines = append(lines, dv.wrapParamLine(k, dv.params[k])...)
 		}
 	}
 	dv.paramLines = lines
 	if maxOff := max(0, len(dv.paramLines)-dv.height); dv.paramOffset > maxOff {
 		dv.paramOffset = maxOff
 	}
+}
+
+// wrapParamLine renders one "key: value" parameter as one or more display rows.
+// The value is wrapped by character (not word) so long values never overflow
+// the panel width — lipgloss word-wraps anything wider than the panel, which
+// breaks the fixed-height scroll window. Continuation rows are indented to align
+// under the value column.
+func (dv *DescribeView) wrapParamLine(key, value string) []string {
+	t := dv.theme
+	label := t.Popup.Label.Render(key + ":")
+	// Layout: 2 leading spaces + label + 2 separating spaces + value.
+	contIndent := 2 + lipgloss.Width(key+":") + 2
+	avail := dv.width - contIndent
+	if dv.width <= 0 || avail < 1 || lipgloss.Width(value) <= avail {
+		return []string{fmt.Sprintf("  %s  %s", label, t.Log.Normal.Render(value))}
+	}
+	var out []string
+	remaining := value
+	for lipgloss.Width(remaining) > 0 {
+		chunk, _ := widget.TruncateToColumns(remaining, avail)
+		if chunk == "" {
+			break // a single rune wider than avail; bail to avoid an infinite loop
+		}
+		if len(out) == 0 {
+			out = append(out, fmt.Sprintf("  %s  %s", label, t.Log.Normal.Render(chunk)))
+		} else {
+			out = append(out, strings.Repeat(" ", contIndent)+t.Log.Normal.Render(chunk))
+		}
+		remaining = remaining[len(chunk):]
+	}
+	return out
 }
 
 // buildScriptLines populates the script LogViewer from the current script text.
@@ -889,9 +918,9 @@ func (dv *DescribeView) Shortcuts() []component.Shortcut {
 func (dv *DescribeView) SetSize(w, h int) {
 	dv.BaseView.SetSize(w, h)
 	dv.host.SetSize(w, h-6)
-	if maxOff := max(0, len(dv.paramLines)-dv.height); dv.paramOffset > maxOff {
-		dv.paramOffset = maxOff
-	}
+	// Re-wrap param values to the new width; buildParamLines also re-clamps
+	// paramOffset against the new line count.
+	dv.buildParamLines()
 	if !dv.hasActivePreview() {
 		dv.scriptW, dv.scriptH = w, h
 		dv.layoutScript()

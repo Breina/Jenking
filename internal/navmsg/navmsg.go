@@ -118,10 +118,11 @@ func (nc NavigationContext) JobPath() string {
 
 // RunningBuildsUpdatedMsg is broadcast by the RunningBuildsMonitor each poll.
 type RunningBuildsUpdatedMsg struct {
-	Builds   []jmodel.UserBuild
-	Arrived  []string
-	Departed []string
-	Count    int
+	Builds      []jmodel.UserBuild
+	Arrived     []string
+	Departed    []string
+	Count       int
+	QueuedCount int
 }
 
 // ConnectionLostMsg is emitted by the RunningBuildsMonitor when a poll fails.

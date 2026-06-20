@@ -74,15 +74,17 @@ func (p *AllBuildsProvider) Builds() []UnifiedBuild {
 		return nil
 	}
 	flat := p.store.Registry.Query(p.filter())
-	out := make([]UnifiedBuild, len(flat))
-	for i, b := range flat {
+	queued := queuedUnifiedBuilds(p.store, p.filter())
+	out := make([]UnifiedBuild, 0, len(queued)+len(flat))
+	out = append(out, queued...)
+	for _, b := range flat {
 		jobName, branchName := extractJobAndBranch(b.JobPath)
-		out[i] = UnifiedBuild{
+		out = append(out, UnifiedBuild{
 			Build:       b.Build,
 			JobPath:     b.JobPath,
 			BranchName:  branchName,
 			DisplayName: jobName,
-		}
+		})
 	}
 	return out
 }

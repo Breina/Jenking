@@ -78,6 +78,10 @@ type StageView struct {
 	// Pending build state: waiting for Jenkins to create the build.
 	pending        bool
 	lastKnownBuild int
+	// queuedInfo is set when the pending view was opened from a queued row; it
+	// drives an informative "why" label in the waiting bar. Cleared once the
+	// build appears.
+	queuedInfo *jmodel.QueueItem
 
 	// autoFollowing is true while the view automatically tracks the active
 	// running stage. It is disabled the moment the user manually moves the
@@ -243,6 +247,12 @@ func (sv *StageView) pickPendingInputForStage(stageIdx int) *jmodel.PendingInput
 // the build. It polls ListBuilds until a build with a number higher than
 // lastKnownBuild appears, then switches to normal operation.
 func NewPendingStageView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, lastKnownBuild int) *StageView {
+	return NewPendingStageViewForQueue(t, client, store, nc, lastKnownBuild, nil)
+}
+
+// NewPendingStageViewForQueue is NewPendingStageView seeded with the queue item
+// the user drilled into, so the waiting bar can show the reason it is queued.
+func NewPendingStageViewForQueue(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, lastKnownBuild int, queued *jmodel.QueueItem) *StageView {
 	columns := []component.Column{
 		{Title: "STAGE", Width: 40},
 		{Title: "STATUS", Width: colStageStatusWidth},
@@ -260,6 +270,7 @@ func NewPendingStageView(t theme.Theme, client jmodel.JenkinsClient, store *cach
 		autoFollowing:  true,
 		pending:        true,
 		lastKnownBuild: lastKnownBuild,
+		queuedInfo:     queued,
 		trigger:        newTriggerMixin(t, client, base.nc),
 	}
 	sv.registerBehaviors()
@@ -659,6 +670,7 @@ func (sv *StageView) handleThemeChanged(msg ThemeChangedMsg) tea.Cmd {
 
 func (sv *StageView) handlePendingBuildFound(msg pendingBuildFoundMsg) tea.Cmd {
 	sv.pending = false
+	sv.queuedInfo = nil
 	sv.setBuild(msg.build)
 	sv.nc.Build = NavBuildRef{Number: msg.build.Number}
 	sv.preview.SetBuildNumber(msg.build.Number)
@@ -1353,7 +1365,11 @@ func (sv *StageView) View() string {
 		if barWidth < 1 {
 			barWidth = 1
 		}
-		bar := sv.progressBar.RenderPendingTall(barWidth, "Pending")
+		label := "Pending"
+		if sv.queuedInfo != nil {
+			label = queueStateLabel(*sv.queuedInfo)
+		}
+		bar := sv.progressBar.RenderPendingTall(barWidth, label)
 		return bar + "\n" + sv.table.View()
 	}
 	var content string

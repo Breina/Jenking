@@ -140,15 +140,17 @@ func (p *ProjectBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 func (p *ProjectBuildsProvider) Builds() []UnifiedBuild {
 	if p.store != nil && p.store.Registry != nil {
 		pbs := p.store.Registry.QueryProject(p.nc.JobPath())
-		result := make([]UnifiedBuild, len(pbs))
-		for i, b := range pbs {
-			result[i] = UnifiedBuild{
+		queued := queuedUnifiedBuilds(p.store, buildregistry.Filter{ProjectPath: p.nc.JobPath()})
+		result := make([]UnifiedBuild, 0, len(queued)+len(pbs))
+		result = append(result, queued...)
+		for _, b := range pbs {
+			result = append(result, UnifiedBuild{
 				Build:      b.Build,
 				JobPath:    b.BranchPath,
 				BranchName: b.BranchName,
 				TestResult: p.tt.get(b.BranchPath, b.Number),
 				Artifacts:  p.at.get(b.BranchPath, b.Number),
-			}
+			})
 		}
 		return result
 	}

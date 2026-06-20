@@ -570,6 +570,7 @@ func (a App) handleTypedMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) handleBuildEvents(msg tea.Msg) (App, tea.Cmd, bool) {
 	if msg, ok := msg.(view.RunningBuildsUpdatedMsg); ok {
 		a.header.SetRunningBuilds(msg.Count, "R")
+		a.header.SetQueuedBuilds(msg.QueuedCount)
 		if watchPath := a.notifyJobPath(); watchPath != "" {
 			for _, key := range msg.Arrived {
 				jobPath, number := jmodel.ParseBuildKey(key)

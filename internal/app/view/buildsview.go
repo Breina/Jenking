@@ -1,6 +1,7 @@
 package view
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/component"
@@ -30,6 +32,10 @@ type BuildsView struct {
 	fixedColsWidth int // sum of all non-flexible col widths + padding for all cols
 	trigger        triggerMixin
 	host           widget.BehaviorHost
+	// queued-build cancel flow (mirrors the host's cancelBehavior, but targets
+	// a queue item rather than a running build).
+	queueDialog       widget.ConfirmDialog
+	queueCancelTarget UnifiedBuild
 	// lazy fetch tracking
 	lastFetchedKey string
 }
@@ -71,6 +77,11 @@ func NewBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Stor
 			return NavigationContext{}, jmodel.Build{}, false
 		}
 		selected := builds[di]
+		if selected.Queued {
+			// Queued rows have no build number; build-only behaviors (cancel,
+			// stages, log, describe, tests, artifacts, trigger) do not apply.
+			return NavigationContext{}, jmodel.Build{}, false
+		}
 		return bv.ncForSelected(selected).AtBuild(selected.Number), selected.Build, true
 	}
 	storeFn := func() *cache.Store { return bv.store }
@@ -168,6 +179,11 @@ func (bv *BuildsView) populateTable() {
 		}
 		bv.filteredBuilds = append(bv.filteredBuilds, i)
 		ref := renderBuildRef(bv.theme, b, bv.nc.Level)
+		if b.Queued {
+			row := component.Row{ref, renderQueueStatus(bv.theme, b.QueueState), "—", relativeTime(b.Timestamp), b.Why}
+			rows = append(rows, row)
+			continue
+		}
 		var statusStr, durationStr string
 		if b.Status == jmodel.BuildStatusRunning {
 			elapsed := time.Since(b.Timestamp)
@@ -199,6 +215,10 @@ func (bv *BuildsView) maybeFetchSelected() tea.Cmd {
 		return nil
 	}
 	b := builds[di]
+	if b.Queued {
+		// No build exists yet — nothing to fetch.
+		return nil
+	}
 	key := fmt.Sprintf("%s:%d", b.JobPath, b.Number)
 	if key == bv.lastFetchedKey {
 		return nil
@@ -278,6 +298,25 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // chance. Returns (cmd, true) when the key produced a definitive action; the
 // caller falls through to maybeFetchSelected when (nil, false) is returned.
 func (bv *BuildsView) handleKeyMsg(msg tea.KeyMsg) (tea.Cmd, bool) {
+	// Queued-build cancel dialog owns all keys while open.
+	if bv.queueDialog.IsOpen() {
+		if bv.queueDialog.Update(msg) {
+			return bv.cancelQueuedCmd(), true
+		}
+		return nil, true
+	}
+	// Queued rows: intercept the queue-specific actions before the behavior
+	// host (whose build-only behaviors are inert here anyway).
+	if q, ok := bv.selectedQueued(); ok {
+		switch msg.String() {
+		case "enter", "s":
+			return bv.openPendingForQueued(q), true
+		case "x":
+			bv.queueCancelTarget = q
+			bv.queueDialog.Open()
+			return nil, true
+		}
+	}
 	if handled, cmd := bv.host.HandleKey(msg); handled {
 		return cmd, true
 	}
@@ -319,11 +358,84 @@ func (bv *BuildsView) startTriggerCmd() (tea.Cmd, bool) {
 	return bv.trigger.startTriggerFor(bv.nc, lastKnown), true
 }
 
+// selectedQueued returns the currently selected row iff it is a queued item.
+func (bv *BuildsView) selectedQueued() (UnifiedBuild, bool) {
+	builds := bv.provider.Builds()
+	di := bv.dataIndex(bv.table.Cursor())
+	if di < 0 || di >= len(builds) {
+		return UnifiedBuild{}, false
+	}
+	if b := builds[di]; b.Queued {
+		return b, true
+	}
+	return UnifiedBuild{}, false
+}
+
+// openPendingForQueued drills into the Pending stage view for a queued item,
+// seeded with the queue info so the waiting state shows the reason. This is the
+// same view shown right after a manual trigger.
+func (bv *BuildsView) openPendingForQueued(q UnifiedBuild) tea.Cmd {
+	nc := bv.ncForSelected(q)
+	item := jmodel.QueueItem{
+		ID:              q.QueueID,
+		JobPath:         q.JobPath,
+		DisplayName:     q.DisplayName,
+		Why:             q.Why,
+		InQueueSince:    q.Timestamp,
+		Cause:           q.Cause,
+		TriggeredBy:     q.TriggeredBy,
+		TriggeredByName: q.TriggeredByName,
+	}
+	switch q.QueueState {
+	case "stuck":
+		item.Stuck = true
+	case "blocked":
+		item.Blocked = true
+	case "pending":
+		item.Pending = true
+	default:
+		item.Buildable = true
+	}
+	child := NewPendingStageViewForQueue(bv.theme, bv.client, bv.store, nc, bv.lastKnownBuildFor(q.JobPath), &item)
+	return func() tea.Msg { return PushViewMsg{View: child} }
+}
+
+// cancelQueuedCmd removes the confirmed queue item. Reuses CancelBuildResultMsg
+// so the existing Update handler refreshes the provider on success.
+func (bv *BuildsView) cancelQueuedCmd() tea.Cmd {
+	id := bv.queueCancelTarget.QueueID
+	client := bv.client
+	return func() tea.Msg {
+		return CancelBuildResultMsg{Err: client.CancelQueueItem(context.Background(), id)}
+	}
+}
+
+// lastKnownBuildFor returns the highest build number the registry knows for a
+// job, used to seed the Pending view's "wait for a newer build" poll.
+func (bv *BuildsView) lastKnownBuildFor(jobPath string) int {
+	if bv.store == nil || bv.store.Registry == nil {
+		return 0
+	}
+	max := 0
+	for _, ub := range bv.store.Registry.Query(buildregistry.Filter{JobPath: jobPath}) {
+		if ub.Number > max {
+			max = ub.Number
+		}
+	}
+	return max
+}
+
 func (bv *BuildsView) View() string {
 	return bv.table.View()
 }
 
 func (bv *BuildsView) PopupView() string {
+	if bv.queueDialog.IsOpen() {
+		return bv.queueDialog.View(bv.theme,
+			"Cancel Queued Build",
+			fmt.Sprintf("Remove %s from the queue?", decodeName(bv.queueCancelTarget.DisplayName)),
+		)
+	}
 	return bv.host.PopupView()
 }
 
@@ -350,6 +462,16 @@ func (bv *BuildsView) Commands() []command.Command {
 }
 
 func (bv *BuildsView) Shortcuts() []component.Shortcut {
+	if _, ok := bv.selectedQueued(); ok {
+		return []component.Shortcut{
+			component.Nav("enter", "job"),
+			component.Nav("esc", "jobs"),
+			component.Action("x", "cancel"),
+			component.Filter("/", "search", false),
+			component.Filter("m", "mine", bv.filters.Mine),
+			component.Filter("r", "running", bv.filters.Running),
+		}
+	}
 	sc := []component.Shortcut{
 		component.Nav("enter", "stages"),
 		component.Nav("esc", "jobs"),
@@ -376,7 +498,7 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 }
 
 func (bv *BuildsView) HasPopup() bool {
-	return bv.host.HasPopup()
+	return bv.queueDialog.IsOpen() || bv.host.HasPopup()
 }
 
 func (bv *BuildsView) Close() error {
@@ -440,6 +562,9 @@ func (bv *BuildsView) ncForSelected(selected UnifiedBuild) NavigationContext {
 //
 // renderBuildRef renders the REF column cell for a build with ANSI theme colors.
 func renderBuildRef(t theme.Theme, b UnifiedBuild, level ContextLevel) string {
+	if b.Queued {
+		return renderQueuedRef(t, b, level)
+	}
 	numStr := t.Breadcrumb.BuildNum.Render(fmt.Sprintf("#%d", b.Number))
 	switch level {
 	case CtxBranch:
@@ -462,6 +587,33 @@ func renderBuildRef(t theme.Theme, b UnifiedBuild, level ContextLevel) string {
 		icon := refIcon(b.BranchName)
 		branch := t.Breadcrumb.Context.Render(decodeName(b.BranchName))
 		return proj + " " + t.Breadcrumb.Paren.Render(icon) + " " + branch + " " + numStr
+	}
+}
+
+// renderQueuedRef renders the REF cell for a queued row. There is no build
+// number yet, so it identifies the row by job/branch instead. The STATUS column
+// carries the "queued" badge, so this only needs to name the target.
+func renderQueuedRef(t theme.Theme, b UnifiedBuild, level ContextLevel) string {
+	switch level {
+	case CtxBranch:
+		return t.Breadcrumb.Context.Render("(queued)")
+	case CtxProject:
+		if b.BranchName == "" {
+			return t.Breadcrumb.Context.Render("(queued)")
+		}
+		icon := refIcon(b.BranchName)
+		return t.Breadcrumb.Paren.Render(icon) + " " + t.Breadcrumb.Context.Render(decodeName(b.BranchName))
+	default: // CtxRoot, CtxFolder
+		displayName := shortName(decodeName(b.DisplayName))
+		if displayName == "" {
+			return t.Breadcrumb.Context.Render("(queued)")
+		}
+		proj := t.Breadcrumb.Context.Render(displayName)
+		if b.BranchName == "" {
+			return proj
+		}
+		icon := refIcon(b.BranchName)
+		return proj + " " + t.Breadcrumb.Paren.Render(icon) + " " + t.Breadcrumb.Context.Render(decodeName(b.BranchName))
 	}
 }
 

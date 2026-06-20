@@ -3,11 +3,13 @@ package view
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
@@ -67,6 +69,73 @@ type UnifiedBuild struct {
 	DisplayName string             // human-readable project name (for REF column at root/folder level)
 	TestResult  *jmodel.TestReport // nil until fetched or unavailable
 	Artifacts   []jmodel.Artifact  // nil = not yet fetched; empty slice = confirmed none
+
+	// Queue fields — set when this row is a waiting build-queue item rather than
+	// a real build. Queued rows carry Number==0 and Status==BuildStatusQueued.
+	Queued     bool
+	QueueID    int64
+	QueueState string // "buildable" | "blocked" | "pending" | "stuck"
+	Why        string // human-readable waiting reason
+}
+
+// queueSubState collapses a queue item's flags into a single sub-state badge
+// key, by priority (stuck > blocked > pending > buildable).
+func queueSubState(it jmodel.QueueItem) string {
+	switch {
+	case it.Stuck:
+		return "stuck"
+	case it.Blocked:
+		return "blocked"
+	case it.Pending:
+		return "pending"
+	default:
+		return "buildable"
+	}
+}
+
+// queuedUnifiedBuilds returns the scoped build-queue items as UnifiedBuild rows,
+// sorted oldest-queued first (closest to running). Providers prepend these
+// above their real builds so BuildsView renders the queued section on top.
+func queuedUnifiedBuilds(store *cache.Store, filter buildregistry.Filter) []UnifiedBuild {
+	if store == nil || store.Queue == nil {
+		return nil
+	}
+	items := store.Queue.Query(filter)
+	if len(items) == 0 {
+		return nil
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].InQueueSince.Before(items[j].InQueueSince)
+	})
+	out := make([]UnifiedBuild, 0, len(items))
+	for _, it := range items {
+		// Merge into one active row per job: if the job already has a running
+		// build, that running row represents this execution — don't also show a
+		// separate queued line for it (this is the queued→running transition).
+		if store.Registry != nil && store.Registry.HasRunning(buildregistry.Filter{JobPath: it.JobPath}) {
+			continue
+		}
+		jobName, branchName := extractJobAndBranch(it.JobPath)
+		out = append(out, UnifiedBuild{
+			Build: jmodel.Build{
+				Number:          0,
+				Status:          jmodel.BuildStatusQueued,
+				Timestamp:       it.InQueueSince,
+				Params:          it.Params,
+				Cause:           it.Cause,
+				TriggeredBy:     it.TriggeredBy,
+				TriggeredByName: it.TriggeredByName,
+			},
+			JobPath:     it.JobPath,
+			BranchName:  branchName,
+			DisplayName: jobName,
+			Queued:      true,
+			QueueID:     it.ID,
+			QueueState:  queueSubState(it),
+			Why:         it.Why,
+		})
+	}
+	return out
 }
 
 // BuildsViewConfig declares which shortcuts are active for a provider.

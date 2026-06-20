@@ -41,6 +41,9 @@ type Store struct {
 	// Registry is the single source of truth for build status.
 	Registry *buildregistry.Registry
 
+	// Queue holds the latest build-queue snapshot (items waiting to run).
+	Queue *QueueStore
+
 	Disk        *DiskStore // nil when disk persistence is disabled
 	dirtyMu     sync.Mutex
 	dirtyJobs   map[string]bool // folderPaths whose Jobs cache is stale
@@ -59,6 +62,7 @@ func NewStore(disk *DiskStore) *Store {
 		BuildDetail:   New[string, jmodel.Build](100),
 		PendingInputs: New[string, []jmodel.PendingInput](100),
 		Symbols:       New[string, *pipelinesyntax.Symbols](200),
+		Queue:         NewQueueStore(),
 		Disk:          disk,
 		dirtyJobs:     make(map[string]bool),
 		dirtyBuilds:   make(map[string]bool),
