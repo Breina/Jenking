@@ -1,3 +1,9 @@
+# Jenking: built binary, private keys, and the stray .get/ git dir.
+# Keeps secrets and the 23MB binary from being committed by accident.
+/jenking
+*.pem
+/.get/
+
 ### JetBrains template
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
 # Reference: https://intellij-support.jetbrains.com/hc/en-us/articles/206544839

@@ -24,13 +24,23 @@ You don't need to plan every detail upfront. Exploratory coding is welcome — b
 
 ---
 
-## Running tests
+## Running tests and linting
 
 ```sh
-go test ./...
+make test     # go test ./...
+make lint     # golangci-lint run
+make build    # go build ./cmd/jenking
 ```
 
-All tests must pass before submitting. The CI will enforce this, but run it locally first.
+All tests and the linter must pass before submitting. CI enforces both (see
+`.github/workflows/`), but run them locally first. If you don't have
+`golangci-lint` installed, `make lint-install` fetches it.
+
+End-to-end tests live behind a build tag and need a real Jenkins instance:
+
+```sh
+make test-e2e
+```
 
 ---
 
@@ -71,6 +81,10 @@ Open a [GitHub Issue](../../issues). Include:
 
 ## Code style
 
-- Standard Go formatting (`gofmt`). No custom linter config for now.
-- Keep packages cohesive. The `jenkins` package talks to Jenkins. The `tui` package renders things. Don't blur those boundaries.
+- Standard Go formatting (`gofmt`), enforced along with the project's lint rules
+  by `golangci-lint` (config in `.golangci.yml`).
+- Respect the layering. The `jenkins` package talks to Jenkins, the `tui`
+  package renders generic UI, the `domain` package is pure. These boundaries are
+  enforced by `depguard` — see [docs/architecture.md](docs/architecture.md) for
+  the dependency matrix.
 - Prefer editing existing files over adding new ones for small changes.

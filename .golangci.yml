@@ -1,0 +1,208 @@
+# Jenking lint config — see docs/architecture.md for rationale.
+# Strict from day one: known violations are tracked in §6 Migration roadmap.
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - depguard       # architectural layer enforcement
+    - gocyclo        # cyclomatic complexity
+    - gocognit       # cognitive complexity
+    - dupl           # duplicate-code detection
+    - funlen         # function length
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    # - revive       # disabled: 288 mostly-style violations; re-enable with focused rule set later
+
+  settings:
+    gocyclo:
+      min-complexity: 20    # initial; target 15 — see architecture.md §5
+    gocognit:
+      min-complexity: 25    # initial; target 20
+    dupl:
+      threshold: 100        # tokens; tighten to 75 after migration
+    funlen:
+      lines: 120
+      statements: 60
+
+    depguard:
+      rules:
+        # ---- domain: stdlib only -------------------------------------------
+        domain:
+          list-mode: lax
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/jenkins"
+              desc: "domain must not depend on adapters; define a port and have jenkins implement it (architecture.md §3)"
+            - pkg: "github.com/Breina/Jenking/internal/cache"
+              desc: "domain must not depend on adapters"
+            - pkg: "github.com/Breina/Jenking/internal/tui"
+              desc: "domain must not depend on UI"
+            - pkg: "github.com/Breina/Jenking/internal/monitor"
+              desc: "domain must not depend on app layer"
+            - pkg: "github.com/Breina/Jenking/internal/action"
+              desc: "domain must not depend on app layer"
+            - pkg: "github.com/Breina/Jenking/internal/notify"
+              desc: "domain must not depend on adapters"
+            - pkg: "github.com/Breina/Jenking/internal/updater"
+              desc: "domain must not depend on adapters"
+            - pkg: "github.com/Breina/Jenking/internal/config"
+              desc: "domain must not depend on config"
+
+        # ---- tui framework: generic only -----------------------------------
+        # internal/tui/* must be Jenking-agnostic (extractable as a standalone
+        # library). The framework root has no .go files of its own — every
+        # subpackage is enforced as Jenking-agnostic. Jenking-specific glue
+        # lives in internal/app/.
+        tui-framework:
+          list-mode: lax
+          files:
+            - "**/internal/tui/component/**"
+            - "**/internal/tui/theme/**"
+            - "**/internal/tui/command/**"
+            - "**/internal/tui/widget/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/jenkins"
+              desc: "tui framework must be Jenking-agnostic (architecture.md §2). Use a generic interface."
+            - pkg: "github.com/Breina/Jenking/internal/cache"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/domain"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/monitor"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/action"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/config"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/notify"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/updater"
+              desc: "tui framework must be Jenking-agnostic"
+            - pkg: "github.com/Breina/Jenking/internal/version"
+              desc: "tui framework must be Jenking-agnostic; receive version via parameter"
+
+        # ---- adapters: domain + stdlib + own libs --------------------------
+        adapter-jenkins:
+          list-mode: lax
+          files:
+            - "**/internal/jenkins/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/tui"
+              desc: "adapters must not depend on UI"
+            - pkg: "github.com/Breina/Jenking/internal/monitor"
+              desc: "adapters must not depend on app layer"
+            - pkg: "github.com/Breina/Jenking/internal/action"
+              desc: "adapters must not depend on app layer"
+            - pkg: "github.com/Breina/Jenking/internal/cache"
+              desc: "adapters must not depend on other adapters"
+            - pkg: "github.com/Breina/Jenking/internal/notify"
+              desc: "adapters must not depend on other adapters"
+            - pkg: "github.com/Breina/Jenking/internal/updater"
+              desc: "adapters must not depend on other adapters"
+
+        adapter-cache:
+          list-mode: lax
+          files:
+            - "**/internal/cache/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/jenkins"
+              desc: "cache must speak domain types only; do not depend on the jenkins adapter (architecture.md §6.1)"
+            - pkg: "github.com/Breina/Jenking/internal/tui"
+              desc: "adapters must not depend on UI"
+            - pkg: "github.com/Breina/Jenking/internal/monitor"
+              desc: "adapters must not depend on app layer"
+            - pkg: "github.com/Breina/Jenking/internal/action"
+              desc: "adapters must not depend on app layer"
+
+        adapter-notify:
+          list-mode: lax
+          files:
+            - "**/internal/notify/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/tui"
+              desc: "adapters must not depend on UI"
+            - pkg: "github.com/Breina/Jenking/internal/jenkins"
+              desc: "adapters must not depend on other adapters"
+            - pkg: "github.com/Breina/Jenking/internal/monitor"
+              desc: "adapters must not depend on app layer"
+
+        adapter-updater:
+          list-mode: lax
+          files:
+            - "**/internal/updater/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/tui"
+              desc: "adapters must not depend on UI"
+            - pkg: "github.com/Breina/Jenking/internal/jenkins"
+              desc: "adapters must not depend on other adapters"
+
+        # ---- app/monitor + app/action: must not reach into UI internals ---
+        # They emit bubbletea.Msg; views consume.
+        app-headless:
+          list-mode: lax
+          files:
+            - "**/internal/monitor/**"
+            - "**/internal/action/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/internal/app/view"
+              desc: "headless app code must not reach into UI views; emit a bubbletea.Msg instead (architecture.md §6.1)"
+            - pkg: "github.com/Breina/Jenking/internal/tui/component"
+              desc: "headless app code must not reach into UI components"
+            - pkg: "github.com/Breina/Jenking/cmd"
+              desc: "app must not depend on cmd; cmd wires app"
+
+        # ---- everyone: never depend on cmd ---------------------------------
+        no-cmd-import:
+          list-mode: lax
+          files:
+            - "**/internal/**"
+          deny:
+            - pkg: "github.com/Breina/Jenking/cmd"
+              desc: "no internal package may import cmd"
+
+  exclusions:
+    rules:
+      # Tests get a pass on dup/funlen — table tests legitimately repeat.
+      - path: _test\.go
+        linters:
+          - dupl
+          - funlen
+          - gocyclo
+          - gocognit
+      # theme data tables are repetitive by nature, not logic duplication
+      - path: internal/tui/theme/themes\.go
+        linters:
+          - dupl
+      # logscore: pure scoring tables / per-rune classification — branching
+      # density is inherent to the algorithm, not a structural smell.
+      - path: internal/app/logscore/
+        linters:
+          - gocognit
+          - gocyclo
+      # matrix view: cellular-automaton rendering — grid math is dense by
+      # nature; splitting further hurts readability more than it helps.
+      - path: internal/app/view/matrix\.go
+        linters:
+          - gocognit
+          - gocyclo
+      # e2e harness is its own thing
+      - path: test/e2e/
+        linters:
+          - depguard
+          - dupl
+          - funlen
+          - gocyclo
+          - gocognit
