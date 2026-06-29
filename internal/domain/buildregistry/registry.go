@@ -16,12 +16,20 @@
 package buildregistry
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
+
+// retainPerJob bounds how many records the registry keeps per job path. The
+// all-builds scan only ever returns maxBuildsPerJob (10) builds per job, so any
+// records beyond this cap are stale history that would otherwise accumulate
+// unbounded as new builds run. Currently-running builds are always retained
+// regardless of this cap.
+const retainPerJob = 15
 
 // Source identifies which ingress wrote a record.
 type Source int
@@ -237,6 +245,31 @@ func (r *Registry) upsertLocked(k Key, b jmodel.Build, jobPath, branchName, disp
 	return true
 }
 
+// pruneLocked evicts stale completed records so the registry stays bounded.
+// For each job path it keeps the retainPerJob highest build numbers; older
+// records are dropped, except any build that is currently live (running), which
+// is never evicted. Must be called with r.mu held for writing.
+func (r *Registry) pruneLocked() {
+	byJob := make(map[string][]int)
+	for k := range r.records {
+		byJob[k.JobPath] = append(byJob[k.JobPath], k.Number)
+	}
+	for jobPath, nums := range byJob {
+		if len(nums) <= retainPerJob {
+			continue
+		}
+		// Highest build numbers first; evict everything past the retention cap.
+		sort.Sort(sort.Reverse(sort.IntSlice(nums)))
+		for _, n := range nums[retainPerJob:] {
+			k := Key{JobPath: jobPath, Number: n}
+			if _, live := r.liveRunning[k]; live {
+				continue // never evict a running build
+			}
+			delete(r.records, k)
+		}
+	}
+}
+
 // IngestRunningSnapshot replaces liveRunning with builds and upserts each.
 // For every key that was in the previous liveRunning set and is now absent,
 // schedules a reconciliation fetch.
@@ -301,6 +334,7 @@ func (r *Registry) ingestList(builds []jmodel.UserBuild, src Source) {
 			}
 		}
 	}
+	r.pruneLocked()
 	snapshot := r.snapshotLocked()
 	reconcile := r.reconcile
 	onChange := r.onChange
@@ -342,6 +376,7 @@ func (r *Registry) IngestProjectList(projectPath string, builds []jmodel.Project
 			}
 		}
 	}
+	r.pruneLocked()
 	snapshot := r.snapshotLocked()
 	reconcile := r.reconcile
 	onChange := r.onChange
@@ -469,11 +504,9 @@ func (r *Registry) Query(filter Filter) []jmodel.UserBuild {
 	r.mu.RUnlock()
 
 	// Sort newest first.
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].Timestamp.After(out[j-1].Timestamp); j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Timestamp.After(out[j].Timestamp)
+	})
 
 	if reconcile != nil {
 		for _, k := range needRecon {
@@ -508,11 +541,9 @@ func (r *Registry) QueryProject(projectPath string) []jmodel.ProjectBuild {
 	reconcile := r.reconcile
 	r.mu.RUnlock()
 
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j].Timestamp.After(out[j-1].Timestamp); j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Timestamp.After(out[j].Timestamp)
+	})
 	if reconcile != nil {
 		for _, k := range needRecon {
 			reconcile(k)

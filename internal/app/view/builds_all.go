@@ -39,7 +39,13 @@ type AllBuildsProvider struct {
 	folderFilter     string
 	slowInterval     time.Duration
 	visualTickActive bool
+	onlyRunning      bool
 }
+
+// SetOnlyRunning restricts Builds() to currently-running builds, so the
+// registry query skips completed records entirely instead of returning them
+// for the view to filter out. Implements onlyRunningSetter.
+func (p *AllBuildsProvider) SetOnlyRunning(v bool) { p.onlyRunning = v }
 
 // NewAllBuildsProvider creates an AllBuildsProvider. folderFilter may be "" for
 // the global all-builds view, or a folder path (e.g. "Code") to scope the view.
@@ -66,7 +72,7 @@ func (p *AllBuildsProvider) Refresh() tea.Cmd {
 }
 
 func (p *AllBuildsProvider) filter() buildregistry.Filter {
-	return buildregistry.Filter{FolderPrefix: p.folderFilter}
+	return buildregistry.Filter{FolderPrefix: p.folderFilter, OnlyRunning: p.onlyRunning}
 }
 
 func (p *AllBuildsProvider) Builds() []UnifiedBuild {

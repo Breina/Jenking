@@ -38,6 +38,11 @@ type BuildsView struct {
 	queueCancelTarget UnifiedBuild
 	// lazy fetch tracking
 	lastFetchedKey string
+	// builds caches the provider's last query result so the many per-frame
+	// readers (populateTable, Shortcuts, ItemCount, selection lookups) don't each
+	// re-run the provider's Builds() query. Refreshed by populateTable, which is
+	// called on every data-changing message and on filter/search toggles.
+	builds []UnifiedBuild
 }
 
 // NewBuildsView creates a BuildsView backed by the given provider.
@@ -71,7 +76,7 @@ func NewBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Stor
 	}
 	// Row-aware accessor: returns the currently selected build's NC + Build.
 	access := func() (NavigationContext, jmodel.Build, bool) {
-		builds := bv.provider.Builds()
+		builds := bv.currentBuilds()
 		di := bv.dataIndex(bv.table.Cursor())
 		if di < 0 || di >= len(builds) {
 			return NavigationContext{}, jmodel.Build{}, false
@@ -145,8 +150,20 @@ func (bv *BuildsView) ToggleMine() {
 
 func (bv *BuildsView) ToggleRunning() {
 	bv.filters.Running = !bv.filters.Running
+	// Let the provider push the running constraint into its registry query so
+	// completed builds are skipped at the source, not just filtered out here.
+	if s, ok := bv.provider.(onlyRunningSetter); ok {
+		s.SetOnlyRunning(bv.filters.Running)
+	}
 	bv.populateTable()
 	bv.table.SetCursor(0)
+}
+
+// onlyRunningSetter is optionally implemented by providers that can restrict
+// their registry query to currently-running builds (a cheaper query than
+// returning every build and filtering in the view).
+type onlyRunningSetter interface {
+	SetOnlyRunning(bool)
 }
 
 func (bv *BuildsView) dataIndex(tableIdx int) int {
@@ -162,8 +179,17 @@ func (bv *BuildsView) Init() tea.Cmd {
 	return cmd
 }
 
+// currentBuilds returns the cached build set from the last populateTable.
+// Callers in the per-frame read path (selection lookups, Shortcuts, ItemCount)
+// use this instead of bv.provider.Builds() to avoid re-running the provider
+// query — and to stay consistent with the rows the table was built from.
+func (bv *BuildsView) currentBuilds() []UnifiedBuild {
+	return bv.builds
+}
+
 func (bv *BuildsView) populateTable() {
 	builds := bv.provider.Builds()
+	bv.builds = builds
 	bv.filteredBuilds = nil
 	var rows []component.Row
 	for i, b := range builds {
@@ -209,7 +235,7 @@ func (bv *BuildsView) maybeFetchSelected() tea.Cmd {
 	if bv.store == nil {
 		return nil
 	}
-	builds := bv.provider.Builds()
+	builds := bv.currentBuilds()
 	di := bv.dataIndex(bv.table.Cursor())
 	if di < 0 || di >= len(builds) {
 		return nil
@@ -368,7 +394,7 @@ func (bv *BuildsView) startTriggerCmd() (tea.Cmd, bool) {
 
 // selectedJobPath returns the job path of the selected row, or "".
 func (bv *BuildsView) selectedJobPath() string {
-	builds := bv.provider.Builds()
+	builds := bv.currentBuilds()
 	di := bv.dataIndex(bv.table.Cursor())
 	if di < 0 || di >= len(builds) {
 		return ""
@@ -378,7 +404,7 @@ func (bv *BuildsView) selectedJobPath() string {
 
 // selectedQueued returns the currently selected row iff it is a queued item.
 func (bv *BuildsView) selectedQueued() (UnifiedBuild, bool) {
-	builds := bv.provider.Builds()
+	builds := bv.currentBuilds()
 	di := bv.dataIndex(bv.table.Cursor())
 	if di < 0 || di >= len(builds) {
 		return UnifiedBuild{}, false
@@ -472,7 +498,7 @@ func (bv *BuildsView) ItemCount() int {
 	if bv.filteredBuilds != nil {
 		return len(bv.filteredBuilds)
 	}
-	return len(bv.provider.Builds())
+	return len(bv.currentBuilds())
 }
 
 func (bv *BuildsView) Commands() []command.Command {
@@ -502,8 +528,7 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 	if cachedRepoURL(bv.store, bv.selectedJobPath()) != "" {
 		sc = append(sc, component.Nav("o", "open repo"))
 	}
-	builds := bv.provider.Builds()
-	if len(builds) == 0 {
+	if len(bv.currentBuilds()) == 0 {
 		sc = append(sc,
 			component.Filter("/", "search", false),
 			component.Filter("m", "mine", bv.filters.Mine),
@@ -567,7 +592,7 @@ func (bv *BuildsView) ScrollInfo() widget.ScrollInfo {
 // InspectTarget returns the nc for the :inspect command — build-level for a
 // resolvable row, job-level for a queued row (no build number yet).
 func (bv *BuildsView) InspectTarget() (NavigationContext, bool) {
-	builds := bv.provider.Builds()
+	builds := bv.currentBuilds()
 	di := bv.dataIndex(bv.table.Cursor())
 	if di < 0 || di >= len(builds) {
 		return NavigationContext{}, false
