@@ -29,33 +29,88 @@ const (
 	CtxStage                       // a specific stage
 )
 
-// NavBuildRef is a navigation cursor for a build: either a concrete number or
-// the "#last" moving reference. Distinct from jmodel.BuildRef (API ref).
+// NavBuildRef is a navigation cursor for a build. The three fields are
+// orthogonal, not alternatives:
+//
+//	Number/DisplayName — the identity of the build the cursor currently points at.
+//	IsLast            — whether the cursor FOLLOWS the newest build ("#last").
+//
+// A "#last" cursor is therefore normally *also* resolved: {IsLast: true,
+// Number: 44, DisplayName: "Release 1.0.7"} means "the #last alias, currently
+// build 44". Both halves are rendered (`#last → Release 1.0.7`); neither is
+// dropped in favour of the other. Distinct from jmodel.BuildRef (API ref).
 type NavBuildRef struct {
-	Number int  // 0 = unset
-	IsLast bool // true = "#last" moving reference (Number should be 0)
+	Number int  // 0 = unresolved
+	IsLast bool // true = "#last" moving reference
+	// DisplayName is the build's custom display name (Jenkins `displayName`) when
+	// set, e.g. "release-2.3.1". Empty for the default "#<number>" name. When
+	// present it replaces the number in the breadcrumb. Kept in sync with the
+	// live build so a name set mid-run is reflected immediately.
+	DisplayName string
 }
+
+// Resolved reports whether the cursor points at a concrete build.
+func (r NavBuildRef) Resolved() bool { return r.Number > 0 }
 
 // NavigationContext is the unified navigation state passed through view constructors.
 // It replaces the ad-hoc (jobPath, jobName, branchName) tuple.
 type NavigationContext struct {
-	Level        ContextLevel
-	FolderPath   string // slash-separated folder prefix, e.g. "Code Private"
-	ProjectName  string // multibranch project or standalone job name
-	BranchName   string // branch/MR name (URL-encoded as Jenkins stores it)
-	Build        NavBuildRef
-	StageName    string   // leaf stage name; used for lookups and back-navigation
-	StageParent  string   // immediate parent stage name, for breadcrumb disambiguation
+	Level       ContextLevel
+	FolderPath  string // slash-separated folder prefix, e.g. "Code Private"
+	ProjectName string // multibranch project or standalone job name
+	BranchName  string // branch/MR name (URL-encoded as Jenkins stores it)
+	Build       NavBuildRef
+	StageName   string // leaf stage name; used for lookups and back-navigation
+	StageParent string // immediate parent stage name, for breadcrumb disambiguation
+	// AliasScope is the location level the "#last" alias was anchored at
+	// (root/folder/project/branch). Only meaningful when Build.IsLast. It is
+	// what lets any view — not just the one that did the resolving — split the
+	// breadcrumb into "what the user asked for" and "what it resolved to":
+	// a root-anchored #last renders `*/#last → project ↳branch #44`, a
+	// branch-anchored one `project ↳branch #last → #44`.
+	AliasScope ContextLevel
+	// ViewName is the Jenkins view the job list is filtered by. Only meaningful
+	// at CtxRoot/CtxFolder; deeper levels ignore it but carry it so returning
+	// to the job list restores the filter. Empty = unfiltered.
+	ViewName     string
 	Username     string   // authenticated user (for mine filter); set at root
 	GitUsernames []string // additional names to match in trigger descriptions (e.g. GitLab push)
 	FriendlyName string   // display name for the user (e.g. "Brecht Derwael")
 }
 
-// AtBuild returns a CtxBuild NC for the given build number, inheriting all
-// location fields and Username from the receiver.
+// AtBuild returns a CtxBuild NC pinned to a concrete build number, inheriting
+// all location fields and Username from the receiver. Pinning is deliberate:
+// any "#last" alias the receiver carried is dropped. Use AtBuildRef to move to
+// a build without deciding that question.
 func (nc NavigationContext) AtBuild(number int) NavigationContext {
+	return nc.AtBuildRef(NavBuildRef{Number: number})
+}
+
+// AtBuildRef returns a CtxBuild NC for the given build cursor, inheriting all
+// location fields and Username from the receiver. This is the single edge for
+// "navigate to this build": sibling swaps and back-navigation pass the ref they
+// already hold so alias-ness and display name survive the hop.
+func (nc NavigationContext) AtBuildRef(ref NavBuildRef) NavigationContext {
+	if ref.IsLast {
+		return nc.AtLastBuild(ref)
+	}
 	nc.Level = CtxBuild
-	nc.Build = NavBuildRef{Number: number}
+	nc.Build = ref
+	nc.AliasScope = CtxRoot
+	nc.StageName = ""
+	nc.StageParent = ""
+	return nc
+}
+
+// AtLastBuild returns a CtxBuild NC following the "#last" alias, anchored at
+// the receiver's location level. ref carries whatever resolution is already
+// known (number/display name); pass a zero ref when the alias is unresolved.
+func (nc NavigationContext) AtLastBuild(ref NavBuildRef) NavigationContext {
+	anchor := nc.AtScope().Level
+	ref.IsLast = true
+	nc.Level = CtxBuild
+	nc.Build = ref
+	nc.AliasScope = anchor
 	nc.StageName = ""
 	nc.StageParent = ""
 	return nc
@@ -100,6 +155,7 @@ func (nc NavigationContext) ClipTo(level ContextLevel) NavigationContext {
 	}
 	if level < CtxBuild {
 		nc.Build = NavBuildRef{}
+		nc.AliasScope = CtxRoot
 	}
 	if level < CtxBranch {
 		nc.BranchName = ""
@@ -119,6 +175,7 @@ func (nc NavigationContext) ClipTo(level ContextLevel) NavigationContext {
 // CtxBuild/CtxStage → CtxBranch (if branch set), else CtxProject, etc.
 func (nc NavigationContext) AtScope() NavigationContext {
 	nc.Build = NavBuildRef{}
+	nc.AliasScope = CtxRoot
 	nc.StageName = ""
 	nc.StageParent = ""
 	if nc.BranchName != "" {
@@ -138,22 +195,6 @@ func (nc NavigationContext) AtScope() NavigationContext {
 	nc.FolderPath = ""
 	nc.Level = CtxRoot
 	return nc
-}
-
-// matchesUser reports whether a build was triggered by the given user.
-// It checks the Jenkins userId first, then falls back to substring-matching
-// the cause description against any configured git usernames (e.g.
-// "Brecht Derwael" matches "Started by GitLab push by Brecht Derwael").
-func matchesUser(b jmodel.Build, username string, gitUsernames []string) bool {
-	if b.TriggeredBy == username {
-		return true
-	}
-	for _, name := range gitUsernames {
-		if name != "" && strings.Contains(b.Cause, name) {
-			return true
-		}
-	}
-	return false
 }
 
 // JobPath reconstructs the slash-joined API path from the context fields.
@@ -227,6 +268,34 @@ func (b *BaseView) NC() NavigationContext { return b.nc }
 // Scope returns the navigation level this view is anchored at.
 func (b *BaseView) Scope() ContextLevel { return b.scope }
 
+// SeedBuildIdentity fills in build identity the nc does not have yet, from the
+// build a view was constructed with. It never overwrites what is already there
+// (a caller passing a bare jmodel.Build{Number: n} must not wipe a display name
+// the nc carried in) and never touches alias state.
+func (b *BaseView) SeedBuildIdentity(build jmodel.Build) {
+	if build.Number <= 0 {
+		return
+	}
+	if b.nc.Build.Number == 0 {
+		b.nc.Build.Number = build.Number
+	}
+	if b.nc.Build.DisplayName == "" {
+		b.nc.Build.DisplayName = build.Name
+	}
+}
+
+// SyncBuildIdentity updates the nc from an authoritative observation of the
+// live build — a poll tick, a cache restore — so a display name set or changed
+// mid-run is reflected everywhere the nc travels. Alias state is preserved:
+// a "#last" cursor stays a "#last" cursor, it just learns what it points at.
+func (b *BaseView) SyncBuildIdentity(build jmodel.Build) {
+	if build.Number <= 0 {
+		return
+	}
+	b.nc.Build.Number = build.Number
+	b.nc.Build.DisplayName = build.Name
+}
+
 // MakeBreadcrumb returns a scope-clipped BreadcrumbSegment. Views decorate it
 // (NavTag, Running, Mine, Failed, ResolvedParts, etc.) before returning.
 func (b *BaseView) MakeBreadcrumb(viewType string) BreadcrumbSegment {
@@ -255,12 +324,49 @@ func (b *BaseView) Close() error {
 // and the framework handles projection.
 func BreadcrumbFor(viewType string, nc NavigationContext, scope ContextLevel) BreadcrumbSegment {
 	nc = nc.ClipTo(scope)
-	return BreadcrumbSegment{ViewType: viewType, Context: contextParts(nc)}
+	ctx, resolved := breadcrumbParts(nc)
+	return BreadcrumbSegment{ViewType: viewType, Context: ctx, ResolvedParts: resolved}
 }
 
-// contextParts builds the []component.BreadcrumbPart chain from the NavigationContext.
-// It includes: * (global scope) → project → branch → build → stage, based on what fields are set.
-func contextParts(nc NavigationContext) []component.BreadcrumbPart {
+// breadcrumbParts splits a NavigationContext into the context parts and the
+// resolved tail shown after the " → " arrow.
+//
+// There is exactly one rule. Without a "#last" alias everything is context:
+// path → build → stage. With one, the context stops at the level the alias was
+// anchored at and ends in "#last"; everything the alias resolved to (the path
+// segments below the anchor, the build identity, the stage) forms the tail.
+// Because both halves come from the nc alone, every view renders the same
+// breadcrumb for the same location — no view needs its own resolver.
+func breadcrumbParts(nc NavigationContext) (ctx, resolved []component.BreadcrumbPart) {
+	if !nc.Build.IsLast {
+		ctx = pathParts(nc)
+		if p, ok := buildPart(nc.Build); ok {
+			ctx = append(ctx, p)
+		}
+		return append(ctx, stageParts(nc)...), nil
+	}
+
+	anchor := nc.AliasScope
+	if anchor > CtxBranch {
+		anchor = CtxBranch // aliases anchor at a location, never at a build
+	}
+	ctx = pathParts(nc.ClipTo(anchor))
+	ctx = append(ctx, component.BreadcrumbPart{Text: "last", IsBuildNum: true, Separator: " "})
+
+	resolved = pathPartsBelow(nc, anchor)
+	if p, ok := buildPart(NavBuildRef{Number: nc.Build.Number, DisplayName: nc.Build.DisplayName}); ok {
+		resolved = append(resolved, p)
+	}
+	if len(resolved) == 0 {
+		// Alias not resolved yet — the stage (if any) still belongs to the
+		// context, so it isn't lost behind an arrow that never renders.
+		return append(ctx, stageParts(nc)...), nil
+	}
+	return ctx, append(resolved, stageParts(nc)...)
+}
+
+// pathParts renders the location portion: * (global scope) → folder → project → branch.
+func pathParts(nc NavigationContext) []component.BreadcrumbPart {
 	var parts []component.BreadcrumbPart
 	switch {
 	case nc.Level == CtxFolder:
@@ -278,24 +384,56 @@ func contextParts(nc NavigationContext) []component.BreadcrumbPart {
 			Separator: branchIcon(nc.BranchName),
 		})
 	}
-	if nc.Build.IsLast {
-		parts = append(parts, component.BreadcrumbPart{Text: "last", IsBuildNum: true, Separator: " "})
-	} else if nc.Build.Number > 0 {
-		parts = append(parts, component.BreadcrumbPart{Text: fmt.Sprintf("%d", nc.Build.Number), IsBuildNum: true, Separator: " "})
+	return parts
+}
+
+// pathPartsBelow renders only the location parts the alias anchor did not
+// already cover — what "#last" resolved to beyond what the user asked for.
+func pathPartsBelow(nc NavigationContext, anchor ContextLevel) []component.BreadcrumbPart {
+	var parts []component.BreadcrumbPart
+	if anchor < CtxProject && nc.ProjectName != "" {
+		parts = append(parts, component.BreadcrumbPart{Text: shortName(decodeName(nc.ProjectName))})
 	}
-	if nc.StageName != "" {
-		// Render the immediate parent as its own part so the leaf never
-		// truncates and only the (often long) parent front-truncates. This
-		// disambiguates non-unique leaves like matrix-cell "Build" stages.
-		if nc.StageParent != "" {
-			parts = append(parts, component.BreadcrumbPart{Text: nc.StageParent, Separator: ":"})
-			parts = append(parts, component.BreadcrumbPart{Text: nc.StageName, Separator: " › "})
-		} else {
-			parts = append(parts, component.BreadcrumbPart{Text: nc.StageName, Separator: ":"})
-		}
+	if anchor < CtxBranch && nc.BranchName != "" {
+		parts = append(parts, component.BreadcrumbPart{
+			Text:      decodeName(nc.BranchName),
+			Separator: branchIcon(nc.BranchName),
+		})
 	}
 	return parts
 }
+
+// buildPart renders a resolved build's identity: its display name when Jenkins
+// has one, else "#<number>". Reports false when the ref is unresolved.
+func buildPart(ref NavBuildRef) (component.BreadcrumbPart, bool) {
+	if ref.DisplayName != "" {
+		return component.BreadcrumbPart{Text: ref.DisplayName, IsBuildNum: true, NoHashPrefix: true, Separator: " "}, true
+	}
+	if ref.Number > 0 {
+		return component.BreadcrumbPart{Text: fmt.Sprintf("%d", ref.Number), IsBuildNum: true, Separator: " "}, true
+	}
+	return component.BreadcrumbPart{}, false
+}
+
+// stageParts renders the stage tail. The immediate parent is its own part so
+// the leaf never truncates and only the (often long) parent front-truncates.
+// This disambiguates non-unique leaves like matrix-cell "Build" stages.
+func stageParts(nc NavigationContext) []component.BreadcrumbPart {
+	if nc.StageName == "" {
+		return nil
+	}
+	if nc.StageParent != "" {
+		return []component.BreadcrumbPart{
+			{Text: nc.StageParent, Separator: ":"},
+			{Text: nc.StageName, Separator: " › "},
+		}
+	}
+	return []component.BreadcrumbPart{{Text: nc.StageName, Separator: ":"}}
+}
+
+// NCFromJobPath is the exported form of ncFromJobPath, for CLI deep-linking from
+// a resolved job path.
+func NCFromJobPath(jobPath string) NavigationContext { return ncFromJobPath(jobPath) }
 
 // ncFromJobPath reconstructs a NavigationContext from a raw Jenkins job path.
 // The last two segments are treated as project+branch (or project only if just one).
@@ -597,9 +735,19 @@ func renderTestBadge(t theme.Theme, r *jmodel.TestReport) string {
 	return strings.Join(parts, " ")
 }
 
+// OpenURL launches the system browser for url and reaps the child process in
+// a goroutine, so it does not linger as a zombie once xdg-open detaches.
+func OpenURL(url string) {
+	cmd := exec.Command("xdg-open", url)
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+}
+
 func openURLCmd(url string) tea.Cmd {
 	return func() tea.Msg {
-		_ = exec.Command("xdg-open", url).Start()
+		OpenURL(url)
 		return nil
 	}
 }
@@ -625,6 +773,14 @@ func artifactShortcutAction(artifacts []jmodel.Artifact) string {
 // (header, borders, breadcrumb, nav tags) and render to the full terminal.
 type FullScreen interface {
 	IsFullScreen() bool
+}
+
+// BorderlessContent is optionally implemented by views that render their own
+// framing (e.g. a grid of bordered panes) and want the app to skip the outer
+// content-panel border and its breadcrumb title. Header, command bar, and nav
+// tags are still drawn. The view is given the full panel footprint via SetSize.
+type BorderlessContent interface {
+	IsBorderlessContent() bool
 }
 
 // RunningLogView is optionally implemented by log views that can report whether

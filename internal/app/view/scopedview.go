@@ -92,6 +92,7 @@ func (sv *ScopedView) resolveWith(latest *jmodel.UserBuild) tea.Cmd {
 			sv.inner = nil
 			sv.resolver.resolvedPath = ""
 			sv.resolver.resolvedNum = 0
+			sv.resolver.resolvedName = ""
 		}
 		sv.resolver.loading = false
 		return nil
@@ -105,14 +106,10 @@ func (sv *ScopedView) resolveWith(latest *jmodel.UserBuild) tea.Cmd {
 	}
 	sv.resolver.resolvedPath = latest.JobPath
 	sv.resolver.resolvedNum = latest.Number
+	sv.resolver.resolvedName = latest.Name
 	sv.resolver.loading = false
 
-	nc := ncFromJobPath(latest.JobPath)
-	nc.Username = sv.resolver.username
-	nc.GitUsernames = sv.resolver.gitUsernames
-	nc.Level = CtxBuild
-	nc.Build = NavBuildRef{IsLast: true, Number: latest.Number}
-	sv.inner = sv.cfg.NewInner(nc, *latest)
+	sv.inner = sv.cfg.NewInner(sv.targetNC(), *latest)
 	sv.inner.SetSize(sv.width, sv.height)
 	return sv.inner.Init()
 }
@@ -225,13 +222,40 @@ func (sv *ScopedView) View() string {
 
 func (sv *ScopedView) Title() string { return sv.cfg.Title }
 
+// targetNC is the build-level NavigationContext this view currently resolves
+// to: the scope, plus the "#last" alias anchored at that scope, plus whatever
+// the alias has resolved to so far. It is handed to the inner view and used for
+// this view's own breadcrumb, so both render identically — and, crucially, so
+// the resolution survives into any view swapped in from here.
+func (sv *ScopedView) targetNC() NavigationContext {
+	scope := sv.resolver.scope
+	nc := scope
+	if p := sv.resolver.resolvedPath; p != "" && p != scope.JobPath() {
+		// The alias resolved below its anchor (e.g. a root- or project-scoped
+		// #last landing on a specific branch); adopt the resolved location.
+		resolved := ncFromJobPath(p)
+		nc.FolderPath = resolved.FolderPath
+		nc.ProjectName = resolved.ProjectName
+		nc.BranchName = resolved.BranchName
+	}
+	// The anchor is the scope the user navigated by, not the level the
+	// resolution happens to reach — so it is taken from scope, never derived.
+	nc.Level = CtxBuild
+	nc.AliasScope = scope.Level
+	nc.Build = NavBuildRef{
+		IsLast:      true,
+		Number:      sv.resolver.resolvedNum,
+		DisplayName: sv.resolver.resolvedName,
+	}
+	nc.StageName = ""
+	nc.StageParent = ""
+	return nc
+}
+
 func (sv *ScopedView) Breadcrumb() BreadcrumbSegment {
-	nc := sv.resolver.scope
-	nc.Build = NavBuildRef{IsLast: true}
-	seg := BreadcrumbFor(sv.cfg.BreadcrumbType, nc, CtxBuild)
+	seg := BreadcrumbFor(sv.cfg.BreadcrumbType, sv.targetNC(), CtxBuild)
 	seg.Running = sv.resolver.filterRunning
 	seg.Mine = sv.resolver.filterMine
-	seg.ResolvedParts = resolverParts(&sv.resolver)
 	return seg
 }
 
@@ -307,7 +331,20 @@ func (sv *ScopedView) PopupView() string {
 	return ""
 }
 
-func (sv *ScopedView) NC() NavigationContext { return sv.resolver.scope }
+// NC returns the build-level context this view resolves to, so commands issued
+// from a "#last" view (:artifact, :tests, :inspect) target the build on screen.
+// Before the alias resolves it degrades to the scope, which is all that is known.
+func (sv *ScopedView) NC() NavigationContext {
+	if sv.resolver.resolvedNum == 0 {
+		return sv.resolver.scope
+	}
+	return sv.targetNC()
+}
+
+// ScopeNC returns the scope this view resolves *within* — what a child view
+// needs to rebuild an equivalent scoped view, as opposed to the build NC()
+// points at.
+func (sv *ScopedView) ScopeNC() NavigationContext { return sv.resolver.scope }
 
 // ParentView implements HasParent. ESC from a scoped view returns to the
 // natural parent based on the scope level: project → job list, branch →

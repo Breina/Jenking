@@ -12,10 +12,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Breina/Jenking/internal/app/usecase"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/domain/pipelinesyntax"
-	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/component"
 	"github.com/Breina/Jenking/internal/tui/theme"
@@ -103,6 +103,7 @@ func NewDescribeView(t theme.Theme, client jmodel.JenkinsClient, store *cache.St
 		dataLoading: true,
 		trigger:     newTriggerMixin(t, client, nc),
 	}
+	dv.SeedBuildIdentity(build)
 	dv.scriptLV = widget.NewLogViewer(t,
 		widget.WithClassifier(func(rawIdx int, _ string) widget.LineKind {
 			if dv.hasIssueOnLine(rawIdx) {
@@ -173,82 +174,23 @@ func (dv *DescribeView) Init() tea.Cmd {
 // both layers. Builds are immutable so this is cache-forever.
 func (dv *DescribeView) fetchSymbolsCmd() tea.Cmd {
 	ctx := dv.ctx
-	client := dv.client
-	store := dv.store
+	deps := usecase.Deps{Client: dv.client, Store: dv.store}
 	jobPath := dv.nc.JobPath()
 	buildNum := dv.build.Number
-	// Prefix invalidates older cache entries when the parser changes shape.
-	// v5 = bumped after a parser bug poisoned v4 caches with empty Symbols.
-	// Combined with the "don't cache empty" rule below, transient fetch
-	// failures no longer stick across restarts.
-	key := fmt.Sprintf("v5/%s#%d", jobPath, buildNum)
 	return func() tea.Msg {
-		applyOverlays := func(s *pipelinesyntax.Symbols) {
-			// Overlays run on every read — user GDSL edits + job parameter
-			// definition changes take effect without invalidating the
-			// per-build cache.
-			jenkins.ApplyUserGDSL(s)
-			if cc, ok := client.(*jenkins.Client); ok {
-				cc.ApplyJobParameters(ctx, s, jobPath)
-			}
-		}
-		if sym, hit := loadCachedSymbols(store, key); hit {
-			applyOverlays(sym)
-			return describeSymbolsMsg{symbols: sym}
-		}
-		sym, err := client.FetchPipelineSyntax(ctx, jobPath, buildNum)
+		sym, err := deps.GetPipelineSymbols(ctx, jobPath, buildNum)
 		if ctx.Err() != nil {
 			return nil
 		}
-		// Cache the raw server data — Symbols.Globals[i].Members stays empty
-		// at this stage. Overlays applied below on every read.
-		//
-		// Skip the cache write entirely when the fetch produced nothing
-		// useful (0 steps AND 0 globals). That's nearly always a transient
-		// auth/network failure; persisting it would mask the real Jenkins
-		// data on every future open until the user manually wiped the cache.
-		if sym != nil && (len(sym.Steps) > 0 || len(sym.Globals) > 0) {
-			storeSymbols(store, key, sym)
-		}
 		if err != nil {
+			steps, globals := 0, 0
+			if sym != nil {
+				steps, globals = len(sym.Steps), len(sym.Globals)
+			}
 			slog.Warn("fetch pipeline-syntax", "jobPath", jobPath, "build", buildNum,
-				"steps", len(sym.Steps), "globals", len(sym.Globals), "err", err.Error())
+				"steps", steps, "globals", globals, "err", err.Error())
 		}
-		applyOverlays(sym)
 		return describeSymbolsMsg{symbols: sym, err: err}
-	}
-}
-
-// loadCachedSymbols tries the in-memory cache first, falling back to disk;
-// hot disk hits get promoted into memory before returning. Returns hit=false
-// when neither layer has the key.
-func loadCachedSymbols(store *cache.Store, key string) (*pipelinesyntax.Symbols, bool) {
-	if store == nil || store.Symbols == nil {
-		return nil, false
-	}
-	if e := store.Symbols.Get(key); e != nil && e.Value != nil {
-		return e.Value, true
-	}
-	if store.Disk == nil {
-		return nil, false
-	}
-	sym, err := store.Disk.LoadSymbols(key)
-	if err != nil {
-		return nil, false
-	}
-	store.Symbols.Put(key, sym)
-	return sym, true
-}
-
-// storeSymbols writes pipeline symbols to both cache layers (memory and disk).
-// Caller is responsible for the empty-content guard.
-func storeSymbols(store *cache.Store, key string, sym *pipelinesyntax.Symbols) {
-	if store == nil || store.Symbols == nil {
-		return
-	}
-	store.Symbols.Put(key, sym)
-	if store.Disk != nil {
-		_ = store.Disk.SaveSymbols(key, sym)
 	}
 }
 
@@ -734,7 +676,7 @@ func (dv *DescribeView) openConsoleSwap() tea.Cmd {
 	build := dv.build
 	return func() tea.Msg {
 		cv := NewConsoleView(dv.theme, dv.client, nc)
-		cv.build = build
+		cv.SetBuild(build)
 		cv.store = dv.store
 		return SwapViewMsg{View: cv}
 	}

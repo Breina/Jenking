@@ -62,6 +62,8 @@ func buildAppConfig(
 		SetContextFn:         mgr.SetCurrentContext,
 		SaveColorblindnessFn: func(t theme.ColorblindnessType) error { return mgr.SetColorblindnessType(string(t)) },
 		SaveThemeFn:          func(t string) error { return mgr.SetTheme(t) },
+		SaveLastViewFn:       mgr.SetLastView,
+		LastViewFn:           mgr.LastView,
 		SavePrefsFn: func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string, textArtifactExtensions []string) error {
 			return mgr.SetPreferences(notifications, gitUsernames, refreshInterval, slowInterval, maxLogLines, logLevel, textArtifactExtensions)
 		},

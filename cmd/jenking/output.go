@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/Breina/Jenking/internal/domain/jmodel"
-	"github.com/Breina/Jenking/internal/navmsg"
+	"github.com/Breina/Jenking/internal/app/dto"
 )
 
 // printFormatted writes v as JSON/YAML or calls printTable for text output.
@@ -61,242 +61,160 @@ func fmtDur(d time.Duration) string {
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 
-// ---- Output types (used for JSON/YAML serialization) ----
-
-type outJob struct {
-	Name         string `json:"name" yaml:"name"`
-	FullPath     string `json:"full_path" yaml:"full_path"`
-	Type         string `json:"type" yaml:"type"`
-	BranchType   string `json:"branch_type,omitempty" yaml:"branch_type,omitempty"`
-	Disabled     bool   `json:"disabled,omitempty" yaml:"disabled,omitempty"`
-	RunningCount int    `json:"running_count,omitempty" yaml:"running_count,omitempty"`
-	LastBuildNum int    `json:"last_build_num,omitempty" yaml:"last_build_num,omitempty"`
-}
-
-type outBuild struct {
-	Number          int    `json:"number" yaml:"number"`
-	Status          string `json:"status" yaml:"status"`
-	DurationMs      int64  `json:"duration_ms" yaml:"duration_ms"`
-	TimestampUnix   int64  `json:"timestamp" yaml:"timestamp"`
-	TriggeredBy     string `json:"triggered_by,omitempty" yaml:"triggered_by,omitempty"`
-	TriggeredByName string `json:"triggered_by_name,omitempty" yaml:"triggered_by_name,omitempty"`
-	Cause           string `json:"cause,omitempty" yaml:"cause,omitempty"`
-}
-
-type outProjectBuild struct {
-	outBuild   `yaml:",inline"`
-	BranchName string `json:"branch_name" yaml:"branch_name"`
-	BranchPath string `json:"branch_path" yaml:"branch_path"`
-}
-
-type outUserBuild struct {
-	JobPath     string   `json:"job_path" yaml:"job_path"`
-	DisplayName string   `json:"display_name,omitempty" yaml:"display_name,omitempty"`
-	Node        string   `json:"node,omitempty" yaml:"node,omitempty"`
-	Build       outBuild `json:"build" yaml:"build"`
-}
-
-type outQueueItem struct {
-	ID           int64  `json:"id" yaml:"id"`
-	JobPath      string `json:"job_path" yaml:"job_path"`
-	State        string `json:"state" yaml:"state"`
-	Why          string `json:"why,omitempty" yaml:"why,omitempty"`
-	QueuedSinceS int64  `json:"queued_since_unix" yaml:"queued_since_unix"`
-	Cause        string `json:"cause,omitempty" yaml:"cause,omitempty"`
-}
-
-type outStage struct {
-	Name       string `json:"name" yaml:"name"`
-	Status     string `json:"status" yaml:"status"`
-	DurationMs int64  `json:"duration_ms" yaml:"duration_ms"`
-	Depth      int    `json:"depth" yaml:"depth"`
-	Parallel   bool   `json:"parallel,omitempty" yaml:"parallel,omitempty"`
-}
-
-type outArtifact struct {
-	DisplayPath string `json:"display_path" yaml:"display_path"`
-	URL         string `json:"url" yaml:"url"`
-}
-
-type outParam struct {
-	Name        string   `json:"name" yaml:"name"`
-	Type        string   `json:"type" yaml:"type"`
-	Default     string   `json:"default,omitempty" yaml:"default,omitempty"`
-	Description string   `json:"description,omitempty" yaml:"description,omitempty"`
-	Choices     []string `json:"choices,omitempty" yaml:"choices,omitempty"`
-}
-
-type outUser struct {
-	ID             string `json:"id" yaml:"id"`
-	FullName       string `json:"full_name" yaml:"full_name"`
-	JenkinsVersion string `json:"jenkins_version" yaml:"jenkins_version"`
-}
-
-type outMeta struct {
-	Path  string `json:"path" yaml:"path"`
-	Value string `json:"value" yaml:"value"`
-}
-
-type outTestCase struct {
-	ClassName    string `json:"class_name" yaml:"class_name"`
-	Name         string `json:"name" yaml:"name"`
-	Status       string `json:"status" yaml:"status"`
-	DurationMs   int64  `json:"duration_ms" yaml:"duration_ms"`
-	ErrorDetails string `json:"error_details,omitempty" yaml:"error_details,omitempty"`
-}
-
-type outTestSuite struct {
-	Name       string        `json:"name" yaml:"name"`
-	DurationMs int64         `json:"duration_ms" yaml:"duration_ms"`
-	Cases      []outTestCase `json:"cases" yaml:"cases"`
-}
-
-type outTestReport struct {
-	DurationMs int64          `json:"duration_ms" yaml:"duration_ms"`
-	Failed     int            `json:"failed" yaml:"failed"`
-	Passed     int            `json:"passed" yaml:"passed"`
-	Skipped    int            `json:"skipped" yaml:"skipped"`
-	Suites     []outTestSuite `json:"suites" yaml:"suites"`
-}
-
-// ---- Converters ----
-
-func toOutJob(j jmodel.Job) outJob {
-	// Decode %2F so the emitted name/path are usable as input to other
-	// commands (e.g. `builds`); the encoded form is a Jenkins API detail and
-	// is never meant to be user-facing.
-	o := outJob{
-		Name:         navmsg.DecodeName(j.Name),
-		FullPath:     navmsg.DecodePath(j.FullPath),
-		Type:         string(j.Type),
-		BranchType:   string(j.BranchType),
-		Disabled:     j.Disabled,
-		RunningCount: j.RunningCount,
+func fmtBytes(b int64) string {
+	if b <= 0 {
+		return "-"
 	}
-	if j.LastBuild != nil {
-		o.LastBuildNum = j.LastBuild.Number
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
 	}
-	return o
-}
-
-func toOutBuild(b jmodel.Build) outBuild {
-	return outBuild{
-		Number:          b.Number,
-		Status:          string(b.Status),
-		DurationMs:      b.Duration.Milliseconds(),
-		TimestampUnix:   b.Timestamp.Unix(),
-		TriggeredBy:     b.TriggeredBy,
-		TriggeredByName: b.TriggeredByName,
-		Cause:           b.Cause,
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
 	}
+	return fmt.Sprintf("%.1f%c", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
-func toOutProjectBuild(p jmodel.ProjectBuild) outProjectBuild {
-	return outProjectBuild{
-		outBuild:   toOutBuild(p.Build),
-		BranchName: p.BranchName,
-		BranchPath: p.BranchPath,
-	}
+// ---- Wire types (aliases of the shared dto package) ----
+//
+// The CLI keeps its historical `out*` names as aliases so command code reads
+// naturally; the canonical definitions and JSON/YAML tags live in
+// internal/app/dto, shared byte-for-byte with the MCP server.
+type (
+	outJob           = dto.Job
+	outBuild         = dto.Build
+	outProjectBuild  = dto.ProjectBuild
+	outUserBuild     = dto.UserBuild
+	outQueueItem     = dto.QueueItem
+	outStage         = dto.Stage
+	outArtifact      = dto.Artifact
+	outParam         = dto.Param
+	outUser          = dto.User
+	outMeta          = dto.Meta
+	outNode          = dto.Node
+	outInput         = dto.Input
+	outBuildDetail   = dto.BuildDetail
+	outTestReport    = dto.TestReport
+	outTriggerResult = dto.TriggerResult
+	outInputResult   = dto.InputResult
+	outJobMatch      = dto.JobMatch
+	outView          = dto.View
+)
+
+// Converter forwarders to the dto package.
+var (
+	toOutJob          = dto.ToJob
+	toOutBuild        = dto.ToBuild
+	toOutProjectBuild = dto.ToProjectBuild
+	toOutUserBuild    = dto.ToUserBuild
+	toOutQueueItem    = dto.ToQueueItem
+	toOutStage        = dto.ToStage
+	toOutArtifact     = dto.ToArtifact
+	toOutParam        = dto.ToParam
+	toOutUser         = dto.ToUser
+	toOutMeta         = dto.ToMeta
+	toOutNode         = dto.ToNode
+	toOutInput        = dto.ToInput
+	toOutBuildDetail  = dto.ToBuildDetail
+	toOutTestReport   = dto.ToTestReport
+	toOutJobMatch     = dto.ToJobMatch
+)
+
+// ---- Emit helpers (format a single result via printFormatted) ----
+
+func emitTriggerResult(r outTriggerResult) error {
+	return printFormatted(r, func() error {
+		if r.Status != "" {
+			fmt.Printf("build %s #%d finished: %s\n", r.JobPath, r.BuildNumber, r.Status)
+			return nil
+		}
+		if r.QueueID > 0 {
+			fmt.Printf("triggered %s (queue id %d)\n", r.JobPath, r.QueueID)
+			return nil
+		}
+		fmt.Printf("triggered %s\n", r.JobPath)
+		return nil
+	})
 }
 
-func toOutUserBuild(u jmodel.UserBuild) outUserBuild {
-	return outUserBuild{
-		JobPath:     u.JobPath,
-		DisplayName: u.DisplayName,
-		Node:        u.Node,
-		Build:       toOutBuild(u.Build),
-	}
-}
-
-func queueItemState(q jmodel.QueueItem) string {
-	switch {
-	case q.Stuck:
-		return "stuck"
-	case q.Blocked:
-		return "blocked"
-	case q.Pending:
-		return "pending"
-	default:
-		return "buildable"
-	}
-}
-
-func toOutQueueItem(q jmodel.QueueItem) outQueueItem {
-	return outQueueItem{
-		ID:           q.ID,
-		JobPath:      q.JobPath,
-		State:        queueItemState(q),
-		Why:          q.Why,
-		QueuedSinceS: q.InQueueSince.Unix(),
-		Cause:        q.Cause,
-	}
-}
-
-func toOutStage(s jmodel.Stage) outStage {
-	return outStage{
-		Name:       s.Name,
-		Status:     string(s.Status),
-		DurationMs: s.Duration.Milliseconds(),
-		Depth:      s.Depth,
-		Parallel:   s.Parallel,
-	}
-}
-
-func toOutUser(u jmodel.User) outUser {
-	return outUser{ID: u.ID, FullName: u.FullName, JenkinsVersion: u.JenkinsVersion}
-}
-
-func toOutParam(p jmodel.ParameterDefinition) outParam {
-	return outParam{
-		Name:        p.Name,
-		Type:        string(p.Type),
-		Default:     p.Default,
-		Description: p.Description,
-		Choices:     p.Choices,
-	}
-}
-
-func toOutArtifact(a jmodel.Artifact) outArtifact {
-	return outArtifact{DisplayPath: a.DisplayPath, URL: a.URL}
-}
-
-func toOutMeta(e jmodel.MetaEntry) outMeta {
-	return outMeta{Path: e.Path, Value: e.Value}
-}
-
-func toOutTestCase(c jmodel.TestCase) outTestCase {
-	return outTestCase{
-		ClassName:    c.ClassName,
-		Name:         c.Name,
-		Status:       string(c.Status),
-		DurationMs:   c.Duration.Milliseconds(),
-		ErrorDetails: c.ErrorDetails,
-	}
-}
-
-func toOutTestSuite(s jmodel.TestSuite) outTestSuite {
-	cases := make([]outTestCase, len(s.Cases))
-	for i, c := range s.Cases {
-		cases[i] = toOutTestCase(c)
-	}
-	return outTestSuite{Name: s.Name, DurationMs: s.Duration.Milliseconds(), Cases: cases}
-}
-
-func toOutTestReport(r jmodel.TestReport) outTestReport {
-	suites := make([]outTestSuite, len(r.Suites))
-	for i, s := range r.Suites {
-		suites[i] = toOutTestSuite(s)
-	}
-	return outTestReport{
-		DurationMs: r.Duration.Milliseconds(),
-		Failed:     r.Failed,
-		Passed:     r.Passed,
-		Skipped:    r.Skipped,
-		Suites:     suites,
-	}
+func emitInputResult(r outInputResult) error {
+	return printFormatted(r, func() error {
+		fmt.Printf("%s input %q of %s #%d\n", r.Action, r.InputID, r.JobPath, r.BuildNumber)
+		return nil
+	})
 }
 
 // ---- Table printers ----
+
+func printInputsTable(w io.Writer, inputs []outInput) error {
+	if len(inputs) == 0 {
+		_, err := fmt.Fprintln(w, "no pending inputs")
+		return err
+	}
+	tw := newTab(w)
+	fmt.Fprintln(tw, "ID\tMESSAGE\tSUBMITTER\tPARAMS")
+	for _, in := range inputs {
+		names := make([]string, len(in.Parameters))
+		for i, p := range in.Parameters {
+			names[i] = p.Name
+		}
+		sub := in.Submitter
+		if sub == "" {
+			sub = "-"
+		}
+		params := strings.Join(names, ",")
+		if params == "" {
+			params = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", in.ID, in.Message, sub, params)
+	}
+	return tw.Flush()
+}
+
+func printBuildDetailTable(w io.Writer, d outBuildDetail) error {
+	tw := newTab(w)
+	fmt.Fprintf(tw, "Job:\t%s\n", d.JobPath)
+	fmt.Fprintf(tw, "Build:\t#%d\n", d.Number)
+	fmt.Fprintf(tw, "Status:\t%s\n", d.Status)
+	fmt.Fprintf(tw, "Duration:\t%s\n", fmtDur(time.Duration(d.DurationMs)*time.Millisecond))
+	fmt.Fprintf(tw, "Started:\t%s\n", time.Unix(d.TimestampUnix, 0).Format(time.RFC3339))
+	if d.Cause != "" {
+		fmt.Fprintf(tw, "Cause:\t%s\n", d.Cause)
+	}
+	if d.TriggeredByName != "" {
+		fmt.Fprintf(tw, "Triggered by:\t%s\n", d.TriggeredByName)
+	}
+	for k, v := range d.Parameters {
+		fmt.Fprintf(tw, "Param %s:\t%s\n", k, v)
+	}
+	for _, in := range d.PendingInputs {
+		fmt.Fprintf(tw, "Pending input:\t%s (%s)\n", in.ID, in.Message)
+	}
+	return tw.Flush()
+}
+
+func printNodesTable(w io.Writer, nodes []outNode) error {
+	tw := newTab(w)
+	fmt.Fprintln(tw, "NAME\tSTATUS\tEXECUTORS\tDISK\tMEM\tPING")
+	for _, n := range nodes {
+		status := "online"
+		if n.Offline {
+			status = "offline"
+			if n.OfflineCause != "" {
+				status += " (" + n.OfflineCause + ")"
+			}
+		}
+		ping := "-"
+		if n.ResponseMs > 0 {
+			ping = fmt.Sprintf("%dms", n.ResponseMs)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%s\t%s\t%s\n",
+			n.Name, status, n.BusyExecutors, n.Executors, fmtBytes(n.FreeDiskBytes), fmtBytes(n.FreeMemBytes), ping)
+	}
+	return tw.Flush()
+}
 
 func printJobsTable(w io.Writer, jobs []outJob) error {
 	tw := newTab(w)
@@ -311,6 +229,23 @@ func printJobsTable(w io.Writer, jobs []outJob) error {
 			lb = fmt.Sprintf("#%d", j.LastBuildNum)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", j.Name, j.FullPath, j.Type, running, lb)
+	}
+	return tw.Flush()
+}
+
+func printViewsTable(w io.Writer, views []outView) error {
+	tw := newTab(w)
+	fmt.Fprintln(tw, "NAME\tKIND\tOWNER\tPRIMARY")
+	for _, v := range views {
+		owner := v.OwnerPath
+		if v.Personal {
+			owner = "(personal)"
+		}
+		primary := ""
+		if v.Primary {
+			primary = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", v.Name, v.Kind, owner, primary)
 	}
 	return tw.Flush()
 }
@@ -342,11 +277,20 @@ func printUserBuildsTable(w io.Writer, builds []outUserBuild) error {
 	return tw.Flush()
 }
 
+func printJobMatchesTable(w io.Writer, matches []outJobMatch) error {
+	tw := newTab(w)
+	fmt.Fprintln(tw, "JOB\tBRANCH\tSCM URL")
+	for _, m := range matches {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", m.JobPath, m.Branch, m.SCMURL)
+	}
+	return tw.Flush()
+}
+
 func printQueueTable(w io.Writer, items []outQueueItem) error {
 	tw := newTab(w)
-	fmt.Fprintln(tw, "ID\tJOB\tSTATE\tWHY")
+	fmt.Fprintln(tw, "ID\tJOB\tKIND\tSTATE\tWHY")
 	for _, q := range items {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", q.ID, q.JobPath, q.State, q.Why)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", q.ID, q.JobPath, q.Kind, q.State, q.Why)
 	}
 	return tw.Flush()
 }

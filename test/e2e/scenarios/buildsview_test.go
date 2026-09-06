@@ -11,15 +11,15 @@ import (
 )
 
 // openFixtureBuilds opens any available builds view on the ontwikkel context.
-// It navigates Dashboard → first multibranch pipeline → first branch → builds view.
+// It navigates the job list → first multibranch pipeline → first branch → builds view.
 // Skips the test if no builds view can be reached.
 func openFixtureBuilds(t *testing.T) *harness.Harness {
 	t.Helper()
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath, Context: "ontwikkel"})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	if !openAnyBuildsView(t, h) {
-		t.Skip("no multibranch pipeline with a builds view found on Dashboard — cannot run builds view test")
+		t.Skip("no multibranch pipeline with a builds view found in the job list — cannot run builds view test")
 	}
 	return h
 }
@@ -37,9 +37,9 @@ func poll(h *harness.Harness, pred func(string) bool, timeout time.Duration) boo
 	return false
 }
 
-// openAnyBuildsView navigates from the Dashboard into the first reachable
+// openAnyBuildsView navigates from the job list into the first reachable
 // multibranch pipeline's builds view.  Uses the known-stable "Jenkins Library"
-// multibranch on the ontwikkel Dashboard (cursor 0 at start).
+// multibranch in the job list (cursor 0 at start).
 //
 // Navigation: Enter on first item (Jenkins Library, multibranch) → branch list
 // → Enter on first branch → builds view.
@@ -55,7 +55,7 @@ func openAnyBuildsView(t *testing.T, h *harness.Harness) bool {
 	time.Sleep(200 * time.Millisecond)
 
 	// Wait for branch list: "jobs(Jenkins Library" in the new panel border.
-	// Do NOT check for "jobs(" without the job name — old "jobs(Dashboard)"
+	// Do NOT check for "jobs(" without the job name — the parent "jobs(all)"
 	// artifact stays in the vt10x grid indefinitely.
 	if !poll(h, func(g string) bool {
 		return strings.Contains(g, "jobs(Jenkins Library")
@@ -116,7 +116,7 @@ func TestBuildsViewEscReturns(t *testing.T) {
 	h.SendKeys("<esc>")
 
 	if err := h.WaitFor(func(grid string) bool {
-		return strings.Contains(grid, "jobs(") || strings.Contains(grid, "Dashboard")
+		return strings.Contains(grid, "jobs(")
 	}, harness.RenderTimeout); err != nil {
 		t.Fatalf("did not return to job list after Esc: %v", err)
 	}

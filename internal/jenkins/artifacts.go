@@ -12,7 +12,20 @@ import (
 
 type jsonArtifact struct {
 	DisplayPath  string `json:"displayPath"`
+	FileName     string `json:"fileName"`
 	RelativePath string `json:"relativePath"`
+}
+
+// name returns the best available label for the artifact. Jenkins leaves
+// displayPath empty on some controllers, so fall back to the archive-relative
+// path and finally to the bare file name.
+func (a jsonArtifact) name() string {
+	for _, s := range []string{a.DisplayPath, a.RelativePath, a.FileName} {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 type jsonArtifactResponse struct {
@@ -24,7 +37,7 @@ type jsonArtifactResponse struct {
 // Returns nil, nil when the build has no artifacts.
 func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]jmodel.Artifact, error) {
 	path := fmt.Sprintf(
-		"%s/%d/api/json?tree=url,artifacts[displayPath,relativePath]",
+		"%s/%d/api/json?tree=url,artifacts[displayPath,fileName,relativePath]",
 		jmodel.JobPathToURL(jobPath), buildNum,
 	)
 
@@ -69,7 +82,7 @@ func (c *Client) GetArtifacts(ctx context.Context, jobPath string, buildNum int)
 	out := make([]jmodel.Artifact, len(jr.Artifacts))
 	for i, a := range jr.Artifacts {
 		out[i] = jmodel.Artifact{
-			DisplayPath: a.DisplayPath,
+			DisplayPath: a.name(),
 			URL:         buildURL + "artifact/" + a.RelativePath,
 		}
 	}

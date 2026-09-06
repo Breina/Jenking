@@ -12,9 +12,10 @@ import (
 // view stack, and emit Push/SwapViewMsg.
 //
 // The accessor returns the cmd to execute and a boolean indicating whether
-// the action is currently available. When ok=false, the keypress is consumed
-// as a no-op (matching pre-extraction semantics where an unavailable action
-// silently did nothing) and the shortcut is hidden from the header.
+// the action is currently available. When ok=false the keypress is left
+// unhandled and the shortcut is hidden from the header, so a later behavior
+// bound to the same key (e.g. `l` = full log on a job row, scan log on a
+// container row) still gets its turn.
 //
 // For navigation, the accessor typically returns a closure that emits
 // PushViewMsg or PushViewsMsg; for app-level message dispatch (e.g.
@@ -73,7 +74,7 @@ func (b *NavBehavior) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 	}
 	cmd, ok := b.accessor()
 	if !ok {
-		return true, nil
+		return false, nil
 	}
 	return true, cmd
 }

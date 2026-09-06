@@ -19,10 +19,10 @@ import (
 // present.
 func TestLiveFix_StageViewBarTransitionsAfterBuildCompletes(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath, Context: "ontwikkel"})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	if !h.Contains("Omgeving") {
-		t.Skip("expected `Omgeving` folder on Dashboard; live setup differs")
+		t.Skip("expected `Omgeving` folder in the job list; live setup differs")
 	}
 
 	// Open Omgeving folder.

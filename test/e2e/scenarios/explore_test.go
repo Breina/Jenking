@@ -12,7 +12,7 @@ import (
 
 func TestExploreFixtureNavigation(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath, Context: "ontwikkel"})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	t.Log("=== ROOT LEVEL ===")
 	t.Logf("Grid:\n%s", h.Grid())
@@ -33,7 +33,7 @@ func TestExploreFixtureNavigation(t *testing.T) {
 
 	// Go back
 	h.SendKeys("<esc>")
-	h.MustWaitFor(t, func(g string) bool { return strings.Contains(g, "jobs(Dashboard") }, harness.NetworkTimeout)
+	h.MustWaitFor(t, func(g string) bool { return strings.Contains(g, "jobs(all") }, harness.NetworkTimeout)
 
 	t.Log("=== ATTEMPT: Enter second item (Omgeving) ===")
 	h.SendKeys("j") // move to Omgeving

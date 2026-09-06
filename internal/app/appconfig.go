@@ -64,4 +64,9 @@ type AppConfig struct {
 	SaveColorblindnessFn func(theme.ColorblindnessType) error
 	SaveThemeFn          func(string) error
 	SavePrefsFn          func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string, textArtifactExtensions []string) error
+	// SaveLastViewFn records the Jenkins view last opened in a context, and
+	// LastViewFn reads it back — together they make the views list resume
+	// where the user left off, per context.
+	SaveLastViewFn func(contextName, viewName string) error
+	LastViewFn     func(contextName string) string
 }

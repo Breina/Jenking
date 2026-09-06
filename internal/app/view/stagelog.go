@@ -69,6 +69,7 @@ func NewStageLogView(t theme.Theme, client jmodel.JenkinsClient, store *cache.St
 func NewStageLogViewWithBuild(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, nc NavigationContext, nodeIDs []int, buildRunning bool, build jmodel.Build) *StageLogView {
 	sl := NewStageLogView(t, client, store, nc, nodeIDs, buildRunning)
 	sl.build = build
+	sl.SeedBuildIdentity(build)
 	addFixedBuildActions(&sl.host, t, client, &sl.nc, &sl.build, &sl.store, &sl.trigger, popSwapTo)
 	return sl
 }
@@ -321,7 +322,7 @@ func (sl *StageLogView) openConsoleSwap() tea.Cmd {
 	store := sl.store
 	return func() tea.Msg {
 		child := NewConsoleView(sl.theme, sl.client, nc)
-		child.build = build
+		child.SetBuild(build)
 		child.store = store
 		return PopSwapViewMsg{View: child}
 	}
@@ -415,7 +416,7 @@ func (sl *StageLogView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cac
 	if sl.hasScopedParent {
 		return NewMyBuildsView(t, c, s, sl.scopedParentScope, sl.scopedParentInterval)
 	}
-	sv := NewStageView(t, c, s, sl.nc.AtBuild(sl.nc.Build.Number), jmodel.Build{Number: sl.nc.Build.Number})
+	sv := NewStageView(t, c, s, sl.nc.AtBuildRef(sl.nc.Build), jmodel.Build{Number: sl.nc.Build.Number})
 	sv.selectStageName = sl.nc.StageName
 	return sv
 }

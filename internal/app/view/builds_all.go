@@ -7,11 +7,22 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Breina/Jenking/internal/app/engine"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/tui/theme"
 )
+
+// scanJobPaths extracts distinct job paths from a slow-scan result, for warming
+// the SCM-URL reverse index (see engine.FillSCMURLs).
+func scanJobPaths(builds []jmodel.UserBuild) []string {
+	paths := make([]string, 0, len(builds))
+	for _, b := range builds {
+		paths = append(paths, b.JobPath)
+	}
+	return paths
+}
 
 // Internal message types for AllBuildsProvider polling.
 type allBuildsSlowTickMsg struct{}
@@ -24,6 +35,10 @@ type allBuildsFullMsg struct {
 
 // maxBuildsPerJob is how many recent builds per job are fetched in the full scan.
 const maxBuildsPerJob = 10
+
+// maxAllBuildsRows caps how many builds the (*)-scoped views render, to keep the
+// table responsive when the registry holds thousands of records.
+const maxAllBuildsRows = 100
 
 // AllBuildsProvider is a BuildDataProvider that shows recent builds across the
 // entire Jenkins instance (or scoped to a folder when folderFilter is set).
@@ -80,6 +95,12 @@ func (p *AllBuildsProvider) Builds() []UnifiedBuild {
 		return nil
 	}
 	flat := p.store.Registry.Query(p.filter())
+	// Cap the (*)-scoped list: rendering thousands of rows lags hard, and the
+	// registry query is already newest-first, so the newest maxAllBuildsRows are
+	// what matter. Per-job branch/project views are not capped.
+	if len(flat) > maxAllBuildsRows {
+		flat = flat[:maxAllBuildsRows]
+	}
 	queued := queuedUnifiedBuilds(p.store, p.filter())
 	out := make([]UnifiedBuild, 0, len(queued)+len(flat))
 	out = append(out, queued...)
@@ -119,6 +140,9 @@ func (p *AllBuildsProvider) HandleMsg(msg tea.Msg) (bool, []tea.Cmd) {
 		}
 		if p.store != nil && p.store.Registry != nil {
 			p.store.Registry.IngestScan(msg.builds)
+			// Catch-up driver for the SCM-URL index: fill any newly-discovered
+			// jobs off the slow build-walk (deduped; async so it never blocks).
+			go engine.FillSCMURLs(context.Background(), p.client, p.store, scanJobPaths(msg.builds))
 		}
 		return true, []tea.Cmd{p.scheduleSlowTick()}
 

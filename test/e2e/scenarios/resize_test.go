@@ -12,7 +12,7 @@ import (
 // TestResizeTiny verifies the app survives a resize to a very small terminal (20x10).
 func TestResizeTiny(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.Resize(20, 10)
 
@@ -32,12 +32,12 @@ func TestResizeTiny(t *testing.T) {
 // TestResizeWide verifies the app handles a very wide terminal (300x80).
 func TestResizeWide(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.Resize(300, 80)
 
 	if err := h.WaitFor(func(grid string) bool {
-		return strings.Contains(grid, "Dashboard")
+		return strings.Contains(grid, "jobs(")
 	}, harness.RenderTimeout); err != nil {
 		t.Fatalf("dashboard missing after resize to 300x80: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestResizeWide(t *testing.T) {
 // This is likely to expose stageview row overflow bugs.
 func TestResizeSquat(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.Resize(80, 5)
 
@@ -63,7 +63,7 @@ func TestResizeSquat(t *testing.T) {
 // TestResizeChurn verifies the app handles rapid resize cycles without panicking.
 func TestResizeChurn(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Rapid resize cycle
 	sizes := [][2]int{
@@ -76,7 +76,7 @@ func TestResizeChurn(t *testing.T) {
 	// Restore normal size and check we're still alive
 	h.Resize(160, 40)
 
-	if err := h.WaitForText("Dashboard", harness.NetworkTimeout); err != nil {
+	if err := h.WaitForText("jobs(", harness.NetworkTimeout); err != nil {
 		t.Fatalf("dashboard lost after resize churn: %v", err)
 	}
 	h.MustSnapshot(t, "resize-churn-final")

@@ -57,18 +57,23 @@ type jobListVisualTickMsg struct{}
 // Cross-cutting concerns (trigger, cancel, test report, artifact) are owned by
 // behaviors registered on host with a row-aware access closure.
 type JobList struct {
-	theme            theme.Theme
-	table            component.Table
-	client           jmodel.JenkinsClient
-	store            *cache.Store
-	folderPath       string
-	title            string
-	jobs             []jmodel.Job
-	width            int
-	height           int
-	username         string   // authenticated user ID (propagated to child NavigationContexts)
-	gitUsernames     []string // git display names for mine-filter matching (propagated to child NavigationContexts)
-	branchContext    bool     // true when listing branches/MRs inside a MultiBranch project
+	theme         theme.Theme
+	table         component.Table
+	client        jmodel.JenkinsClient
+	store         *cache.Store
+	folderPath    string
+	title         string
+	jobs          []jmodel.Job
+	width         int
+	height        int
+	username      string   // authenticated user ID (propagated to child NavigationContexts)
+	gitUsernames  []string // git display names for mine-filter matching (propagated to child NavigationContexts)
+	branchContext bool     // true when listing branches/MRs inside a MultiBranch project
+	// viewFilter, when set, makes this list show the jobs of a Jenkins view
+	// instead of the raw contents of folderPath. A view renders jobs from
+	// anywhere in the tree as a flat list, so rows are identified by their
+	// FullPath throughout (see jobNC).
+	viewFilter       *jmodel.JenkinsView
 	ctx              context.Context
 	cancel           context.CancelFunc
 	progressBar      component.ProgressBar
@@ -96,6 +101,14 @@ const (
 	colFixedTotalBranch = colLastBuildWidth + colSepWidth + colStatusWidth + 4*2
 )
 
+// NewViewJobList creates the job list of a Jenkins view: the same list, fed by
+// the view's job set and titled with the view's name (`jobs(Team Infra)`).
+func NewViewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, v jmodel.JenkinsView, username string, gitUsernames []string) *JobList {
+	jl := NewJobList(t, client, store, v.OwnerPath, v.Name, false, username, gitUsernames)
+	jl.viewFilter = &v
+	return jl
+}
+
 // NewJobList creates a job list view. folderPath="" means root. title is the breadcrumb label.
 // branchContext=true renders branch/MR icons instead of type icons (used inside MultiBranch projects).
 // username is the authenticated user ID (for mine filter propagation); pass "" if unknown.
@@ -106,7 +119,7 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 	if branchContext {
 		columns = []component.Column{
 			{Title: "JOB", Width: 30},
-			{Title: "LAST BUILD", Width: colLastBuildWidth},
+			{Title: "LAST", Width: colLastBuildWidth},
 			{Title: "", Width: colSepWidth},
 			{Title: "STATUS", Width: colStatusWidth},
 		}
@@ -115,7 +128,7 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 			{Title: "JOB", Width: 30},
 			{Title: "MAIN", Width: colMainWidth},
 			{Title: "", Width: colSepWidth},
-			{Title: "LAST BUILD", Width: colLastBuildWidth},
+			{Title: "LAST", Width: colLastBuildWidth},
 			{Title: "", Width: colSepWidth},
 			{Title: "STATUS", Width: colStatusWidth},
 		}
@@ -153,13 +166,12 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 		if !ok {
 			return NavigationContext{}, jmodel.Build{}, false
 		}
-		nc := jl.jobNC(j)
-		nc.Level = CtxBuild
-		nc.Build = NavBuildRef{IsLast: true}
-		return nc, jmodel.Build{
+		build := jmodel.Build{
 			Number: j.LastBuild.Number,
 			Status: jenkins.ColorToBuildStatus(j.Color),
-		}, true
+		}
+		nc := jl.jobNC(j).AtLastBuild(NavBuildRef{Number: build.Number})
+		return nc, build, true
 	}
 	navigate := func(child View) tea.Cmd {
 		return pushTo(child)
@@ -169,7 +181,17 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 	jl.host.Add(newTestReportBehavior(t, client, storeFn, access, navigate))
 	jl.host.Add(newArtifactBehavior(t, client, storeFn, access, navigate))
 	jl.host.Add(newCancelBehavior(t, client, access))
+	jl.host.Add(newScanCancelBehavior(t, client, storeFn, func() (string, bool) {
+		j, ok := jl.selectedContainer()
+		if !ok {
+			return "", false
+		}
+		return j.FullPath, true
+	}))
 	jl.host.Add(newTriggerBehavior(&jl.trigger).WithShortcutGate(func() bool {
+		if _, ok := jl.selectedContainer(); ok {
+			return true // t = scan now
+		}
 		_, ok := selectedJob()
 		return ok
 	}))
@@ -177,35 +199,36 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 	// + gating into its closure; host.HandleKey consumes the key before the
 	// view's own switch sees it, and host.AppendShortcuts contributes the
 	// header entry — gated on accessor ok so unavailable actions disappear.
-	// `l` and `d` reuse `selectedJob` (requires non-container + LastBuild).
+	// `l` and `s` come in two mutually exclusive flavours: on a single job they
+	// are the build's log and stages (below), on a container the scan log and
+	// scans (registerScanBehaviors) — the gates are complements, so a row shows
+	// exactly one of each pair.
 	jl.host.Add(widget.NewNavBehavior("l", "full log", func() (tea.Cmd, bool) {
-		j, ok := jl.selectedNonFolder()
+		j, ok := jl.selectedSingleJob()
 		if !ok {
 			return nil, false
 		}
 		nc := jl.jobNC(j)
 		return func() tea.Msg { return OpenScopedConsoleMsg{NC: nc} }, true
 	}).WithRank(rankViewFullLog))
-	jl.host.Add(widget.NewNavBehavior("d", "describe", func() (tea.Cmd, bool) {
-		j, ok := selectedJob()
-		if !ok {
-			return nil, false
-		}
-		nc := jl.jobNC(j)
-		nc.Level = CtxBuild
-		nc.Build = NavBuildRef{IsLast: true}
-		build := jmodel.Build{Number: j.LastBuild.Number}
-		child := NewDescribeView(jl.theme, jl.client, jl.store, nc, build)
-		return func() tea.Msg { return PushViewMsg{View: child} }, true
-	}).WithRank(rankViewDescribe))
 	jl.host.Add(widget.NewNavBehavior("s", "stages", func() (tea.Cmd, bool) {
-		j, ok := jl.selectedNonFolder()
+		j, ok := jl.selectedSingleJob()
 		if !ok {
 			return nil, false
 		}
 		nc := jl.jobNC(j)
 		return func() tea.Msg { return OpenScopedStagesMsg{NC: nc} }, true
 	}).WithRank(rankViewStages))
+	jl.host.Add(widget.NewNavBehavior("d", "describe", func() (tea.Cmd, bool) {
+		j, ok := selectedJob()
+		if !ok {
+			return nil, false
+		}
+		build := jmodel.Build{Number: j.LastBuild.Number}
+		nc := jl.jobNC(j).AtLastBuild(NavBuildRef{Number: build.Number})
+		child := NewDescribeView(jl.theme, jl.client, jl.store, nc, build)
+		return func() tea.Msg { return PushViewMsg{View: child} }, true
+	}).WithRank(rankViewDescribe))
 	jl.host.Add(widget.NewNavBehavior("b", "all builds", func() (tea.Cmd, bool) {
 		j, ok := jl.selectedMultibranch()
 		if !ok {
@@ -215,7 +238,51 @@ func NewJobList(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store, 
 		child := NewBuildsView(jl.theme, jl.client, jl.store, nc, NewProjectBuildsProvider(jl.client, jl.store, nc))
 		return func() tea.Msg { return PushViewMsg{View: child} }, true
 	}).WithRank(rankViewAllBuilds))
+	jl.registerScanBehaviors()
 	return jl
+}
+
+// registerScanBehaviors binds the container-row verbs: `s` opens the scans of
+// the row under the cursor, `l` its scan log. Both are gated on the row being a
+// container, the only rows that own scans.
+func (jl *JobList) registerScanBehaviors() {
+	jl.host.Add(widget.NewNavBehavior("s", "scans", func() (tea.Cmd, bool) {
+		j, ok := jl.selectedContainer()
+		if !ok {
+			return nil, false
+		}
+		child := NewScansView(jl.theme, jl.client, jl.store, jl.jobNC(j))
+		return func() tea.Msg { return PushViewMsg{View: child} }, true
+	}).WithRank(rankViewStages))
+	jl.host.Add(widget.NewNavBehavior("l", "scan log", func() (tea.Cmd, bool) {
+		j, ok := jl.selectedContainer()
+		if !ok {
+			return nil, false
+		}
+		child := NewScanLogView(jl.theme, jl.client, jl.store, jl.jobNC(j), j.FullPath)
+		return func() tea.Msg { return PushViewMsg{View: child} }, true
+	}).WithRank(rankViewFullLog))
+}
+
+// selectedSingleJob returns the job under the cursor when it is a single job
+// (pipeline, freestyle, or a branch of a multibranch project) — the rows that
+// own builds. It is the exact complement of selectedContainer.
+func (jl *JobList) selectedSingleJob() (jmodel.Job, bool) {
+	j, ok := jl.selectedAnyJob()
+	if !ok || isContainer(j.Type) {
+		return jmodel.Job{}, false
+	}
+	return j, true
+}
+
+// selectedContainer returns the job under the cursor when it is a container
+// (folder or multibranch project) — the only rows that own scans.
+func (jl *JobList) selectedContainer() (jmodel.Job, bool) {
+	j, ok := jl.selectedAnyJob()
+	if !ok || !isContainer(j.Type) {
+		return jmodel.Job{}, false
+	}
+	return j, true
 }
 
 // selectedAnyJob returns the job under the cursor regardless of type, or
@@ -236,21 +303,6 @@ func (jl *JobList) InspectTarget() (NavigationContext, bool) {
 		return NavigationContext{}, false
 	}
 	return jl.jobNC(j), true
-}
-
-// selectedNonFolder returns the job under the cursor for any job that can
-// produce builds — non-containers (pipeline/freestyle) and multibranch projects.
-// Pure folders are excluded because they have no build history.
-func (jl *JobList) selectedNonFolder() (jmodel.Job, bool) {
-	di := jl.dataIndex(jl.table.Cursor())
-	if di < 0 || di >= len(jl.jobs) {
-		return jmodel.Job{}, false
-	}
-	j := jl.jobs[di]
-	if j.Type == jmodel.JobTypeFolder {
-		return jmodel.Job{}, false
-	}
-	return j, true
 }
 
 // selectedMultibranch returns the job under the cursor when it's a multibranch
@@ -321,7 +373,7 @@ func (jl *JobList) dataIndex(tableIdx int) int {
 
 func (jl *JobList) Init() tea.Cmd {
 	if jl.store != nil {
-		if e := jl.store.Jobs.Get(jl.folderPath); e != nil {
+		if e := jl.store.Jobs.Get(jl.cacheKey()); e != nil {
 			jl.jobs = e.Value
 			jl.populateTable()
 		}
@@ -329,13 +381,32 @@ func (jl *JobList) Init() tea.Cmd {
 	return jl.fetchJobs
 }
 
+// cacheKey is the Jobs-cache key for this list. A view-filtered list gets its
+// own namespaced key so it cannot overwrite the folder listing it is a subset
+// of — the folder-keyed entries are what cache.AllProjectPaths walks. An "all"
+// view is not namespaced: it *is* the folder listing.
+func (jl *JobList) cacheKey() string {
+	if jl.viewFilter == nil || jl.viewFilter.IsAll() {
+		return jl.folderPath
+	}
+	return "view:" + jl.viewFilter.Name + "@" + jl.folderPath
+}
+
 func (jl *JobList) fetchJobs() tea.Msg {
-	fp := jl.folderPath
-	jobs, err := jl.client.ListJobs(jl.ctx, fp)
+	key := jl.cacheKey()
+	var (
+		jobs []jmodel.Job
+		err  error
+	)
+	if jl.viewFilter != nil {
+		jobs, err = jl.client.ListViewJobs(jl.ctx, *jl.viewFilter)
+	} else {
+		jobs, err = jl.client.ListJobs(jl.ctx, jl.folderPath)
+	}
 	if jl.ctx.Err() != nil {
 		return nil
 	}
-	return JobsMsg{FolderPath: fp, Jobs: jobs, Err: err}
+	return JobsMsg{FolderPath: key, Jobs: jobs, Err: err}
 }
 
 func (jl *JobList) refreshInterval() time.Duration {
@@ -415,7 +486,22 @@ func (jl *JobList) jobNameCell(j jmodel.Job) string {
 	if jl.branchContext {
 		return branchIcon(decoded) + " " + decoded
 	}
-	return typeIcon(jl.theme, j.Type) + " " + decoded
+	return typeIcon(jl.theme, j.Type) + jl.scanGlyph(j) + " " + decoded
+}
+
+// scanGlyph marks a container whose scan is waiting in the queue. It lives
+// beside the type icon rather than in STATUS because STATUS reports the
+// children's builds: a project can be building *and* have a scan queued, and
+// multiplexing one cell would hide whichever lost — including from the reader
+// deciding what x will cancel.
+func (jl *JobList) scanGlyph(j jmodel.Job) string {
+	if jl.store == nil || jl.store.Queue == nil || !isContainer(j.Type) {
+		return ""
+	}
+	if _, ok := jl.store.Queue.ScanFor(j.FullPath); !ok {
+		return ""
+	}
+	return jl.theme.BuildStatus.Aborted.Render(iconOr(jl.theme.Icons.ScanQueued, "⧗"))
 }
 
 // jobStatusCells returns (lastBuild, status) text for a job, accounting for
@@ -597,7 +683,7 @@ func (jl *JobList) handleRunningBuildsUpdated(msg RunningBuildsUpdatedMsg) tea.C
 }
 
 func (jl *JobList) handleJobsMsg(msg JobsMsg) tea.Cmd {
-	if msg.FolderPath != jl.folderPath {
+	if msg.FolderPath != jl.cacheKey() {
 		return nil
 	}
 	if msg.Err != nil {
@@ -616,7 +702,7 @@ func (jl *JobList) handleJobsMsg(msg JobsMsg) tea.Cmd {
 	}
 	jl.jobs = msg.Jobs
 	if jl.store != nil {
-		jl.store.Jobs.Put(jl.folderPath, msg.Jobs)
+		jl.store.Jobs.Put(jl.cacheKey(), msg.Jobs)
 		jl.store.ClearDirtyJobs(jl.folderPath)
 	}
 	sortJobsByLastBuild(jl.jobs)
@@ -729,8 +815,10 @@ func (jl *JobList) triggerSelectedJobUnderCursor() (tea.Cmd, bool) {
 		return nil, false
 	}
 	selected := jl.jobs[di]
+	// A container has no build of its own; t means "scan now" there. Same key,
+	// same question ("run this row"), answered by the only run the row owns.
 	if isContainer(selected.Type) {
-		return nil, false
+		return jl.trigger.startScanFor(jl.jobNC(selected), selected.FullPath), true
 	}
 	lastKnown := 0
 	if selected.LastBuild != nil {
@@ -793,8 +881,11 @@ func (jl *JobList) Shortcuts() []component.Shortcut {
 	default:
 		sc = append(sc, component.Nav("enter", "builds"))
 	}
-	if jl.folderPath != "" || jl.branchContext {
+	switch {
+	case jl.folderPath != "" || jl.branchContext:
 		sc = append(sc, component.Nav("esc", "jobs"))
+	default:
+		sc = append(sc, component.Nav("esc", "views"))
 	}
 	if cachedRepoURL(jl.store, selected.FullPath) != "" {
 		sc = append(sc, component.Nav("o", "open repo"))
@@ -821,7 +912,15 @@ func (jl *JobList) Close() error {
 }
 
 func (jl *JobList) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {
-	return folderParentJobList(t, c, s, jl.folderPath, jl.username, jl.gitUsernames)
+	if parent := folderParentJobList(t, c, s, jl.folderPath, jl.username, jl.gitUsernames); parent != nil {
+		return parent
+	}
+	// Top of the job tree: the parent is the views list, which is the root of
+	// the whole navigation (a folder-owned view returns to its folder above).
+	if jl.folderPath == "" {
+		return NewViewsList(t, c, s, jl.username, jl.gitUsernames)
+	}
+	return nil
 }
 
 func (jl *JobList) ScrollInfo() widget.ScrollInfo {
@@ -861,12 +960,13 @@ func (jl *JobList) NC() NavigationContext {
 		}
 	}
 	if jl.folderPath == "" {
-		return NavigationContext{Level: CtxRoot, Username: jl.username}
+		return NavigationContext{Level: CtxRoot, Username: jl.username, ViewName: jl.viewName()}
 	}
 	return NavigationContext{
 		Level:      CtxFolder,
 		FolderPath: jl.folderPath,
 		Username:   jl.username,
+		ViewName:   jl.viewName(),
 	}
 }
 
@@ -889,13 +989,34 @@ func (jl *JobList) jobNC(selected jmodel.Job) NavigationContext {
 			GitUsernames: jl.gitUsernames,
 		}
 	}
+	// Location comes from FullPath, not from folderPath+Name: a view lists jobs
+	// from anywhere in the tree, so the row's own path is the only truth. For
+	// an unfiltered folder listing the two are identical.
+	folderPath, projectName := jl.folderPath, selected.Name
+	if selected.FullPath != "" {
+		folderPath = ""
+		projectName = selected.FullPath
+		if idx := strings.LastIndex(selected.FullPath, "/"); idx >= 0 {
+			folderPath = selected.FullPath[:idx]
+			projectName = selected.FullPath[idx+1:]
+		}
+	}
 	return NavigationContext{
 		Level:        CtxProject,
-		FolderPath:   jl.folderPath,
-		ProjectName:  selected.Name,
+		FolderPath:   folderPath,
+		ProjectName:  projectName,
 		Username:     jl.username,
 		GitUsernames: jl.gitUsernames,
+		ViewName:     jl.viewName(),
 	}
+}
+
+// viewName returns the active Jenkins view's name, or "" when unfiltered.
+func (jl *JobList) viewName() string {
+	if jl.viewFilter == nil {
+		return ""
+	}
+	return jl.viewFilter.Name
 }
 
 // decodeName URL-decodes a job name (branch names like "feature%2Fbranch" → "feature/branch").

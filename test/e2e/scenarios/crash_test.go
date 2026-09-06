@@ -13,7 +13,7 @@ import (
 // exercises multiple views in a single harness lifetime.
 func TestNoPanicsAfterAllNavigation(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Tour: running builds
 	h.SendKeys("R")
@@ -21,7 +21,7 @@ func TestNoPanicsAfterAllNavigation(t *testing.T) {
 		return len(g) > 0
 	}, harness.RenderTimeout)
 	h.SendKeys("<esc>")
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Tour: my builds
 	h.SendKeys("m")
@@ -29,7 +29,7 @@ func TestNoPanicsAfterAllNavigation(t *testing.T) {
 		return len(g) > 0
 	}, harness.RenderTimeout)
 	h.SendKeys("<esc>")
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Tour: command palette open/close
 	h.SendKeys(":")
@@ -54,7 +54,7 @@ func TestNoPanicsAfterAllNavigation(t *testing.T) {
 // TestKeyMashNoPanic rapid-fires a mix of keys to probe for edge cases.
 func TestKeyMashNoPanic(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Rapid alternating key presses
 	keys := "jjjjkkkkjjkk<enter><esc><enter><esc>jjj<enter>lll<esc><esc>"

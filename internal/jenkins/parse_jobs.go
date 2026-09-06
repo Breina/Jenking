@@ -10,12 +10,25 @@ import (
 // hands the decoded jsonJobList here so all multibranch enrichment is
 // independently unit-testable (architecture.md §6).
 
+// pathResolver derives a job's canonical path from the URL the API reported
+// for it. Passed by callers whose endpoint does not imply job location — a
+// view lists jobs from anywhere in the folder tree as a flat list, so
+// folder+name would be wrong for them. Returns ok=false to fall back to the
+// folder-join. nil means "always fall back".
+type pathResolver func(jobURL string) (string, bool)
+
 // parseJobList converts a decoded jsonJobList into domain Jobs, applying
-// multibranch enrichment for WorkflowMultiBranchProject items.
-func parseJobList(resp jsonJobList, folder string) []jmodel.Job {
+// multibranch enrichment for WorkflowMultiBranchProject items. resolvePath is
+// optional; see pathResolver.
+func parseJobList(resp jsonJobList, folder string, resolvePath pathResolver) []jmodel.Job {
 	jobs := make([]jmodel.Job, len(resp.Jobs))
 	for i, j := range resp.Jobs {
 		job := j.toDomain(folder)
+		if resolvePath != nil {
+			if full, ok := resolvePath(j.URL); ok {
+				job.FullPath = full
+			}
+		}
 		if job.Type == jmodel.JobTypeMultiBranch {
 			enrichMultiBranch(&job, j.Jobs)
 		} else {

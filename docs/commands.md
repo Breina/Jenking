@@ -12,7 +12,8 @@ The grammar is identical in both places.
 ## Target syntax
 
 Navigation verbs (`builds`, `stages`, `jobs`, `log`, `matrix`, and the
-read-only headless verbs `describe`, `tests`) accept an optional **target**:
+read-only headless verbs `describe`, `tests`, `changes`) accept an optional
+**target**:
 
 ```
 [<project>] [<branch>] [#<n>|#last] [:<stage>]
@@ -80,10 +81,25 @@ These verbs open a view inside the TUI.
 |------------|---------------|-----------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `builds`   | `b`, `build`  | target (scope)  | Show builds list. With no args: scope of the current view. With target: builds of that folder/project/branch. Build/stage parts are reduced to scope.   |
 | `stages`   | `s`, `stage`  | target          | Show pipeline stages. With `#<n>`: stages of that specific build. Otherwise: stages of the latest build at scope.                                       |
-| `jobs`     | `j`, `job`    | target          | Navigate to a job listing. With no args: sideways/up nav from current view. With target: drill INTO the project/folder.                                 |
+| `views`    | —             | none            | The Jenkins views of the current container (the root of the navigation). Inside a folder: that folder's own views.                                      |
+| `view`     | `v`           | `[<name>]`      | Open a Jenkins view's job list (`jobs(Team Infra)`). With no args: the views list. The built-in `all` view is the unfiltered job list.                   |
+| `jobs`     | `j`, `job`    | target          | Navigate to a job listing. With no args: sideways/up nav from current view (at the top, the last opened view's list). With target: drill INTO the project/folder. |
 | `log`      | `l`, `logs`   | target          | Show console log. With `#<n>`: that specific build's log. Otherwise: latest build at scope.                                                             |
 | `running`  | `r`           | none            | Toggle the running-builds filter on the current Builds view, or open All Builds with the running filter pre-enabled.                                    |
+| `scans`    | —             | none            | Branch-indexing scans waiting in the queue, scoped to the current view (`S`). Inside a multibranch project this is its own scan.                        |
 | `matrix`   | (hidden)      | target          | Matrix-mode log overlay. Only active when the Matrix theme is set and the current view is a running log.                                                |
+
+In the Builds view, the **commits accordion** is on by default: the selected
+build expands inline to show its SCM commits (message, author, time) as sub-rows,
+following the cursor as you move. Press `c` to toggle it off/on. This replaces the
+former `:changes` verb; the same data is still available headless via the
+`changes` CLI verb and the `get_changes` MCP tool.
+
+A job's build list is topped by a pinned `#last → #N` row that mirrors the newest
+build. Drilling into it (`enter`/`s` for stages, `l` for log) opens the
+scope-resolving view, which tracks whichever build is currently newest rather
+than pinning `#N` — so it follows new builds as they start. The `(*)`-scoped
+all-builds views render at most the 100 newest builds to stay responsive.
 
 ### Settings
 
@@ -112,7 +128,12 @@ The CLI has three shapes:
 jenking                                # TUI, dashboard
 jenking <verb> [args...]               # headless: print to stdout, no TUI
 jenking ui <verb> [args...]            # TUI, pre-navigated (deep-linked) to <verb>
+jenking mcp [--context <name>] [--read-only]   # MCP server over stdio (for AI agents)
 ```
+
+`jenking mcp` runs the long-lived Model Context Protocol server; see the
+[MCP server](../README.md#mcp-server) section of the README for the tool
+catalog and client configuration.
 
 > **Shell quoting**: `#` is a comment character in zsh/bash. Quote tokens
 > containing `#` (`'#42'`) or escape (`\#42`) so the shell passes them
@@ -127,10 +148,13 @@ this requires you to also specify the branch.
 
 | Verb        | Args                                   | Output                                              |
 |-------------|----------------------------------------|-----------------------------------------------------|
-| `jobs`      | `[<folder>]`                           | Folders and jobs at the path.                       |
-| `builds`    | `<project> [<branch>]`                 | Recent build history.                               |
-| `running`   | none                                   | Currently running builds.                           |
-| `queue`     | none                                   | The build queue.                                    |
+| `views`     | `[<folder>]`                           | Views defined on the container, plus your personal views. |
+| `jobs`      | `[<folder>]` `--view <name>`           | Folders and jobs at the path; `--view` lists a Jenkins view's jobs instead. |
+| `builds`    | `<project> [<branch>]` `--mine`        | Recent build history; `--mine` keeps only builds you triggered or pushed. |
+| `running`   | `--mine`                               | Currently running builds; `--mine` keeps only builds you triggered or pushed. |
+| `queue`     | `--kind build\|scan\|all`               | The build queue. Branch-indexing scans are excluded unless asked for. |
+| `scans`     | `[<folder>]`                           | Branch-indexing scans waiting in the queue.          |
+| `scan-log`  | `<container> [--tail N]`               | Repository scan log of a multibranch project or folder. |
 | `whoami`    | none                                   | The authenticated user.                             |
 | `params`    | `<project> [<branch>]`                 | Build parameter definitions.                        |
 | `metadata`  | `<project> [<branch>]`                 | Raw Jenkins metadata.                               |
@@ -139,6 +163,7 @@ this requires you to also specify the branch.
 | `logs`      | `<project> <branch> [#N]`              | Full console text, verbatim (always plain text).    |
 | `describe`  | `<project> <branch> [#N]`              | The build's Jenkinsfile / replay script (plain text).|
 | `tests`     | `<project> <branch> [#N]`              | JUnit test report.                                  |
+| `changes`   | `<project> <branch> [#N]` `--find <commit>` | SCM commits in the build; with `--find`, which recent builds contain a commit (prefix match, `--max-builds` caps the scan). |
 | `trigger`   | `<project> [<branch>]`                 | Trigger a build (see `-p` for parameters).          |
 | `cancel`    | `<project> <branch> #N`                | Cancel a running build.                             |
 | `dequeue`   | `<id>`                                 | Remove an item from the queue.                      |

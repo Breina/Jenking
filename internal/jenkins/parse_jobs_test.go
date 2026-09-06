@@ -154,7 +154,7 @@ func TestParseJobList(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jobs := parseJobList(tt.resp, tt.folder)
+			jobs := parseJobList(tt.resp, tt.folder, nil)
 			if len(jobs) != tt.wantLen {
 				t.Fatalf("len(jobs) = %d, want %d", len(jobs), tt.wantLen)
 			}

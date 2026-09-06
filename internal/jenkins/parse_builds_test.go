@@ -36,7 +36,7 @@ func TestParseFlowGraphRow(t *testing.T) {
 			wantStep: "stage - (20 sec in block)",
 			wantName: "Build Maven",
 			wantNode: 25,
-			wantDur:  20 * time.Second,
+			wantDur:  20*time.Second + 500*time.Millisecond, // midpoint of "20 sec"
 			wantDep:  9,
 		},
 		{

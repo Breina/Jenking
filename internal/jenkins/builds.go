@@ -17,7 +17,7 @@ import (
 
 // ListBuilds returns the most recent builds for a job.
 func (c *Client) ListBuilds(ctx context.Context, jobPath string) ([]jmodel.Build, error) {
-	path := jmodel.JobPathToURL(jobPath) + "/api/json?tree=builds[number,url,result,building,duration,estimatedDuration,timestamp,_class,actions[causes[userId,userName,shortDescription]]]{0,25}"
+	path := jmodel.JobPathToURL(jobPath) + "/api/json?tree=builds[number,url,result,building,duration,estimatedDuration,timestamp,displayName,description,_class,actions[causes[userId,userName,shortDescription]]]{0,25}"
 
 	data, err := c.get(ctx, path)
 	if err != nil {
@@ -51,7 +51,7 @@ type jsonProjectJobList struct {
 // ListProjectBuilds returns all recent builds across all branches of a multibranch project,
 // sorted by Timestamp descending (most recent first).
 func (c *Client) ListProjectBuilds(ctx context.Context, projectPath string) ([]jmodel.ProjectBuild, error) {
-	path := jmodel.JobPathToURL(projectPath) + "/api/json?tree=jobs[name,fullName,builds[number,result,building,duration,estimatedDuration,timestamp,actions[causes[userId,userName,shortDescription]]]]"
+	path := jmodel.JobPathToURL(projectPath) + "/api/json?tree=jobs[name,fullName,builds[number,result,building,duration,estimatedDuration,timestamp,displayName,description,actions[causes[userId,userName,shortDescription]]]]"
 
 	data, err := c.get(ctx, path)
 	if err != nil {
@@ -233,32 +233,61 @@ func parseFlowGraphStatus(s string) jmodel.BuildStatus {
 	}
 }
 
+var (
+	durHourRe    = regexp.MustCompile(`(\d+)\s*hr`)
+	durMinRe     = regexp.MustCompile(`(\d+)\s*min`)
+	durSecRe     = regexp.MustCompile(`([\d.]+)\s*sec`)
+	durMilliRe   = regexp.MustCompile(`(\d+)\s*ms`)
+	durDecimalRe = regexp.MustCompile(`\.(\d+)$`)
+)
+
 // parseDurationText parses strings like "4 min 13 sec", "6.4 sec", "39 ms".
+//
+// Jenkins renders these with Util.getTimeSpanString, which truncates (integer
+// division) rather than rounding, and drops units below the two most
+// significant ones — "12 min" can be anything from 12m00s to 12m59s. Taking the
+// text at face value therefore biases every duration low, which shows up as
+// progress bars that reliably overrun by ~1s. We correct by returning the
+// midpoint of the interval the text represents: the parsed value plus half the
+// quantum of its least significant unit.
 func parseDurationText(s string) time.Duration {
 	s = strings.TrimSpace(s)
-	var total time.Duration
+	var total, quantum time.Duration
 
 	// Match hours
-	if m := regexp.MustCompile(`(\d+)\s*hr`).FindStringSubmatch(s); m != nil {
+	if m := durHourRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[1])
 		total += time.Duration(n) * time.Hour
+		quantum = time.Hour
 	}
 	// Match minutes
-	if m := regexp.MustCompile(`(\d+)\s*min`).FindStringSubmatch(s); m != nil {
+	if m := durMinRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[1])
 		total += time.Duration(n) * time.Minute
+		quantum = time.Minute
 	}
-	// Match seconds (may be float like "6.4 sec")
-	if m := regexp.MustCompile(`([\d.]+)\s*sec`).FindStringSubmatch(s); m != nil {
+	// Match seconds (may be float like "6.4 sec", in which case the decimals
+	// tighten the quantum: "6.4 sec" resolves to a tenth, not a whole second)
+	if m := durSecRe.FindStringSubmatch(s); m != nil {
 		f, _ := strconv.ParseFloat(m[1], 64)
 		total += time.Duration(f * float64(time.Second))
+		quantum = time.Second
+		if d := durDecimalRe.FindStringSubmatch(m[1]); d != nil {
+			for range d[1] {
+				quantum /= 10
+			}
+		}
 	}
 	// Match milliseconds
-	if m := regexp.MustCompile(`(\d+)\s*ms`).FindStringSubmatch(s); m != nil {
+	if m := durMilliRe.FindStringSubmatch(s); m != nil {
 		n, _ := strconv.Atoi(m[1])
 		total += time.Duration(n) * time.Millisecond
+		quantum = time.Millisecond
 	}
-	return total
+	if quantum == 0 {
+		return 0
+	}
+	return total + quantum/2
 }
 
 // cleanLogLine strips Jenkins ANSI hidden text blocks and remaining escape codes.
@@ -319,19 +348,37 @@ func MarkSkipped(stages []jmodel.Stage, skippedOccs map[string][]bool) {
 	}
 }
 
-// TriggerBuild starts a new build for the given job.
-func (c *Client) TriggerBuild(ctx context.Context, jobPath string, params map[string]string) error {
+// TriggerBuild starts a new build for the given job. It returns the queue
+// item id parsed from the Location response header, or 0 when the server
+// does not report one.
+func (c *Client) TriggerBuild(ctx context.Context, jobPath string, params map[string]string) (int64, error) {
 	basePath := jmodel.JobPathToURL(jobPath)
-	if len(params) == 0 {
-		return c.post(ctx, basePath+"/build", nil)
+	path := basePath + "/build"
+	if len(params) > 0 {
+		form := url.Values{}
+		for k, v := range params {
+			form.Set(k, v)
+		}
+		path = basePath + "/buildWithParameters?" + form.Encode()
 	}
+	loc, err := c.postForLocation(ctx, path)
+	if err != nil {
+		return 0, err
+	}
+	return parseQueueItemID(loc), nil
+}
 
-	// jmodel.Build with parameters
-	form := url.Values{}
-	for k, v := range params {
-		form.Set(k, v)
+var queueItemIDRe = regexp.MustCompile(`/queue/item/(\d+)/?$`)
+
+// parseQueueItemID extracts the queue item id from a Location header like
+// "https://ci/queue/item/1234/". Returns 0 when the URL carries none.
+func parseQueueItemID(location string) int64 {
+	m := queueItemIDRe.FindStringSubmatch(location)
+	if m == nil {
+		return 0
 	}
-	return c.post(ctx, basePath+"/buildWithParameters?"+form.Encode(), nil)
+	id, _ := strconv.ParseInt(m[1], 10, 64)
+	return id
 }
 
 // CancelBuild stops a running build.

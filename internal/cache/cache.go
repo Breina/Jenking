@@ -64,6 +64,18 @@ func (c *Cache[K, V]) Delete(key K) {
 	c.removeFromOrder(key)
 }
 
+// Snapshot returns a copy of all key/value pairs currently in the cache. The
+// returned map is detached — callers may mutate it freely.
+func (c *Cache[K, V]) Snapshot() map[K]V {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[K]V, len(c.entries))
+	for k, e := range c.entries {
+		out[k] = e.Value
+	}
+	return out
+}
+
 // Size returns the number of entries currently in the cache.
 func (c *Cache[K, V]) Size() int {
 	c.mu.Lock()

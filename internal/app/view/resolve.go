@@ -92,9 +92,7 @@ func ResolveTarget(t command.Target, store *cache.Store, current NavigationConte
 
 	if t.Build.Set {
 		if t.Build.IsLast {
-			nc.Level = CtxBuild
-			nc.Build = NavBuildRef{IsLast: true}
-			nc.StageName = ""
+			nc = nc.AtLastBuild(NavBuildRef{})
 		} else {
 			nc = nc.AtBuild(t.Build.Number)
 		}

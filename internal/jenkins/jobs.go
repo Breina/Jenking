@@ -43,15 +43,19 @@ func primaryBranch(branches []jsonJob) *jsonJob {
 	return nil
 }
 
+// jobListTree is the ?tree= selector for a container's job listing. One level
+// of nested jobs is included so we can derive the primary branch
+// status/lastBuild for WorkflowMultiBranchProject items. Shared with the view
+// job listing (views.go) so both decode into the same parser.
+const jobListTree = "?tree=jobs[name,url,color,_class,lastBuild[number,url,timestamp,estimatedDuration],jobs[name,color,lastBuild[number,url,timestamp,estimatedDuration]]]"
+
 // ListJobs returns jobs in the given folder (empty string for root).
 func (c *Client) ListJobs(ctx context.Context, folder string) ([]jmodel.Job, error) {
 	path := "/api/json"
 	if folder != "" {
 		path = jmodel.JobPathToURL(folder) + "/api/json"
 	}
-	// Include one level of nested jobs so we can derive the primary branch
-	// status/lastBuild for WorkflowMultiBranchProject items.
-	path += "?tree=jobs[name,url,color,_class,lastBuild[number,url,timestamp,estimatedDuration],jobs[name,color,lastBuild[number,url,timestamp,estimatedDuration]]]"
+	path += jobListTree
 
 	data, err := c.get(ctx, path)
 	if err != nil {
@@ -63,5 +67,5 @@ func (c *Client) ListJobs(ctx context.Context, folder string) ([]jmodel.Job, err
 		return nil, fmt.Errorf("parsing jobs response: %w", err)
 	}
 
-	return parseJobList(resp, folder), nil
+	return parseJobList(resp, folder, nil), nil
 }

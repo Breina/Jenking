@@ -423,3 +423,32 @@ func TestBranchBuildsProvider_InitReFetches(t *testing.T) {
 		t.Fatal("second Init() returned nil cmd; expected re-fetch on re-entry (pop-back path)")
 	}
 }
+
+// TestBuildsView_LastRow_Shortcuts asserts the "#last" alias row advertises the
+// same build behaviors as a normal row: the enter drill-in plus the host's
+// stages/log/describe view-switches and the trigger action. Regression guard
+// for the branch that used to hand-build a stages/log-only subset.
+func TestBuildsView_LastRow_Shortcuts(t *testing.T) {
+	nc := NavigationContext{Level: CtxBranch, BranchName: "main"}
+	bv, _ := newTestBuildsView(nc, makeBuilds())
+
+	if !bv.selectedIsLast() {
+		t.Fatalf("expected cursor to start on the #last row")
+	}
+
+	got := map[string]bool{}
+	for _, s := range bv.Shortcuts() {
+		got[s.Key+"/"+s.Action] = true
+	}
+	for _, want := range []string{
+		"enter/stages", // generic drill-in (Navigate group) — was missing
+		"s/stages",     // host view-switch
+		"l/full log",   // host view-switch
+		"d/describe",   // host build behavior — previously omitted
+		"t/trigger",    // host action — previously omitted
+	} {
+		if !got[want] {
+			t.Errorf("expected #last shortcuts to include %q; got %v", want, got)
+		}
+	}
+}

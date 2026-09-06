@@ -46,6 +46,7 @@ func NewTestReportView(t theme.Theme, report jmodel.TestReport, nc NavigationCon
 		report:   report,
 		build:    build,
 	}
+	v.SeedBuildIdentity(build)
 	v.populateTable()
 	access := fixedBuildAccessor(&v.nc, &v.build)
 	storeFn := func() *cache.Store { return v.store }
@@ -140,7 +141,7 @@ func (v *TestReportView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			build := v.build
 			return v, func() tea.Msg {
 				cv := NewConsoleView(v.theme, v.client, nc)
-				cv.build = build
+				cv.SetBuild(build)
 				cv.store = v.store
 				return SwapViewMsg{View: cv}
 			}

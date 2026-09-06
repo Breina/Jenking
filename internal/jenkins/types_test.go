@@ -112,3 +112,56 @@ func TestJobPathToURL(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractCause(t *testing.T) {
+	cause := func(class, desc string) jsonCause {
+		return jsonCause{Class: class, ShortDescription: desc}
+	}
+	const (
+		userIDCause   = "hudson.model.Cause$UserIdCause"
+		branchEvent   = "jenkins.branch.BranchEventCause"
+		userInterrupt = "jenkins.model.CauseOfInterruption$UserInterruption"
+	)
+
+	tests := []struct {
+		name    string
+		actions []jsonAction
+		want    string
+	}{
+		{"no causes", []jsonAction{{}}, ""},
+		{
+			"user id cause wins over branch event",
+			[]jsonAction{{Causes: []jsonCause{cause(branchEvent, "Branch event"), cause(userIDCause, "Started by user Brecht Derwael")}}},
+			"Started by user Brecht Derwael",
+		},
+		{
+			// InterruptedBuildAction is listed before CauseAction on aborted builds.
+			"interruption never masks the real cause",
+			[]jsonAction{
+				{Causes: []jsonCause{cause(userInterrupt, "Aborted by edb3908acd8b7ec9")}},
+				{Causes: []jsonCause{cause(userIDCause, "Started by user Brecht Derwael")}},
+			},
+			"Started by user Brecht Derwael",
+		},
+		{
+			"interruption ranks below branch event",
+			[]jsonAction{
+				{Causes: []jsonCause{cause(userInterrupt, "Aborted by edb3908acd8b7ec9")}},
+				{Causes: []jsonCause{cause(branchEvent, "Branch event")}},
+			},
+			"Branch event",
+		},
+		{
+			"interruption used when nothing else is known",
+			[]jsonAction{{Causes: []jsonCause{cause(userInterrupt, "Aborted by edb3908acd8b7ec9")}}},
+			"Aborted by edb3908acd8b7ec9",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractCause(tt.actions); got != tt.want {
+				t.Errorf("extractCause() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

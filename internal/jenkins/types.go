@@ -38,7 +38,18 @@ type jsonBuild struct {
 	EstimatedDuration int64        `json:"estimatedDuration"`
 	Timestamp         int64        `json:"timestamp"`
 	URL               string       `json:"url"`
+	DisplayName       string       `json:"displayName"`
+	Description       string       `json:"description"`
 	Actions           []jsonAction `json:"actions"`
+}
+
+// buildName returns the custom display name, or "" when the build carries the
+// default "#<number>" that Jenkins reports when no name was set.
+func (j *jsonBuild) buildName() string {
+	if j.DisplayName == "" || j.DisplayName == fmt.Sprintf("#%d", j.Number) {
+		return ""
+	}
+	return j.DisplayName
 }
 
 type jsonBuildDetail struct {
@@ -103,25 +114,39 @@ func extractUserName(actions []jsonAction) string {
 // extractCause returns the most informative shortDescription. BranchEventCause
 // and BranchIndexingCause carry no user identity, so they're treated as
 // fallbacks behind causes like UserIdCause or GitLabWebHookCause.
+//
+// UserInterruption ranks last: it lives on InterruptedBuildAction (so it can be
+// seen before the real CauseAction) and says who aborted, not what started the
+// build. Its shortDescription also interpolates the raw Jenkins user id rather
+// than the display name, which reads as a hex blob under SSO realms.
 func extractCause(actions []jsonAction) string {
 	const branchEvent = "jenkins.branch.BranchEventCause"
 	const branchIndex = "jenkins.branch.BranchIndexingCause"
-	var fallback string
+	const userInterrupt = "jenkins.model.CauseOfInterruption$UserInterruption"
+	var fallback, lastResort string
 	for _, a := range actions {
 		for _, c := range a.Causes {
 			if c.ShortDescription == "" {
 				continue
 			}
-			if c.Class == branchEvent || c.Class == branchIndex {
+			switch c.Class {
+			case userInterrupt:
+				if lastResort == "" {
+					lastResort = c.ShortDescription
+				}
+			case branchEvent, branchIndex:
 				if fallback == "" {
 					fallback = c.ShortDescription
 				}
-				continue
+			default:
+				return c.ShortDescription
 			}
-			return c.ShortDescription
 		}
 	}
-	return fallback
+	if fallback != "" {
+		return fallback
+	}
+	return lastResort
 }
 
 // jsonParameter — Value is RawMessage because Jenkins serialises parameter
@@ -167,6 +192,19 @@ type jsonJobDetail struct {
 
 type jsonJobList struct {
 	Jobs []jsonJob `json:"jobs"`
+}
+
+type jsonView struct {
+	Class string `json:"_class"`
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+}
+
+// jsonViewContainer is any object that owns views: the root, a folder, or a
+// user's my-views collection.
+type jsonViewContainer struct {
+	Views       []jsonView `json:"views"`
+	PrimaryView *jsonView  `json:"primaryView"`
 }
 
 type jsonBuildList struct {
@@ -236,6 +274,8 @@ func (j *jsonBuild) toDomain() jmodel.Build {
 		TriggeredBy:       extractUserID(j.Actions),
 		TriggeredByName:   extractUserName(j.Actions),
 		Cause:             extractCause(j.Actions),
+		Name:              j.buildName(),
+		Description:       j.Description,
 	}
 }
 

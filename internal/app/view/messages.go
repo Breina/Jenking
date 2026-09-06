@@ -139,6 +139,21 @@ type TriggerBuildResultMsg struct {
 	Err error
 }
 
+// TriggerScanResultMsg reports the outcome of starting a container's scan.
+// Distinct from TriggerBuildResultMsg because a scan produces no build number,
+// so the follow-up is the scan log rather than a pending build view.
+type TriggerScanResultMsg struct {
+	NC      NavigationContext
+	JobPath string
+	Err     error
+}
+
+// OpenScanLogMsg asks the app to push the scan log for a container.
+type OpenScanLogMsg struct {
+	NC      NavigationContext
+	JobPath string
+}
+
 // OpenTriggeredBuildMsg asks the app to push a BuildList + pending StageView.
 // Used by joblist so the breadcrumb includes the job/branch name.
 type OpenTriggeredBuildMsg struct {
@@ -203,3 +218,10 @@ type ConnectionRestoredMsg struct{}
 // The monitor fetches this after detecting a departure.
 // Aliased from navmsg so the monitor can emit it without importing the view layer.
 type BuildCompletedMsg = navmsg.BuildCompletedMsg
+
+// ViewSelectedMsg reports that the user opened a Jenkins view, so the app can
+// remember it as this context's last used view. The whole view travels, not
+// just its name: reopening it later must not have to re-resolve its kind.
+type ViewSelectedMsg struct {
+	View jmodel.JenkinsView
+}

@@ -10,14 +10,16 @@ import (
 )
 
 // TestDashboardSmoke verifies the most basic contract: jenking starts, renders
-// the dashboard with header chrome, and exits cleanly without panicking.
+// its root list with header chrome, and exits cleanly without panicking.
 func TestDashboardSmoke(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
 
-	// Wait for the TUI to connect and render the dashboard.
-	// "jobs(" is the prefix of the breadcrumb panel title like "jobs(Dashboard)[n]"
-	if err := h.WaitForText("jobs(", harness.NetworkTimeout); err != nil {
-		t.Fatalf("dashboard never rendered: %v", err)
+	// The root is the Jenkins views list; a remembered view may put a job
+	// list up first instead, so either breadcrumb counts as "rendered".
+	if err := h.WaitFor(func(g string) bool {
+		return strings.Contains(g, "views(") || strings.Contains(g, "jobs(")
+	}, harness.NetworkTimeout); err != nil {
+		t.Fatalf("root list never rendered: %v", err)
 	}
 
 	// Verify expected header chrome is present.
@@ -42,21 +44,21 @@ func TestDashboardSmoke(t *testing.T) {
 	h.Stop()
 }
 
-// TestDashboardBreadcrumb verifies the breadcrumb reflects the dashboard context.
+// TestDashboardBreadcrumb verifies the breadcrumb reflects the job-list context.
 func TestDashboardBreadcrumb(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	grid := h.Grid()
-	if !strings.Contains(grid, "Dashboard") {
-		t.Errorf("breadcrumb does not contain 'Dashboard'; grid:\n%s", grid)
+	if !strings.Contains(grid, "jobs(") {
+		t.Errorf("breadcrumb does not contain 'jobs('; grid:\n%s", grid)
 	}
 }
 
 // TestDashboardQuitCommand verifies :quit exits the app.
 func TestDashboardQuitCommand(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys(harness.Cmd("quit"))
 

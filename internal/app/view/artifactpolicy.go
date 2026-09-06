@@ -4,8 +4,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-
-	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // defaultTextArtifactExtensions is the canonical allowlist of file extensions
@@ -71,22 +69,6 @@ func SetTextArtifactExtensions(exts []string) {
 		m = toExtSet(defaultTextArtifactExtensions)
 	}
 	textArtifactExtensions = m
-}
-
-// FindArtifact locates an artifact by its display path, falling back to a
-// basename match so callers can pass just the file name of a nested artifact.
-func FindArtifact(arts []jmodel.Artifact, name string) (jmodel.Artifact, bool) {
-	for _, a := range arts {
-		if a.DisplayPath == name {
-			return a, true
-		}
-	}
-	for _, a := range arts {
-		if path.Base(a.DisplayPath) == name {
-			return a, true
-		}
-	}
-	return jmodel.Artifact{}, false
 }
 
 // IsTextArtifact reports whether the artifact's display path has an extension in

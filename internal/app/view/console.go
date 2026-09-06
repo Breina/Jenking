@@ -105,6 +105,18 @@ func (cv *ConsoleView) Init() tea.Cmd {
 }
 
 func consoleFetch(ctx context.Context, client jmodel.JenkinsClient, jobPath string, buildNumber, start int, delay time.Duration) tea.Cmd {
+	return progressiveFetch(ctx, func(start int) (*jmodel.ProgressiveLog, error) {
+		return client.GetProgressiveLog(ctx, jobPath, buildNumber, start)
+	}, start, delay)
+}
+
+// logSource reads one chunk of a run's log from a byte offset. It is what makes
+// the streaming loop indifferent to *which* kind of run it is following — a
+// build's console or a container's scan log, which Jenkins serves through the
+// same progressive-text protocol at a different URL.
+type logSource func(start int) (*jmodel.ProgressiveLog, error)
+
+func progressiveFetch(ctx context.Context, src logSource, start int, delay time.Duration) tea.Cmd {
 	return func() tea.Msg {
 		if delay > 0 {
 			select {
@@ -113,7 +125,7 @@ func consoleFetch(ctx context.Context, client jmodel.JenkinsClient, jobPath stri
 			case <-time.After(delay):
 			}
 		}
-		chunk, err := client.GetProgressiveLog(ctx, jobPath, buildNumber, start)
+		chunk, err := src(start)
 		if err != nil {
 			if ctx.Err() != nil {
 				return consoleAbortMsg{}
@@ -279,6 +291,14 @@ func (cv *ConsoleView) PopupView() string {
 
 func (cv *ConsoleView) Title() string {
 	return fmt.Sprintf("Build #%d", cv.nc.Build.Number)
+}
+
+// SetBuild attaches the build this console belongs to. Callers assign it after
+// construction; going through a setter keeps the nc's build identity in step,
+// so the console's breadcrumb matches the view it was swapped in from.
+func (cv *ConsoleView) SetBuild(b jmodel.Build) {
+	cv.build = b
+	cv.SeedBuildIdentity(b)
 }
 
 func (cv *ConsoleView) Breadcrumb() BreadcrumbSegment {

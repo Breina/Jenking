@@ -24,12 +24,13 @@ import (
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
-// retainPerJob bounds how many records the registry keeps per job path. The
-// all-builds scan only ever returns maxBuildsPerJob (10) builds per job, so any
-// records beyond this cap are stale history that would otherwise accumulate
-// unbounded as new builds run. Currently-running builds are always retained
-// regardless of this cap.
-const retainPerJob = 15
+// retainPerJob bounds how many records the registry keeps per job path, both in
+// memory and on disk (see boundPerJob). It matches the depth of a branch build
+// list fetch (ListBuilds requests {0,25}) so the cached set holds everything a
+// branch view can display — a fetch never returns more, so a higher cap would
+// only retain stale history. The all-builds scan returns maxBuildsPerJob (10),
+// well under this. Currently-running builds are always retained regardless.
+const retainPerJob = 25
 
 // Source identifies which ingress wrote a record.
 type Source int
@@ -230,6 +231,14 @@ func (r *Registry) upsertLocked(k Key, b jmodel.Build, jobPath, branchName, disp
 		}
 		if merged.Params == nil {
 			merged.Params = cur.Build.Params
+		}
+		// A lightweight running-poll payload carries no name/description; keep the
+		// values a fuller fetch already recorded instead of blanking them.
+		if merged.Name == "" {
+			merged.Name = cur.Build.Name
+		}
+		if merged.Description == "" {
+			merged.Description = cur.Build.Description
 		}
 		next.Build = merged
 	}
@@ -450,6 +459,10 @@ func (r *Registry) LoadFromDisk(records []Record) {
 			reconcileKeys = append(reconcileKeys, k)
 		}
 	}
+	// Bound the loaded set the same way ingests do, so a disk file that still
+	// holds pre-cap history doesn't briefly render more builds than a fetch will
+	// return (which then "trims" once the first live list comes back).
+	r.pruneLocked()
 	reconcile := r.reconcile
 	onChange := r.onChange
 	r.mu.Unlock()

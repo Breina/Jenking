@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +36,13 @@ func NewClient(baseURL, username, token string, insecure bool) *Client {
 	// the token and rejects requests carrying credentials with HTTP 400, so we
 	// must let Go's default header-stripping stand for cross-host hops.
 	reattachAuth := func(req *http.Request, via []*http.Request) error {
+		// Jenkins bounces unauthenticated requests to the security realm's
+		// login entry point. With an SSO realm (oic-auth) that is a redirect
+		// loop we can never satisfy from the CLI, so surface it as a distinct
+		// error the caller can recover from by sending the user to a browser.
+		if strings.Contains(req.URL.Path, "securityRealm/commenceLogin") {
+			return ErrLoginRequired
+		}
 		if len(via) >= 10 {
 			return fmt.Errorf("stopped after 10 redirects")
 		}
@@ -60,6 +68,11 @@ func NewClient(baseURL, username, token string, insecure bool) *Client {
 	}
 }
 
+// ErrLoginRequired signals that Jenkins rejected our credentials and wants an
+// interactive SSO login instead. Callers can use errors.Is to detect it and
+// walk the user through logging in via the browser.
+var ErrLoginRequired = errors.New("jenkins requires an interactive SSO login")
+
 // HTTPError is returned for non-2xx responses that aren't auth- or
 // redirect-related, carrying the status code so callers can react to it
 // (e.g. enrich a 404 with context) via errors.As.
@@ -72,6 +85,10 @@ type HTTPError struct {
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s %s", e.StatusCode, e.Method, e.Path)
 }
+
+// HTTPStatusCode implements jmodel.HTTPStatusError so callers can react to the
+// status without importing this package.
+func (e *HTTPError) HTTPStatusCode() int { return e.StatusCode }
 
 // doRequest builds and executes an HTTP request with Basic Auth.
 // The caller is responsible for closing the response body.
@@ -128,6 +145,17 @@ func (c *Client) post(ctx context.Context, path string, body io.Reader) error {
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// postForLocation performs a POST request and returns the Location response
+// header (empty when the server sends none).
+func (c *Client) postForLocation(ctx context.Context, path string) (string, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	return resp.Header.Get("Location"), nil
 }
 
 // WhoAmI returns the authenticated Jenkins user.

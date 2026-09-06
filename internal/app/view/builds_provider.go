@@ -100,7 +100,7 @@ func queuedUnifiedBuilds(store *cache.Store, filter buildregistry.Filter) []Unif
 	if store == nil || store.Queue == nil {
 		return nil
 	}
-	items := store.Queue.Query(filter)
+	items := store.Queue.Query(filter, jmodel.QueueKindBuild)
 	if len(items) == 0 {
 		return nil
 	}

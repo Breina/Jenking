@@ -134,3 +134,17 @@ func TestParseJenkinsURL_NotAJenkinsURL(t *testing.T) {
 		t.Fatal("expected error for URL with no /job/ segment, got nil")
 	}
 }
+
+// A bare view URL names no job but does name a job list: the view's own.
+func TestParseJenkinsURLBareView(t *testing.T) {
+	dl, err := ParseJenkinsURL("https://jenkins.cumuli.be", "https://jenkins.cumuli.be/view/Team%20Infra/", nil)
+	if err != nil {
+		t.Fatalf("ParseJenkinsURL: %v", err)
+	}
+	if dl.Kind != DeepLinkJobs {
+		t.Errorf("Kind = %v, want DeepLinkJobs", dl.Kind)
+	}
+	if dl.NC.ViewName != "Team Infra" || dl.NC.Level != CtxRoot {
+		t.Errorf("NC = %+v, want root scope filtered by 'Team Infra'", dl.NC)
+	}
+}

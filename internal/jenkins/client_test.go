@@ -2,6 +2,7 @@ package jenkins
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -54,5 +55,21 @@ func TestWhoAmIAuthError(t *testing.T) {
 	_, err := client.WhoAmI(context.Background())
 	if err == nil {
 		t.Fatal("WhoAmI() expected error for unauthorized, got nil")
+	}
+}
+
+func TestWhoAmILoginRequired(t *testing.T) {
+	// Mimic a Jenkins with an SSO realm: unauthenticated requests bounce to
+	// securityRealm/commenceLogin via a relative redirect, which otherwise
+	// loops until the redirect limit.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "securityRealm/commenceLogin?from=%2F", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "admin", "token123", false)
+	_, err := client.WhoAmI(context.Background())
+	if !errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("WhoAmI() error = %v, want ErrLoginRequired", err)
 	}
 }

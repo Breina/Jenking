@@ -52,12 +52,43 @@ func buildCommandRegistry(store *cache.Store, contexts []config.ContextConfig) *
 		Execute:    openTargetCmd(kindStages),
 		ArgSuggest: projectSuggest,
 	})
+	registerViewCommands(r)
 	r.Register(command.Command{
 		Name: "jobs", Aliases: []string{"j", "job"},
 		Help:       "Navigate to job list [<project>]",
 		Execute:    openTargetCmd(kindJobs),
 		ArgSuggest: projectSuggest,
 	})
+	registerRestOfCommands(r, projectSuggest, contexts)
+	return r
+}
+
+// registerViewCommands registers the Jenkins-view verbs: the views list, and
+// opening one view's job list by name.
+func registerViewCommands(r *command.Registry) {
+	r.Register(command.Command{
+		Name: "views", Help: "Show the Jenkins views",
+		Execute: func(args []string) tea.Cmd {
+			return func() tea.Msg { return openViewsMsg{} }
+		},
+	})
+	r.Register(command.Command{
+		Name: "view", Aliases: []string{"v"},
+		Help: "Open a Jenkins view's job list [<name>]",
+		Execute: func(args []string) tea.Cmd {
+			name := strings.TrimSpace(strings.Join(args, " "))
+			if name == "" {
+				return func() tea.Msg { return openViewsMsg{} }
+			}
+			return func() tea.Msg { return openViewMsg{name: name} }
+		},
+		ArgSuggest: view.ViewNameSuggest,
+	})
+}
+
+// registerRestOfCommands registers the remaining verbs. projectSuggest and
+// contexts carry the per-Jenkins-context data their completions need.
+func registerRestOfCommands(r *command.Registry, projectSuggest func(string) []string, contexts []config.ContextConfig) {
 	r.Register(command.Command{
 		Name: "log", Aliases: []string{"l", "logs"},
 		Help:       "Show console log [<project> [<branch>] [#<n>|#last]]",
@@ -73,9 +104,21 @@ func buildCommandRegistry(store *cache.Store, contexts []config.ContextConfig) *
 		},
 	})
 	r.Register(command.Command{
+		Name: "dashboard", Aliases: []string{"dash"}, Help: "Show the activity dashboard",
+		Execute: func(args []string) tea.Cmd {
+			return func() tea.Msg { return openDashboardMsg{} }
+		},
+	})
+	r.Register(command.Command{
 		Name: "running", Aliases: []string{"r"}, Help: "Show running builds",
 		Execute: func(args []string) tea.Cmd {
 			return func() tea.Msg { return openRunningBuildsMsg{} }
+		},
+	})
+	r.Register(command.Command{
+		Name: "scans", Help: "Show branch-indexing scans in the current scope",
+		Execute: func(args []string) tea.Cmd {
+			return func() tea.Msg { return openScansMsg{} }
 		},
 	})
 	r.Register(command.Command{
@@ -120,7 +163,6 @@ func buildCommandRegistry(store *cache.Store, contexts []config.ContextConfig) *
 			return func() tea.Msg { return startUpdateMsg{} }
 		},
 	})
-	return r
 }
 
 func executeColorblind(args []string) tea.Cmd {

@@ -36,7 +36,7 @@ func requireFixtureJob(t *testing.T, h *harness.Harness) {
 
 	// Dismiss search and return to unfiltered dashboard
 	h.SendKeys("<esc>")
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	if !found {
 		t.Skipf("fixture job %q not found on Jenkins — deploy test/e2e/fixtures/Jenkinsfile.e2e first", fixtureJobName)
@@ -46,7 +46,7 @@ func requireFixtureJob(t *testing.T, h *harness.Harness) {
 // TestTriggerBuildAndCancel verifies triggering and then cancelling a build.
 func TestTriggerBuildAndCancel(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath, Context: "ontwikkel"})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	requireFixtureJob(t, h)
 
@@ -90,7 +90,7 @@ func TestTriggerBuildAndCancel(t *testing.T) {
 // TestTriggerWithParameters verifies the parameter dialog shows for parameterised jobs.
 func TestTriggerWithParameters(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath, Context: "ontwikkel"})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	requireFixtureJob(t, h)
 

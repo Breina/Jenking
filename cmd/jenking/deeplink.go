@@ -72,6 +72,49 @@ func buildDeepLinkView(verb string, args []string, d deepLinkArgs) (view.View, e
 	}
 }
 
+// gitAutoLaunchView resolves the cwd's git origin remote to a Jenkins job via
+// the warm SCM-URL index and returns the view to open on:
+//   - branch match (a resolved branch == the local checked-out branch): the
+//     stages of that branch's latest build (#last, resolved live).
+//   - branch miss (repo matched, branch didn't): the project's builds across all
+//     branches, so the user can pick.
+//
+// Returns nil when the cwd is not a git repo, has no origin, or nothing resolves
+// — the caller then keeps the default Dashboard.
+func gitAutoLaunchView(d deepLinkArgs) view.View {
+	url := gitRemoteURL("")
+	if url == "" {
+		return nil
+	}
+	deps := ucDeps()
+	matches := deps.ResolveJob(url)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	setIdentity := func(nc view.NavigationContext) view.NavigationContext {
+		nc.Username = d.username
+		nc.FriendlyName = d.friendlyName
+		nc.GitUsernames = d.gitUsernames
+		return nc
+	}
+
+	// Prefer the branch job matching the local checkout.
+	if local := gitCurrentBranch(""); local != "" {
+		for _, m := range matches {
+			if m.Branch == local {
+				nc := setIdentity(view.NCFromJobPath(m.JobPath))
+				return view.NewMyBuildsView(d.theme, d.client, d.store, nc.AtScope(), d.slowInterval)
+			}
+		}
+	}
+
+	// Branch miss: open the project's builds across all branches. matches are
+	// ranked primary-branch-first, so the first entry's project is the target.
+	nc := setIdentity(view.NCFromJobPath(matches[0].JobPath)).ClipTo(view.CtxProject)
+	return buildsViewForCLI(nc, d)
+}
+
 // buildsViewForCLI mirrors App.buildsViewFor — kept separate to avoid
 // reaching into the tui package from main. The dispatch logic must stay
 // in sync with app.go's handleOpenTarget.
@@ -103,7 +146,9 @@ func jobListForCLI(nc view.NavigationContext, d deepLinkArgs) view.View {
 		}
 		return view.NewJobList(d.theme, d.client, d.store, pp, nc.ProjectName, true, d.username, d.gitUsernames)
 	default:
-		return view.NewJobList(d.theme, d.client, d.store, "", "Dashboard", false, d.username, d.gitUsernames)
+		// A pasted view URL carries the view's name; the views list resolves it
+		// and jumps straight into that view's job list.
+		return view.NewViewsListAt(d.theme, d.client, d.store, d.username, d.gitUsernames, nc.ViewName)
 	}
 }
 

@@ -15,16 +15,19 @@ import (
 // parents (e.g. "stagelog" sits under "stages", "artifact" under "artifacts")
 // rather than all collapsing onto one canonical chain.
 var navChains = map[string][]string{
-	"jobs":      {"jobs"},
-	"builds":    {"jobs", "builds"},
-	"stages":    {"jobs", "builds", "stages"},
-	"stagelog":  {"jobs", "builds", "stages", "log"},
-	"matrix":    {"jobs", "builds", "stages", "matrix"},
-	"tests":     {"jobs", "builds", "tests"},
-	"describe":  {"jobs", "builds", "describe"},
-	"log":       {"jobs", "builds", "log"},
-	"artifacts": {"jobs", "builds", "artifacts"},
-	"artifact":  {"jobs", "builds", "artifacts", "file"},
+	"views":     {"views"},
+	"jobs":      {"views", "jobs"},
+	"builds":    {"views", "jobs", "builds"},
+	"stages":    {"views", "jobs", "builds", "stages"},
+	"stagelog":  {"views", "jobs", "builds", "stages", "log"},
+	"matrix":    {"views", "jobs", "builds", "stages", "matrix"},
+	"tests":     {"views", "jobs", "builds", "tests"},
+	"describe":  {"views", "jobs", "builds", "describe"},
+	"log":       {"views", "jobs", "builds", "log"},
+	"artifacts": {"views", "jobs", "builds", "artifacts"},
+	"artifact":  {"views", "jobs", "builds", "artifacts", "file"},
+	"scans":     {"views", "jobs", "scans"},
+	"scanlog":   {"views", "jobs", "scans", "log"},
 }
 
 // NavTags renders k9s-style navigation tags at the bottom of the TUI.

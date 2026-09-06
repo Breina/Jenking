@@ -20,8 +20,14 @@ import (
 	"github.com/Breina/Jenking/internal/tui/widget"
 )
 
-// matrixTickMsg drives the animation loop at ~16 FPS.
-type matrixTickMsg struct{}
+// matrixTickMsg drives the animation loop at ~16 FPS. gen tags the tick with
+// the animation chain that scheduled it: Init() may be called repeatedly (on
+// resize, modal close, refresh, navigation), and each call would otherwise
+// start a new, uncancellable tea.Tick chain in parallel with the old one,
+// multiplying the effective frame rate until the terminal is flooded. Every
+// Init() bumps mv.tickGen; a tick whose gen no longer matches is stale and is
+// dropped without rescheduling, so exactly one chain stays live.
+type matrixTickMsg struct{ gen int }
 
 const (
 	shadeInvisible = 0
@@ -122,6 +128,7 @@ type MatrixView struct {
 	pending    []pendingLine
 	grid       [][]matrixCell
 	tick       int
+	tickGen    int // identifies the live animation tick chain; see matrixTickMsg
 	rng        *rand.Rand
 	done       bool
 	fetchStart int
@@ -139,10 +146,20 @@ func NewMatrixView(client jmodel.JenkinsClient, nc NavigationContext) *MatrixVie
 func (mv *MatrixView) IsFullScreen() bool { return true }
 
 func (mv *MatrixView) Init() tea.Cmd {
+	// Bump the generation so any tick chain from a previous Init() goes stale
+	// and stops rescheduling itself, leaving exactly one live chain.
+	mv.tickGen++
 	return tea.Batch(
 		consoleFetch(mv.ctx, mv.client, mv.nc.JobPath(), mv.nc.Build.Number, mv.fetchStart, 0),
-		tea.Tick(62*time.Millisecond, func(time.Time) tea.Msg { return matrixTickMsg{} }),
+		mv.scheduleTick(),
 	)
+}
+
+// scheduleTick queues the next animation frame tagged with the current
+// generation. Only ticks matching mv.tickGen are honored (see matrixTickMsg).
+func (mv *MatrixView) scheduleTick() tea.Cmd {
+	gen := mv.tickGen
+	return tea.Tick(62*time.Millisecond, func(time.Time) tea.Msg { return matrixTickMsg{gen: gen} })
 }
 
 func (mv *MatrixView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -169,12 +186,16 @@ func (mv *MatrixView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return mv, nil
 
 	case matrixTickMsg:
+		// Drop ticks from a superseded chain so only one animation loop runs.
+		if msg.gen != mv.tickGen {
+			return mv, nil
+		}
 		mv.tick++
 		mv.advanceColumns()
 		mv.cullColumns()
 		mv.spawnColumns()
 		mv.compositeGrid()
-		return mv, tea.Tick(62*time.Millisecond, func(time.Time) tea.Msg { return matrixTickMsg{} })
+		return mv, mv.scheduleTick()
 
 	case tea.KeyMsg:
 		return mv, nil

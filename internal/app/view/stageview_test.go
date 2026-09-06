@@ -646,17 +646,105 @@ func TestEffectiveEstimate(t *testing.T) {
 	}
 }
 
-// TestProgressTick_AlwaysReschedules verifies the 200ms progress tick keeps
-// rescheduling itself even when the build is in a terminal state. Without this,
-// a transient "all stages finished" state (or an API that briefly reports the
-// wrong status) permanently stops the animation thread.
-func TestProgressTick_AlwaysReschedules(t *testing.T) {
-	sv := makeStageView(jmodel.Build{Status: jmodel.BuildStatusSuccess}, []jmodel.Stage{
-		{Name: "Build", Status: jmodel.BuildStatusSuccess},
-	})
-	_, cmd := sv.Update(stageProgressTickMsg{})
-	if cmd == nil {
-		t.Fatal("expected stageProgressTickMsg to return a reschedule cmd even when build is terminal")
+// TestProgressTick_FollowsPollingChain verifies the 200ms animation tick is
+// bound to the polling chain: it reschedules for as long as the chain is
+// live — including through a transient "all stages finished" state, which
+// used to stop the animation thread — and stops once the chain is retired.
+func TestProgressTick_FollowsPollingChain(t *testing.T) {
+	sv := makeStageView(jmodel.Build{Status: jmodel.BuildStatusRunning, Timestamp: time.Now()},
+		[]jmodel.Stage{{Name: "Build", Status: jmodel.BuildStatusSuccess}})
+	if cmd := sv.ensurePolling(); cmd == nil {
+		t.Fatal("ensurePolling() = nil for a running build; want a start cmd")
+	}
+	if _, cmd := sv.Update(stageProgressTickMsg{gen: sv.pollGen}); cmd == nil {
+		t.Error("tick did not reschedule while polling; want a reschedule cmd " +
+			"(no stage running is a transient state, not a reason to stop)")
+	}
+	sv.stopPolling()
+	if _, cmd := sv.Update(stageProgressTickMsg{gen: sv.pollGen}); cmd != nil {
+		t.Error("tick rescheduled after the chain was retired; want nil")
+	}
+}
+
+// TestPolling_StartsWhenStatusUnconfirmed is the regression for the frozen
+// stages view. Returning from a stage log can rebuild the view with no build
+// status (StageLogView.ParentView), and a stage list fetched in the gap
+// between two stages shows nothing running. The old start condition read
+// both signals as "not running" and never started the loop — permanently,
+// since nothing supervised it. Unconfirmed state must poll.
+func TestPolling_StartsWhenStatusUnconfirmed(t *testing.T) {
+	sv := makeStageView(jmodel.Build{Number: 42}, nil) // Status "" — not yet fetched
+	sv.Update(StagesMsg{Stages: []jmodel.Stage{
+		{Name: "Build", Status: jmodel.BuildStatusSuccess}, // no stage running: between stages
+	}})
+	if !sv.polling {
+		t.Fatal("no polling chain after StagesMsg with an unconfirmed build status; " +
+			"the view is frozen and cannot recover")
+	}
+}
+
+// TestPolling_RecoversOnBuildDetail verifies build detail is a recovery
+// point: however the view came to be without a chain, learning the build is
+// running restarts it.
+func TestPolling_RecoversOnBuildDetail(t *testing.T) {
+	sv := makeStageView(jmodel.Build{Number: 42}, nil)
+	sv.Update(buildDetailMsg{build: jmodel.Build{Number: 42, Status: jmodel.BuildStatusRunning}})
+	if !sv.polling {
+		t.Fatal("buildDetailMsg reporting a running build did not start the polling chain")
+	}
+}
+
+// TestPolling_IsIdempotent verifies ensurePolling never stacks chains — the
+// old code could run two 2s loops at once after a cached Init.
+func TestPolling_IsIdempotent(t *testing.T) {
+	sv := makeStageView(jmodel.Build{Number: 42, Status: jmodel.BuildStatusRunning}, nil)
+	if cmd := sv.ensurePolling(); cmd == nil {
+		t.Fatal("first ensurePolling() = nil; want a start cmd")
+	}
+	gen := sv.pollGen
+	if cmd := sv.ensurePolling(); cmd != nil {
+		t.Error("second ensurePolling() started a competing chain; want nil")
+	}
+	if sv.pollGen != gen {
+		t.Errorf("pollGen moved on an idempotent call: %d -> %d", gen, sv.pollGen)
+	}
+}
+
+// TestPolling_DropsStaleTick verifies a tick from a superseded chain (one
+// that was in flight when the view was re-entered) neither mutates state nor
+// schedules a successor.
+func TestPolling_DropsStaleTick(t *testing.T) {
+	sv := makeStageView(jmodel.Build{Number: 42, Status: jmodel.BuildStatusRunning}, nil)
+	sv.ensurePolling()
+	staleGen := sv.pollGen
+	sv.stopPolling() // e.g. initReentry replacing the context
+	sv.ensurePolling()
+
+	b := jmodel.Build{Number: 42, Status: jmodel.BuildStatusRunning}
+	_, cmd := sv.Update(stageRefreshMsg{gen: staleGen, stages: []jmodel.Stage{{Name: "Ghost"}}, build: &b})
+	if cmd != nil {
+		t.Error("stale tick scheduled a successor; want it dropped")
+	}
+	if len(sv.stages) != 0 {
+		t.Errorf("stale tick applied its payload: stages = %d, want 0", len(sv.stages))
+	}
+}
+
+// TestPolling_StopsWhenBuildFinishes verifies the chain retires exactly once
+// Jenkins confirms a terminal status — the only condition that stops it.
+func TestPolling_StopsWhenBuildFinishes(t *testing.T) {
+	sv := makeStageView(jmodel.Build{Number: 42, Status: jmodel.BuildStatusRunning}, nil)
+	sv.ensurePolling()
+
+	unknown := jmodel.Build{Number: 42, Status: jmodel.BuildStatusUnknown}
+	sv.Update(stageRefreshMsg{gen: sv.pollGen, stages: nil, build: &unknown})
+	if !sv.polling {
+		t.Error("chain stopped on an unknown build status; want it to keep polling")
+	}
+	done := jmodel.Build{Number: 42, Status: jmodel.BuildStatusSuccess}
+	sv.Update(stageRefreshMsg{gen: sv.pollGen, stages: nil, build: &done})
+	if sv.polling {
+		t.Error("chain still live after the build finished; want it retired")
 	}
 }
 

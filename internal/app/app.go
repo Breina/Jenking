@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -12,13 +11,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Breina/Jenking/internal/app/engine"
 	"github.com/Breina/Jenking/internal/app/view"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/config"
-	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/jenkins"
-	"github.com/Breina/Jenking/internal/monitor"
 	"github.com/Breina/Jenking/internal/notify"
 	"github.com/Breina/Jenking/internal/tui/command"
 	"github.com/Breina/Jenking/internal/tui/component"
@@ -28,17 +26,49 @@ import (
 	"github.com/Breina/Jenking/internal/version"
 )
 
-// wireMonitor builds a RunningBuildsMonitor and attaches a Reconciler to the
-// store's Registry so background GetBuild fetches drive build-status transitions
-// for builds the monitor never observed in its prev set (e.g. transient builds
-// that completed between two 1s polls).
-func wireMonitor(client jmodel.JenkinsClient, store *cache.Store) *monitor.RunningBuildsMonitor {
-	m := monitor.NewRunningBuildsMonitor(client, store)
-	if store != nil && store.Registry != nil {
-		rec := buildregistry.NewReconciler(client, store.Registry, nil)
-		store.Registry.SetReconcile(rec.Reconcile)
+// wireEngine builds the headless poll engine and subscribes the TUI to its
+// event stream. The engine is the single Jenkins poller: it keeps the registry
+// and dashboard sampler live, marks caches dirty on build arrival, runs the
+// completion cascade on departure, and emits navmsg.* messages (running-builds
+// updates, build completions, connection loss) the app forwards to its views.
+// Start (which also attaches the registry reconciler) is launched off the UI
+// thread; the returned ctx is cancelled to stop the loop.
+func wireEngine(client jmodel.JenkinsClient, store *cache.Store) (*engine.Engine, <-chan any, context.Context, context.CancelFunc) {
+	eng := engine.New(client, store)
+	ch := eng.Subscribe()
+	ctx, cancel := context.WithCancel(context.Background())
+	return eng, ch, ctx, cancel
+}
+
+// startEngineCmd runs the engine's poll loop off the UI thread (Start's warm
+// poll does blocking I/O).
+func startEngineCmd(eng *engine.Engine, ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		eng.Start(ctx)
+		return nil
 	}
-	return m
+}
+
+// engineMsg wraps one message read from the engine's event channel so the app
+// can re-subscribe for the next one and re-dispatch the payload through Update.
+type engineMsg struct{ payload any }
+
+// engineEventsCmd blocks until the engine publishes one message, wrapping it for
+// the app. The app re-issues this after each engineMsg to keep draining. It also
+// returns when ctx is cancelled (quit or context switch) so the reader goroutine
+// for a superseded engine does not leak on its abandoned channel.
+func engineEventsCmd(ctx context.Context, ch <-chan any) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case m, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			return engineMsg{payload: m}
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 // debugStats is shared via pointer so value-receiver methods can mutate it.
@@ -98,6 +128,14 @@ type artifactsFetchedMsg struct {
 }
 
 type openRunningBuildsMsg struct{}
+type openScansMsg struct{}
+type openDashboardMsg struct{}
+
+// openViewsMsg opens the Jenkins views list (the root of the navigation).
+type openViewsMsg struct{}
+
+// openViewMsg opens a named Jenkins view's job list.
+type openViewMsg struct{ name string }
 type openInspectMsg struct{}
 type openHelpMsg struct{}
 type connCheckMsg struct{}
@@ -120,49 +158,58 @@ type App struct {
 	showPrefsDialog      bool
 	prefsDialog          view.PrefsDialog
 	savePrefsFn          func(notifications bool, gitUsernames []string, refreshInterval, slowInterval time.Duration, maxLogLines int, logLevel string, textArtifactExtensions []string) error
-	refreshInterval      time.Duration
-	maxLogLines          int
-	logLevel             string
-	showHelp             bool
-	showRoyalPaywall     bool
-	royalPaywall         view.RoyalPaywall
-	sponsorKey           string
-	colorblindnessType   theme.ColorblindnessType
-	saveFn               func(theme.ColorblindnessType) error
-	keys                 KeyMap
-	client               jmodel.JenkinsClient
-	store                *cache.Store
-	monitor              *monitor.RunningBuildsMonitor
-	username             string
-	friendlyName         string
-	gitUsernames         []string
-	contexts             []config.ContextConfig
-	currentContextName   string
-	diskStoreFn          func(serverURL string) *cache.DiskStore
-	slowInterval         time.Duration
-	registry             *command.Registry
-	header               component.Header
-	breadcrumb           component.Breadcrumb
-	statusBar            component.StatusBar
-	navTags              component.NavTags
-	currentView          view.View
-	initialView          view.View
-	navStack             []view.View // back-stack populated on PushViewMsg
-	width                int
-	height               int
-	cmdInput             string
-	cmdSuggestions       []string
-	cmdSuggestionIdx     int
-	searchInput          string
-	notifications        bool
-	termFocused          bool        // true while the terminal window has focus
-	connected            bool        // tracks live connection status shown in header
-	dbg                  *debugStats // non-nil when log_level=debug
-	updateVersion        string      // non-empty when a newer version is available
-	showUpdateDialog     bool
-	updateDialogYes      bool // which button is highlighted in the confirm dialog
-	isUpdating           bool
-	UpdatedTo            string // set on successful self-update; read by main after p.Run()
+	saveLastViewFn       func(contextName, viewName string) error
+	lastViewFn           func(contextName string) string
+	// lastOpenedView is the Jenkins view whose job list was opened most
+	// recently in this session. It is what ":jobs" returns to, and it is kept
+	// as the whole view so reopening never has to re-resolve its kind.
+	lastOpenedView     *jmodel.JenkinsView
+	refreshInterval    time.Duration
+	maxLogLines        int
+	logLevel           string
+	showHelp           bool
+	showRoyalPaywall   bool
+	royalPaywall       view.RoyalPaywall
+	sponsorKey         string
+	colorblindnessType theme.ColorblindnessType
+	saveFn             func(theme.ColorblindnessType) error
+	keys               KeyMap
+	client             jmodel.JenkinsClient
+	store              *cache.Store
+	engine             *engine.Engine
+	engineEvents       <-chan any
+	engineCtx          context.Context
+	engineCancel       context.CancelFunc
+	username           string
+	friendlyName       string
+	gitUsernames       []string
+	contexts           []config.ContextConfig
+	currentContextName string
+	diskStoreFn        func(serverURL string) *cache.DiskStore
+	slowInterval       time.Duration
+	registry           *command.Registry
+	header             component.Header
+	breadcrumb         component.Breadcrumb
+	statusBar          component.StatusBar
+	navTags            component.NavTags
+	currentView        view.View
+	initialView        view.View
+	navStack           []view.View // back-stack populated on PushViewMsg
+	width              int
+	height             int
+	cmdInput           string
+	cmdSuggestions     []string
+	cmdSuggestionIdx   int
+	searchInput        string
+	notifications      bool
+	termFocused        bool        // true while the terminal window has focus
+	connected          bool        // tracks live connection status shown in header
+	dbg                *debugStats // non-nil when log_level=debug
+	updateVersion      string      // non-empty when a newer version is available
+	showUpdateDialog   bool
+	updateDialogYes    bool // which button is highlighted in the confirm dialog
+	isUpdating         bool
+	UpdatedTo          string // set on successful self-update; read by main after p.Run()
 
 	pendingDeeplink *view.DeepLink // last clipboard URL that parsed for this context
 }
@@ -176,6 +223,8 @@ func NewApp(cfg AppConfig) App {
 		dbg = &debugStats{}
 	}
 
+	eng, engEvents, engCtx, engCancel := wireEngine(cfg.Client, cfg.Store)
+
 	return App{
 		theme:              cfg.Theme,
 		baseTheme:          cfg.BaseTheme,
@@ -187,7 +236,10 @@ func NewApp(cfg AppConfig) App {
 		keys:               cfg.Keys,
 		client:             cfg.Client,
 		store:              cfg.Store,
-		monitor:            wireMonitor(cfg.Client, cfg.Store),
+		engine:             eng,
+		engineEvents:       engEvents,
+		engineCtx:          engCtx,
+		engineCancel:       engCancel,
 		username:           cfg.Username,
 		friendlyName:       cfg.FriendlyName,
 		gitUsernames:       cfg.GitUsernames,
@@ -198,6 +250,8 @@ func NewApp(cfg AppConfig) App {
 		delCtxFn:           cfg.DeleteContextFn,
 		setCtxFn:           cfg.SetContextFn,
 		savePrefsFn:        cfg.SavePrefsFn,
+		saveLastViewFn:     cfg.SaveLastViewFn,
+		lastViewFn:         cfg.LastViewFn,
 		refreshInterval:    cfg.RefreshInterval,
 		slowInterval:       cfg.SlowRefreshInterval,
 		maxLogLines:        cfg.MaxLogLines,
@@ -241,7 +295,7 @@ func (a App) Init() tea.Cmd {
 	if a.currentView != nil {
 		cmds = append(cmds, a.currentView.Init())
 	}
-	cmds = append(cmds, a.monitor.Init())
+	cmds = append(cmds, startEngineCmd(a.engine, a.engineCtx), engineEventsCmd(a.engineCtx, a.engineEvents))
 	cmds = append(cmds, checkForUpdateCmd())
 	cmds = append(cmds, clipboardPollCmd(a.currentContextURL(), a.store))
 	return tea.Batch(cmds...)
@@ -262,8 +316,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}()
 	}
 
-	if handled, cmds := a.monitor.HandleMsg(msg); handled {
-		return a, tea.Batch(cmds...)
+	// Drain the engine's event stream: re-subscribe for the next message and
+	// re-dispatch this one (a navmsg.* type) through Update's normal handlers.
+	if em, ok := msg.(engineMsg); ok {
+		return a, tea.Batch(
+			engineEventsCmd(a.engineCtx, a.engineEvents),
+			func() tea.Msg { return em.payload },
+		)
 	}
 
 	if next, cmd, consumed := a.handleModalPrecedence(msg); consumed {
@@ -386,7 +445,7 @@ func (a App) modalRoyalPaywall(keyMsg tea.KeyMsg) (App, tea.Cmd, bool) {
 	}
 	switch *result {
 	case view.PaywallResultSponsor:
-		_ = exec.Command("xdg-open", view.GitHubSponsorsURL).Start()
+		view.OpenURL(view.GitHubSponsorsURL)
 		a.applyTheme(a.paywallRestoreID, false, a.paywallRestoreDeg)
 	case view.PaywallResultDegrade:
 		a.applyTheme(theme.ThemeRoyal, true, true)
@@ -431,6 +490,7 @@ func (a App) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) handleGlobalKey(msg tea.KeyMsg) (App, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, a.keys.Quit):
+		a.engineCancel() // stop the poll loop and flush the sampler
 		return a, tea.Quit, true
 	case key.Matches(msg, a.keys.Command):
 		a.statusBar.SetMode(component.ModeCommand)
@@ -453,6 +513,12 @@ func (a App) handleGlobalKey(msg tea.KeyMsg) (App, tea.Cmd, bool) {
 		dl := a.pendingDeeplink
 		a.pendingDeeplink = nil
 		next, cmd := a.openDeeplink(dl)
+		return next.(App), cmd, true
+	case msg.String() == "S":
+		// Scans in the current scope. Global rather than view-local because a
+		// multibranch project's own scan is unreachable from inside it: every
+		// row there is a branch, and the project itself has no row.
+		next, cmd := a.Update(openScansMsg{})
 		return next.(App), cmd, true
 	case key.Matches(msg, a.keys.RunningBuilds):
 		if bv, ok := a.activeView().(*view.BuildsView); ok && bv.NC().Level == view.CtxRoot {
@@ -503,18 +569,30 @@ func (a App) handleBackKey(msg tea.KeyMsg) (App, tea.Cmd, bool) {
 		if parent != nil {
 			a.currentView = parent
 		} else {
-			a.currentView = a.initialView
+			a.currentView = a.escFallbackView()
 		}
 		a.updateBreadcrumb()
 		return a, a.currentView.Init(), true
 	}
 	if a.currentView != a.initialView {
 		a.activeView().Close()
-		a.currentView = a.initialView
+		a.currentView = a.escFallbackView()
 		a.updateBreadcrumb()
-		return a, a.initialView.Init(), true
+		return a, a.currentView.Init(), true
 	}
 	return a, nil, true
+}
+
+// escFallbackView is where ESC lands from a root-scoped view (running builds,
+// dashboard, my builds) that has no parent and no back-stack: the job list of
+// the view the user is working in, not the views list above it. A job list
+// reaches the views list through its own ParentView, so ESC never skips a
+// level in either direction.
+func (a *App) escFallbackView() view.View {
+	if _, atRoot := a.currentView.(*view.ViewsList); atRoot {
+		return a.initialView
+	}
+	return a.rootJobList()
 }
 
 // handleTypedMessage routes typed (non-key, non-framework) messages to
@@ -525,6 +603,9 @@ func (a App) handleBackKey(msg tea.KeyMsg) (App, tea.Cmd, bool) {
 // active view so views can subscribe to messages App doesn't care about.
 func (a App) handleTypedMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if next, cmd, done := a.handleBuildEvents(msg); done {
+		return next, cmd
+	}
+	if next, cmd, done := a.handleJenkinsViewOpen(msg); done {
 		return next, cmd
 	}
 	if next, cmd, done := a.handleViewOpen(msg); done {
@@ -572,6 +653,7 @@ func (a App) handleBuildEvents(msg tea.Msg) (App, tea.Cmd, bool) {
 	if msg, ok := msg.(view.RunningBuildsUpdatedMsg); ok {
 		a.header.SetRunningBuilds(msg.Count, "R")
 		a.header.SetQueuedBuilds(msg.QueuedCount)
+		a.header.SetQueuedScans(msg.ScanCount)
 		if watchPath := a.notifyJobPath(); watchPath != "" {
 			for _, key := range msg.Arrived {
 				jobPath, number := jmodel.ParseBuildKey(key)
@@ -659,6 +741,15 @@ func (a App) handleViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 		a.updateBreadcrumb()
 		return a, av.Init(), true
 	}
+	if _, ok := msg.(openDashboardMsg); ok {
+		if _, isDash := a.activeView().(*view.DashboardView); isDash {
+			return a, nil, true
+		}
+		dv := view.NewDashboardView(a.theme, a.client, a.store, a.engine)
+		a.pushView(dv)
+		a.updateBreadcrumb()
+		return a, dv.Init(), true
+	}
 	if _, ok := msg.(openInspectMsg); ok {
 		ip, ok := a.activeView().(view.InspectProvider)
 		if !ok {
@@ -699,6 +790,69 @@ func (a App) handleViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 		a.updateBreadcrumb()
 		return a, sv.Init(), true
 	}
+	return a.handleScanViewOpen(msg)
+}
+
+// handleJenkinsViewOpen — ":views" and ":view <name>", the Jenkins-view side of
+// navigation. A view is a saved job filter, so opening one lands on its job
+// list; the list of views is the root the job tree hangs from.
+func (a App) handleJenkinsViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
+	if _, ok := msg.(openViewsMsg); ok {
+		if _, isViews := a.activeView().(*view.ViewsList); isViews {
+			return a, nil, true
+		}
+		return a, func() tea.Msg { return view.PushViewMsg{View: a.viewsListForScope()} }, true
+	}
+	ov, ok := msg.(openViewMsg)
+	if !ok {
+		return a, nil, false
+	}
+	// A view already known from a previous listing opens directly; an unknown
+	// name goes through the views list, which resolves it against a fresh fetch
+	// and jumps straight in (or leaves the user on the list when there is no
+	// such view).
+	if v, found := view.LookupView(ov.name); found {
+		return a, view.OpenViewCmd(a.theme, a.client, a.store, v, a.username, a.gitUsernames), true
+	}
+	vl := view.NewViewsListAt(a.theme, a.client, a.store, a.username, a.gitUsernames, ov.name)
+	return a, func() tea.Msg { return view.PushViewMsg{View: vl} }, true
+}
+
+// viewsListForScope returns the views of the folder the user is in, or the
+// controller's own views at the top — where the navigation is rooted.
+func (a App) viewsListForScope() view.View {
+	if folder := a.currentContextNC().FolderPath; folder != "" {
+		return view.NewFolderViewsList(a.theme, a.client, a.store, folder, a.username, a.gitUsernames)
+	}
+	return view.NewViewsList(a.theme, a.client, a.store, a.username, a.gitUsernames)
+}
+
+// handleScanViewOpen owns the two scan destinations: the scans list and a
+// container's scan log. Both are pushed rather than replacing, so esc returns
+// to whatever the user was looking at when they asked about scanning.
+func (a App) handleScanViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
+	if _, ok := msg.(openScansMsg); ok {
+		if _, isScans := a.activeView().(*view.ScansView); isScans {
+			return a, nil, true
+		}
+		// Scoped to the active view's context, so :scans inside a multibranch
+		// project shows that project's own scan — the only way to reach it once
+		// the project itself no longer has a row on screen.
+		var nc view.NavigationContext
+		if scoped, ok := a.activeView().(interface{ NC() view.NavigationContext }); ok {
+			nc = scoped.NC()
+		}
+		sv := view.NewScansView(a.theme, a.client, a.store, nc)
+		a.pushView(sv)
+		a.updateBreadcrumb()
+		return a, sv.Init(), true
+	}
+	if osl, ok := msg.(view.OpenScanLogMsg); ok {
+		lv := view.NewScanLogView(a.theme, a.client, a.store, osl.NC, osl.JobPath)
+		a.pushView(lv)
+		a.updateBreadcrumb()
+		return a, lv.Init(), true
+	}
 	return a, nil, false
 }
 
@@ -706,6 +860,10 @@ func (a App) handleViewOpen(msg tea.Msg) (App, tea.Cmd, bool) {
 // emit these to navigate without knowing what's underneath them; App owns
 // the stack semantics.
 func (a App) handleViewStackOps(msg tea.Msg) (App, tea.Cmd, bool) {
+	if sel, ok := msg.(view.ViewSelectedMsg); ok {
+		a.rememberView(sel.View)
+		return a, nil, true
+	}
 	if _, ok := msg.(view.PopViewMsg); ok {
 		var closeCmd tea.Cmd
 		if cw, ok := a.currentView.(interface{ CloseCmd() tea.Cmd }); ok {
@@ -720,7 +878,7 @@ func (a App) handleViewStackOps(msg tea.Msg) (App, tea.Cmd, bool) {
 	if push, ok := msg.(view.PushViewMsg); ok {
 		if mbv, ok := a.activeView().(*view.MyBuildsView); ok {
 			if sp, ok := push.View.(view.ScopedParentTarget); ok {
-				sp.SetScopedParent(mbv.NC(), a.slowInterval)
+				sp.SetScopedParent(mbv.ScopeNC(), a.slowInterval)
 			}
 		}
 		a.pushView(push.View)
@@ -761,6 +919,40 @@ func (a App) handleViewStackOps(msg tea.Msg) (App, tea.Cmd, bool) {
 		return a, a.currentView.Init(), true
 	}
 	return a, nil, false
+}
+
+// rememberView persists the Jenkins view the user just opened as this
+// context's resume point. A failed write is reported but never blocks
+// navigation — it only costs the next session its starting view.
+func (a *App) rememberView(v jmodel.JenkinsView) {
+	if v.Name == "" {
+		return
+	}
+	a.lastOpenedView = &v
+	if a.saveLastViewFn == nil {
+		return
+	}
+	if err := a.saveLastViewFn(a.currentContextName, v.Name); err != nil {
+		a.statusBar.SetError(fmt.Sprintf("remember view: %v", err))
+	}
+}
+
+// rootJobList returns the job list at the top of the job tree: the last opened
+// Jenkins view's list, or the unfiltered listing when no view has been opened
+// yet. This is where ":jobs" lands — the views list sits above it, on ESC.
+func (a *App) rootJobList() view.View {
+	if a.lastOpenedView != nil {
+		return view.NewViewJobList(a.theme, a.client, a.store, *a.lastOpenedView, a.username, a.gitUsernames)
+	}
+	return view.NewJobList(a.theme, a.client, a.store, "", "Dashboard", false, a.username, a.gitUsernames)
+}
+
+// lastViewFor returns the view a context was last left on, or "".
+func (a App) lastViewFor(contextName string) string {
+	if a.lastViewFn == nil {
+		return ""
+	}
+	return a.lastViewFn(contextName)
 }
 
 // handleContextManagement — add/switch/delete Jenkins contexts.
@@ -846,9 +1038,10 @@ func (a App) switchToContext(name string) (App, tea.Cmd, bool) {
 	newStore := cache.NewStore(newDisk)
 	a.resetNavStack()
 	a.activeView().Close()
+	a.engineCancel() // stop the previous context's poll loop
 	a.client = newClient
 	a.store = newStore
-	a.monitor = wireMonitor(newClient, newStore)
+	a.engine, a.engineEvents, a.engineCtx, a.engineCancel = wireEngine(newClient, newStore)
 	a.username = target.Username
 	a.friendlyName = ""
 	a.currentContextName = target.Name
@@ -857,11 +1050,17 @@ func (a App) switchToContext(name string) (App, tea.Cmd, bool) {
 	}
 	a.header.SetURL(target.URL)
 	a.header.SetUser("")
-	dashboard := view.NewJobList(a.theme, newClient, newStore, "", "Dashboard", false, target.Username, a.gitUsernames)
-	a.currentView = dashboard
-	a.initialView = dashboard
+	a.lastOpenedView = nil // belongs to the controller we just left
+	root := view.NewViewsListAt(a.theme, newClient, newStore, target.Username, a.gitUsernames, a.lastViewFor(target.Name))
+	a.currentView = root
+	a.initialView = root
 	a.updateBreadcrumb()
-	return a, tea.Batch(dashboard.Init(), a.monitor.Init(), fetchUserInfo(newClient, target.Username)), true
+	return a, tea.Batch(
+		root.Init(),
+		startEngineCmd(a.engine, a.engineCtx),
+		engineEventsCmd(a.engineCtx, a.engineEvents),
+		fetchUserInfo(newClient, target.Username),
+	), true
 }
 
 // handleDialogOpen — :help, :context, :prefs, :colorblind, :theme.
@@ -995,6 +1194,7 @@ func (a App) handleUpdateLifecycle(msg tea.Msg) (App, tea.Cmd, bool) {
 			return a, nil, true
 		}
 		a.UpdatedTo = a.updateVersion
+		a.engineCancel() // stop the poll loop and flush the sampler
 		return a, tea.Quit, true
 	}
 	return a, nil, false
@@ -1240,6 +1440,13 @@ func (a App) computePanelDims(headerView, commandView string, hasPreview bool, v
 // renderContentPanel builds the main bordered panel: view content + breadcrumb
 // title + optional badge + optional scrollbar.
 func (a App) renderContentPanel(v view.View, innerWidth, contentHeight int) string {
+	// Borderless views render their own framing at the full panel footprint
+	// (reclaiming the 2 border columns/rows), skipping the outer box + title.
+	if bc, ok := v.(view.BorderlessContent); ok && bc.IsBorderlessContent() {
+		fullW, fullH := innerWidth+2, contentHeight+2
+		v.SetSize(fullW, fullH)
+		return v.View()
+	}
 	var content string
 	if v != nil {
 		content = v.View()
@@ -1574,12 +1781,15 @@ func (a App) handleOpenTarget(otm openTargetMsg) (tea.Model, tea.Cmd) {
 	case kindBuilds:
 		return a.openView(a.buildsViewFor(nc))
 	case kindStages:
-		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
+		// A resolved "#last" cursor still means "follow the newest build", so it
+		// routes to the tracking view rather than pinning the number it happens
+		// to hold right now.
+		if nc.Level == view.CtxBuild && nc.Build.Number > 0 && !nc.Build.IsLast {
 			return a.openView(view.NewStageView(a.theme, a.client, a.store, nc, jmodel.Build{Number: nc.Build.Number}))
 		}
 		return a.openView(view.NewMyBuildsView(a.theme, a.client, a.store, nc.AtScope(), a.slowInterval))
 	case kindLogs:
-		if nc.Level == view.CtxBuild && nc.Build.Number > 0 {
+		if nc.Level == view.CtxBuild && nc.Build.Number > 0 && !nc.Build.IsLast {
 			return a.openView(view.NewConsoleView(a.theme, a.client, nc))
 		}
 		return a.openView(view.NewMyConsoleView(a.theme, a.client, a.store, nc.AtScope(), a.slowInterval))
@@ -1637,7 +1847,7 @@ func (a App) handleArtifactsFetched(afm artifactsFetchedMsg) (tea.Model, tea.Cmd
 	if afm.name == "" {
 		return a.openView(view.NewArtifactView(a.theme, afm.artifacts, afm.nc, afm.build, a.client, a.store))
 	}
-	art, ok := view.FindArtifact(afm.artifacts, afm.name)
+	art, ok := jmodel.FindArtifact(afm.artifacts, afm.name)
 	if !ok {
 		return a, errCmd(fmt.Errorf("artifact %q not found in build #%d", afm.name, afm.build.Number))
 	}
@@ -1672,10 +1882,7 @@ func (a App) openDeeplink(dl *view.DeepLink) (tea.Model, tea.Cmd) {
 		}
 		return a.openView(view.NewMyConsoleView(a.theme, a.client, a.store, nc.AtScope(), a.slowInterval))
 	case view.DeepLinkJobs:
-		if jl := a.jobListForTarget(nc); jl != nil {
-			return a.openView(jl)
-		}
-		return a, nil
+		return a.openView(a.jobListForTarget(nc))
 	}
 	return a, nil
 }
@@ -1723,7 +1930,16 @@ func (a *App) jobListForTarget(nc view.NavigationContext) view.View {
 		}
 		return view.NewJobList(a.theme, a.client, a.store, pp, nc.ProjectName, true, a.username, a.gitUsernames)
 	default:
-		return a.initialView
+		// A target naming a Jenkins view (a pasted view URL) opens that view's
+		// job list; an unresolved name goes through the views list, which
+		// resolves it against a fresh fetch.
+		if nc.ViewName != "" {
+			if v, ok := view.LookupView(nc.ViewName); ok {
+				return view.NewViewJobList(a.theme, a.client, a.store, v, a.username, a.gitUsernames)
+			}
+			return view.NewViewsListAt(a.theme, a.client, a.store, a.username, a.gitUsernames, nc.ViewName)
+		}
+		return a.rootJobList()
 	}
 }
 
@@ -1749,7 +1965,7 @@ func (a *App) jobListForCurrentContext() view.View {
 			}
 			return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username, a.gitUsernames)
 		}
-		return a.initialView
+		return a.rootJobList()
 	case view.CtxFolder:
 		title := nc.FolderPath
 		if idx := strings.LastIndex(nc.FolderPath, "/"); idx >= 0 {
@@ -1757,14 +1973,15 @@ func (a *App) jobListForCurrentContext() view.View {
 		}
 		return view.NewJobList(a.theme, a.client, a.store, nc.FolderPath, title, false, a.username, a.gitUsernames)
 	default:
-		// CtxRoot: if already on a JobList, go to parent; otherwise go to root.
+		// CtxRoot: a job list here is already the jobs level (the views list
+		// above it is ESC's business, not ":jobs"'s); anything else goes to it.
 		if jl, ok := a.currentView.(*view.JobList); ok {
-			if parent := jl.ParentView(a.theme, a.client, a.store); parent != nil {
-				return parent
+			if jl.NC().FolderPath != "" {
+				return jl.ParentView(a.theme, a.client, a.store)
 			}
-			return nil // already at root JobList
+			return nil
 		}
-		return a.initialView
+		return a.rootJobList()
 	}
 }
 

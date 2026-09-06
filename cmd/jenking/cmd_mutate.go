@@ -2,11 +2,14 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Breina/Jenking/internal/app/usecase"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/navmsg"
 	"github.com/Breina/Jenking/internal/tui/command"
 )
@@ -41,11 +44,17 @@ Examples:
 
 func newTriggerCmd() *cobra.Command {
 	var params []string
+	var wait bool
 
 	cmd := &cobra.Command{
 		Use:   "trigger <project> [<branch>]",
 		Short: "Trigger a new build",
 		Long: `Trigger a new build for a project or branch.
+
+Prints the queue id of the new build. With --wait, blocks until the build
+leaves the queue and finishes, then reports the final status; the command
+fails when the build does not succeed. --wait is bounded by --timeout, so
+raise it for long builds (e.g. --timeout 30m).
 
 Arguments:
   project  Project name or suffix
@@ -53,10 +62,12 @@ Arguments:
 
 Flags:
   --param K=V  Build parameter (repeatable)
+  --wait       Wait for the build to complete
 
 Examples:
   jenking trigger my-project main
-  jenking trigger my-project main --param ENV=prod --param VERSION=1.2`,
+  jenking trigger my-project main --param ENV=prod --param VERSION=1.2
+  jenking trigger my-project main --wait --timeout 30m --output json`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := command.ParseTarget(args)
@@ -68,7 +79,7 @@ Examples:
 
 			nc, err := navmsg.ResolveTarget(target, cs.store, navmsg.NavigationContext{})
 			if err != nil {
-				return err
+				return writeError(err)
 			}
 			if nc.ProjectName == "" {
 				return fmt.Errorf("project required")
@@ -83,15 +94,33 @@ Examples:
 				paramMap[k] = v
 			}
 
-			if err := cs.client.TriggerBuild(ctx, nc.JobPath(), paramMap); err != nil {
-				return err
+			jobPath := nc.JobPath()
+			res, err := ucDeps().Trigger(ctx, jobPath, usecase.TriggerOptions{
+				Params:   paramMap,
+				Wait:     wait,
+				Progress: func(m string) { fmt.Fprintln(os.Stderr, m) },
+			})
+			if err != nil {
+				return writeError(err)
 			}
-			fmt.Printf("triggered %s\n", nc.JobPath())
+			out := outTriggerResult{
+				JobPath:     res.JobPath,
+				QueueID:     res.QueueID,
+				BuildNumber: res.BuildNumber,
+				Status:      string(res.Status),
+			}
+			if emitErr := emitTriggerResult(out); emitErr != nil {
+				return emitErr
+			}
+			if wait && res.Status != jmodel.BuildStatusSuccess {
+				return fmt.Errorf("build %s #%d finished with status %s", jobPath, res.BuildNumber, res.Status)
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringArrayVar(&params, "param", nil, "Build parameter in K=V form (repeatable)")
+	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for the build to complete and report its final status")
 	return cmd
 }
 

@@ -11,7 +11,6 @@ import (
 
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
-	"github.com/Breina/Jenking/internal/tui/component"
 	"github.com/Breina/Jenking/internal/tui/theme"
 	"github.com/Breina/Jenking/internal/tui/widget"
 )
@@ -115,8 +114,10 @@ func (pp *PreviewPanel) SetSize(w, h int) {
 	pp.height = h
 }
 
-// SetBuildNumber updates the build number (e.g. when a pending build is found).
-func (pp *PreviewPanel) SetBuildNumber(n int) { pp.nc.Build.Number = n }
+// SetBuildRef updates the build cursor (e.g. when a pending build is found, or
+// when a poll learns the live build's display name), so the preview panel's
+// breadcrumb stays identical to the panel it lives under.
+func (pp *PreviewPanel) SetBuildRef(ref NavBuildRef) { pp.nc.Build = ref }
 
 // StageIdx returns the stage index currently being previewed.
 func (pp *PreviewPanel) StageIdx() int { return pp.stageIdx }
@@ -695,12 +696,14 @@ func (pp *PreviewPanel) Breadcrumb(stages []jmodel.Stage, pending bool) Breadcru
 	nc := pp.nc
 	if pending {
 		nc.Build.Number = 0
+		nc.Build.DisplayName = ""
 	}
-	ctx := contextParts(nc)
 	if !pp.pipelineConsole && pp.stageIdx >= 0 && pp.stageIdx < len(stages) {
-		ctx = append(ctx, component.BreadcrumbPart{Text: stages[pp.stageIdx].Name, Separator: ":"})
+		nc.StageName = stages[pp.stageIdx].Name
+		nc.StageParent = ""
 	}
-	return BreadcrumbSegment{ViewType: "log", Context: ctx}
+	ctx, resolved := breadcrumbParts(nc)
+	return BreadcrumbSegment{ViewType: "log", Context: ctx, ResolvedParts: resolved}
 }
 
 // ConsoleSnapshot returns the accumulated console log state so it can be used

@@ -30,6 +30,12 @@ type triggerMixin struct {
 	// replay mode: when set, confirm triggers ReplayBuild instead of TriggerBuild.
 	replayScript      string
 	replaySourceBuild int
+
+	// scan mode: when set, the target is a container and the POST starts a
+	// repository scan rather than a build. Same endpoint, different meaning —
+	// so the confirm text and, crucially, the follow-up differ: no build number
+	// will ever appear, and the run to open afterwards is the scan log.
+	scanPath string
 }
 
 func newTriggerMixin(t theme.Theme, client jmodel.JenkinsClient, nc NavigationContext) triggerMixin {
@@ -66,6 +72,18 @@ func (tm *triggerMixin) startTriggerFor(nc NavigationContext, lastKnownBuild int
 	return tm.startTrigger(lastKnownBuild)
 }
 
+// startScanFor opens a confirm dialog to scan a container (multibranch project
+// or folder). It skips the parameter fetch the build path does: a scan takes no
+// parameters, so asking Jenkins for them would be a request whose answer is
+// always empty.
+func (tm *triggerMixin) startScanFor(nc NavigationContext, jobPath string) tea.Cmd {
+	tm.nc = nc
+	tm.replayScript = ""
+	tm.scanPath = jobPath
+	tm.dialog.Open()
+	return nil
+}
+
 // startReplay opens a confirm dialog to replay sourceBuild using script.
 func (tm *triggerMixin) startReplay(lastKnown, sourceBuild int, script string) tea.Cmd {
 	tm.lastKnownBuild = lastKnown
@@ -98,6 +116,15 @@ func (tm *triggerMixin) handleMsg(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		tm.paramForm = &form
 		return true, nil
+
+	case TriggerScanResultMsg:
+		path := tm.scanPath
+		tm.scanPath = ""
+		if msg.Err != nil {
+			return true, func() tea.Msg { return ErrorMsg{Err: msg.Err} }
+		}
+		nc := tm.nc
+		return true, func() tea.Msg { return OpenScanLogMsg{NC: nc, JobPath: path} }
 
 	case TriggerBuildResultMsg:
 		if msg.Err != nil {
@@ -136,6 +163,9 @@ func (tm *triggerMixin) handleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 
 // confirmAction returns the Cmd for a confirmed trigger or replay.
 func (tm *triggerMixin) confirmAction() tea.Cmd {
+	if tm.scanPath != "" {
+		return triggerScan(tm.client, tm.nc, tm.scanPath)
+	}
 	if tm.replayScript != "" {
 		script := tm.replayScript
 		src := tm.replaySourceBuild
@@ -149,6 +179,12 @@ func (tm *triggerMixin) confirmAction() tea.Cmd {
 func (tm *triggerMixin) popupView() string {
 	if tm.paramForm != nil {
 		return tm.paramForm.View()
+	}
+	if tm.scanPath != "" {
+		return tm.dialog.View(tm.theme,
+			"Scan Repository",
+			fmt.Sprintf("Scan %s for branches now?", decodePath(tm.scanPath)),
+		)
 	}
 	return tm.dialog.View(tm.theme,
 		"Trigger Build",

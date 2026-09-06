@@ -28,8 +28,9 @@ type jsonQueueItem struct {
 }
 
 type jsonQueueTask struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Class string `json:"_class"`
 }
 
 // jsonQueueExecutable is non-nil once Jenkins has assigned the item to an
@@ -39,7 +40,7 @@ type jsonQueueExecutable struct {
 	Number int `json:"number"`
 }
 
-const queueTreeParam = `items[id,inQueueSince,why,blocked,buildable,stuck,pending,task[name,url],executable[number],actions[parameters[name,value],causes[shortDescription,userName,userId]]]`
+const queueTreeParam = `items[id,inQueueSince,why,blocked,buildable,stuck,pending,task[name,url,_class],executable[number],actions[parameters[name,value],causes[shortDescription,userName,userId]]]`
 
 // ListQueue returns the builds currently waiting in the Jenkins build queue.
 // The queue is global to the instance; callers scope it client-side.
@@ -65,9 +66,41 @@ func (c *Client) ListQueue(ctx context.Context) ([]jmodel.QueueItem, error) {
 	return items, nil
 }
 
+const queueItemTreeParam = `id,inQueueSince,why,blocked,buildable,stuck,pending,task[name,url,_class],executable[number],actions[parameters[name,value],causes[shortDescription,userName,userId]]`
+
+// GetQueueItem returns a single queue item by id, plus the build number once
+// Jenkins has assigned the item to an executor (0 while still queued).
+// Finished items are garbage-collected by Jenkins after a few minutes, at
+// which point this returns an HTTPError with status 404.
+func (c *Client) GetQueueItem(ctx context.Context, id int64) (*jmodel.QueueItem, int, error) {
+	data, err := c.get(ctx, fmt.Sprintf("/queue/item/%d/api/json?tree=%s", id, queueItemTreeParam))
+	if err != nil {
+		return nil, 0, fmt.Errorf("get queue item %d: %w", id, err)
+	}
+	var item jsonQueueItem
+	if err := json.Unmarshal(data, &item); err != nil {
+		return nil, 0, fmt.Errorf("parsing queue item %d: %w", id, err)
+	}
+	buildNum := 0
+	if item.Executable != nil {
+		buildNum = item.Executable.Number
+	}
+	domain := item.toDomain(c.baseURL)
+	return &domain, buildNum, nil
+}
+
 // CancelQueueItem removes a waiting item from the build queue by its queue id.
 func (c *Client) CancelQueueItem(ctx context.Context, id int64) error {
 	return c.post(ctx, fmt.Sprintf("/queue/cancelItem?id=%d", id), nil)
+}
+
+// SetJobEnabled enables or disables a job (buildable flag).
+func (c *Client) SetJobEnabled(ctx context.Context, jobPath string, enabled bool) error {
+	verb := "disable"
+	if enabled {
+		verb = "enable"
+	}
+	return c.post(ctx, jmodel.JobPathToURL(jobPath)+"/"+verb, nil)
 }
 
 func (j *jsonQueueItem) toDomain(baseURL string) jmodel.QueueItem {
@@ -89,6 +122,7 @@ func (j *jsonQueueItem) toDomain(baseURL string) jmodel.QueueItem {
 	}
 	return jmodel.QueueItem{
 		ID:              j.ID,
+		Kind:            queueKindOf(j.Task.Class),
 		JobPath:         parseTaskURL(baseURL, j.Task.URL),
 		DisplayName:     j.Task.Name,
 		Why:             why,
@@ -101,6 +135,20 @@ func (j *jsonQueueItem) toDomain(baseURL string) jmodel.QueueItem {
 		Cause:           extractCause(j.Actions),
 		TriggeredBy:     extractUserID(j.Actions),
 		TriggeredByName: extractUserName(j.Actions),
+	}
+}
+
+// queueKindOf classifies a queue task by the class of the task itself. A
+// multibranch project or folder enqueues *itself* for branch indexing / folder
+// computation; those tasks produce no build. Anything else — including a class
+// we do not recognise — is a build, so an unfamiliar job type keeps behaving
+// exactly as it did before this distinction existed.
+func queueKindOf(class string) jmodel.QueueKind {
+	switch ParseJobType(class) {
+	case jmodel.JobTypeMultiBranch, jmodel.JobTypeFolder:
+		return jmodel.QueueKindScan
+	default:
+		return jmodel.QueueKindBuild
 	}
 }
 

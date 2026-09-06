@@ -2,19 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
-	"sort"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/Breina/Jenking/internal/app"
+	"github.com/Breina/Jenking/internal/app/usecase"
 	"github.com/Breina/Jenking/internal/app/view"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/config"
@@ -74,8 +71,11 @@ func init() {
 	}
 
 	rootCmd.AddCommand(
+		newViewsCmd(),
 		newJobsCmd(),
 		newBuildsCmd(),
+		newResolveCmd(),
+		newChangesCmd(),
 		newStagesCmd(),
 		newRunningCmd(),
 		newQueueCmd(),
@@ -87,9 +87,24 @@ func init() {
 		newLogsCmd(),
 		newDescribeCmd(),
 		newTestsCmd(),
+		newBuildCmd(),
+		newNodesCmd(),
+		newInputsCmd(),
+		newApproveCmd(),
+		newRejectCmd(),
+		newLintCmd(),
+		newReplayCmd(),
+		newEnableCmd(),
+		newDisableCmd(),
+		newRescanCmd(),
+		newScansCmd(),
+		newScanLogCmd(),
+		newNodeCmd(),
 		newTriggerCmd(),
 		newCancelCmd(),
 		newDequeueCmd(),
+		newMCPCmd(),
+		newLoginCmd(),
 		newUICmd(),
 		newVersionCmd(),
 	)
@@ -128,13 +143,12 @@ func newVersionCmd() *cobra.Command {
 // runTUIAt launches the TUI. If verb is non-empty, the TUI opens at the
 // deep-linked view; otherwise it opens on the dashboard.
 func runTUIAt(verb string, args []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	user, err := cs.client.WhoAmI(ctx)
+	user, err := ensureAuthenticated(ctx)
 	if err != nil {
-		active := cs.cfg.ActiveContext()
-		return fmt.Errorf("connecting to Jenkins at %s (user: %s): %w", active.URL, active.Username, err)
+		return err
 	}
 
 	themeID := theme.ThemeID(cs.cfg.Preferences.Theme)
@@ -174,19 +188,31 @@ func runTUIAt(verb string, args []string) error {
 	breadcrumb := component.NewBreadcrumb(activeTheme)
 	statusBar := component.NewStatusBar(activeTheme)
 
-	var initialView view.View = view.NewJobList(activeTheme, cs.client, cs.store, "", "Dashboard", false, user.ID, cs.cfg.Preferences.GitUsernames)
-	if verb != "" {
-		initialView, err = buildDeepLinkView(verb, args, deepLinkArgs{
-			theme:        activeTheme,
-			client:       cs.client,
-			store:        cs.store,
-			username:     user.ID,
-			friendlyName: user.FullName,
-			gitUsernames: cs.cfg.Preferences.GitUsernames,
-			slowInterval: cs.cfg.Preferences.SlowRefreshInterval,
-		})
+	dlArgs := deepLinkArgs{
+		theme:        activeTheme,
+		client:       cs.client,
+		store:        cs.store,
+		username:     user.ID,
+		friendlyName: user.FullName,
+		gitUsernames: cs.cfg.Preferences.GitUsernames,
+		slowInterval: cs.cfg.Preferences.SlowRefreshInterval,
+	}
+	// The root of the navigation is the Jenkins views list; it opens straight
+	// into the view this context was last left on (the built-in "all" view is
+	// the plain, unfiltered job list).
+	var initialView view.View = view.NewViewsListAt(activeTheme, cs.client, cs.store, user.ID,
+		cs.cfg.Preferences.GitUsernames, cs.cfg.LastView(active.Name))
+	switch {
+	case verb != "":
+		initialView, err = buildDeepLinkView(verb, args, dlArgs)
 		if err != nil {
 			return fmt.Errorf("jenking ui: %w", err)
+		}
+	default:
+		// Bare `jenking` in a git repo: open on that repo's pipeline when the
+		// warm SCM index resolves it; otherwise keep the views list.
+		if v := gitAutoLaunchView(dlArgs); v != nil {
+			initialView = v
 		}
 	}
 
@@ -226,67 +252,28 @@ func withProjectBuild(args []string, fn func(ctx context.Context, jobPath string
 	ctx, cancel := ctxWithTimeout()
 	defer cancel()
 	jobPath := nc.JobPath()
-	buildNum, err := resolveBuildNum(ctx, cs.client, jobPath, nc.Build)
+	buildNum, err := resolveBuildNum(ctx, jobPath, nc.Build)
 	if err != nil {
 		return writeError(enrichBranchNotFound(ctx, nc, err))
 	}
 	return fn(ctx, jobPath, buildNum)
 }
 
-// enrichBranchNotFound turns a 404 from a branch-level call into a message that
-// names the missing branch and lists the project's available branches. Any
-// non-404 error (or a failure to look up branches) is returned unchanged.
-func enrichBranchNotFound(ctx context.Context, nc navmsg.NavigationContext, err error) error {
-	var he *jenkins.HTTPError
-	if err == nil || nc.BranchName == "" || !errors.As(err, &he) || he.StatusCode != http.StatusNotFound {
-		return err
-	}
-
-	projectPath := nc.FolderPath
-	if nc.ProjectName != "" {
-		if projectPath != "" {
-			projectPath += "/"
-		}
-		projectPath += nc.ProjectName
-	}
-	pbuilds, perr := cs.client.ListProjectBuilds(ctx, projectPath)
-	if perr != nil {
-		return err
-	}
-
-	seen := map[string]bool{}
-	var branches []string
-	for _, b := range pbuilds {
-		name := navmsg.DecodeName(b.BranchName)
-		if name != "" && !seen[name] {
-			seen[name] = true
-			branches = append(branches, name)
-		}
-	}
-	sort.Strings(branches)
-
-	wanted := navmsg.DecodeName(nc.BranchName)
-	project := navmsg.DecodePath(projectPath)
-	if len(branches) == 0 {
-		return fmt.Errorf("branch %q not found in %s", wanted, project)
-	}
-	return fmt.Errorf("branch %q not found in %s; available branches: %s", wanted, project, strings.Join(branches, ", "))
+// ucDeps builds a usecase.Deps from the wired CLI state.
+func ucDeps() usecase.Deps {
+	return usecase.Deps{Client: cs.client, Store: cs.store, GitUsernames: cs.cfg.Preferences.GitUsernames}
 }
 
-// resolveBuildNum resolves a NavBuildRef to a concrete build number.
-// Calls ListBuilds to find the latest if ref carries no explicit number.
-func resolveBuildNum(ctx context.Context, client jmodel.JenkinsClient, jobPath string, ref navmsg.NavBuildRef) (int, error) {
-	if ref.Number > 0 {
-		return ref.Number, nil
-	}
-	builds, err := client.ListBuilds(ctx, jobPath)
-	if err != nil {
-		return 0, fmt.Errorf("listing builds for %s: %w", jobPath, err)
-	}
-	if len(builds) == 0 {
-		return 0, fmt.Errorf("no builds found for %s (multibranch projects require a branch)", jobPath)
-	}
-	return builds[0].Number, nil
+// enrichBranchNotFound delegates to the usecase layer (kept as a thin helper so
+// command code reads naturally).
+func enrichBranchNotFound(ctx context.Context, nc navmsg.NavigationContext, err error) error {
+	return ucDeps().EnrichBranchNotFound(ctx, nc, err)
+}
+
+// resolveBuildNum resolves a NavBuildRef to a concrete build number (latest
+// when unspecified), delegating to the usecase layer.
+func resolveBuildNum(ctx context.Context, jobPath string, ref navmsg.NavBuildRef) (int, error) {
+	return ucDeps().ResolveBuildNum(ctx, jobPath, ref)
 }
 
 // writeError writes {"error":"..."} to os.Stdout when JSON/YAML output is

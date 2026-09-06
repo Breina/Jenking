@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 const queueFixture = `{
@@ -83,6 +85,47 @@ func TestListQueueParsesItems(t *testing.T) {
 	}
 	if pending.Why != "" {
 		t.Errorf("expected empty why for null reason, got %q", pending.Why)
+	}
+}
+
+func TestListQueueClassifiesKind(t *testing.T) {
+	// Branch indexing and folder computation enqueue the container itself, so
+	// the task class — not the item — is what distinguishes a scan from a build.
+	// An unrecognised class must stay a build: that is the pre-existing
+	// behaviour, and misfiling a build as a scan would hide it from the queue.
+	const fixture = `{"items":[
+	  {"id":1,"buildable":true,"task":{"name":"main","url":"%[1]s/job/api/job/main/","_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob"}},
+	  {"id":2,"blocked":true,"task":{"name":"codelijst-kleur","url":"%[1]s/job/Bodem/job/codelijst-kleur/","_class":"org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject"}},
+	  {"id":3,"buildable":true,"task":{"name":"org","url":"%[1]s/job/org/","_class":"jenkins.branch.OrganizationFolder"}},
+	  {"id":4,"buildable":true,"task":{"name":"legacy","url":"%[1]s/job/legacy/","_class":"hudson.model.FreeStyleProject"}},
+	  {"id":5,"buildable":true,"task":{"name":"exotic","url":"%[1]s/job/exotic/","_class":"com.example.SomePluginTask"}}
+	]}`
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, fixture, srvURL)
+	}))
+	defer srv.Close()
+	srvURL = srv.URL
+
+	items, err := NewClient(srv.URL, "", "", false).ListQueue(t.Context())
+	if err != nil {
+		t.Fatalf("ListQueue() error: %v", err)
+	}
+	want := map[int64]jmodel.QueueKind{
+		1: jmodel.QueueKindBuild,
+		2: jmodel.QueueKindScan,
+		3: jmodel.QueueKindScan,
+		4: jmodel.QueueKindBuild,
+		5: jmodel.QueueKindBuild,
+	}
+	if len(items) != len(want) {
+		t.Fatalf("expected %d items, got %d", len(want), len(items))
+	}
+	for _, it := range items {
+		if it.Kind != want[it.ID] {
+			t.Errorf("item %d: kind = %q, want %q", it.ID, it.Kind, want[it.ID])
+		}
 	}
 }
 

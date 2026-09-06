@@ -2,7 +2,6 @@ package view
 
 import (
 	"fmt"
-	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,26 +13,32 @@ import (
 	"github.com/Breina/Jenking/internal/tui/widget"
 )
 
-// ArtifactView lists the build artifacts and allows opening them in the browser.
+// ArtifactView browses the build artifacts as a directory tree and opens them
+// in the in-TUI viewer or the browser. Archived report trees run to hundreds of
+// files, so a flat list is unusable; the tree mirrors what Jenkins' web UI
+// shows for the same build.
 type ArtifactView struct {
 	BaseView
-	table     component.Table
-	artifacts []jmodel.Artifact
-	build     jmodel.Build
+	tree        widget.Tree
+	artifacts   []jmodel.Artifact
+	byURL       map[string]jmodel.Artifact
+	build       jmodel.Build
+	searchQuery string
 }
 
 // NewArtifactView creates an ArtifactView for the given build's artifacts.
 func NewArtifactView(t theme.Theme, artifacts []jmodel.Artifact, nc NavigationContext, build jmodel.Build, client jmodel.JenkinsClient, store *cache.Store) *ArtifactView {
-	columns := []component.Column{
-		{Title: "ARTIFACT", Width: 60},
-	}
 	v := &ArtifactView{
 		BaseView:  NewBaseView(t, client, store, nc, CtxBuild),
-		table:     component.NewTable(t, columns),
+		tree:      widget.NewTree(t),
 		artifacts: artifacts,
+		byURL:     make(map[string]jmodel.Artifact, len(artifacts)),
 		build:     build,
 	}
-	v.populateTable()
+	v.tree.HideLeafValues()
+	v.tree.SetEmptyText("(no artifacts)")
+	v.SeedBuildIdentity(build)
+	v.populateTree()
 	return v
 }
 
@@ -41,42 +46,45 @@ func (v *ArtifactView) Init() tea.Cmd {
 	return nil
 }
 
-func (v *ArtifactView) populateTable() {
-	rows := make([]component.Row, len(v.artifacts))
-	for i, a := range v.artifacts {
-		rows[i] = component.Row{a.DisplayPath}
+func (v *ArtifactView) populateTree() {
+	for _, a := range v.artifacts {
+		v.byURL[a.URL] = a
 	}
-	v.table.SetRows(rows)
+	v.tree.SetRoot(BuildArtifactTree(v.artifacts))
 }
 
 func (v *ArtifactView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case ThemeChangedMsg:
 		v.theme = msg.Theme
-		v.table.SetTheme(msg.Theme)
+		v.tree.SetTheme(msg.Theme)
 		return v, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
-			v.table.MoveUp()
+			v.tree.MoveUp()
 		case "down", "j":
-			v.table.MoveDown()
+			v.tree.MoveDown()
 		case "pgup":
-			v.table.PageUp()
+			v.tree.PageUp()
 		case "pgdown":
-			v.table.PageDown()
+			v.tree.PageDown()
 		case "home":
-			v.table.Home()
+			v.tree.Home()
 		case "end":
-			v.table.End()
+			v.tree.End()
+		case "left", "h":
+			v.tree.Collapse()
+		case "right", " ":
+			v.tree.Expand()
 		case "enter":
 			if cmd := v.openSelected(); cmd != nil {
 				return v, cmd
 			}
 		case "o":
-			if idx := v.table.Cursor(); idx >= 0 && idx < len(v.artifacts) {
-				return v, openURLCmd(v.artifacts[idx].URL)
+			if _, url, _, ok := v.tree.Selected(); ok && url != "" {
+				return v, openURLCmd(url)
 			}
 		default:
 			if cmd, ok := v.handleTabKey(msg.String()); ok {
@@ -100,7 +108,7 @@ func (v *ArtifactView) handleTabKey(key string) (tea.Cmd, bool) {
 		build := v.build
 		return func() tea.Msg {
 			cv := NewConsoleView(v.theme, v.client, nc)
-			cv.build = build
+			cv.SetBuild(build)
 			cv.store = v.store
 			return SwapViewMsg{View: cv}
 		}, true
@@ -121,27 +129,46 @@ func (v *ArtifactView) handleTabKey(key string) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// openSelected opens the highlighted artifact: text files in the in-TUI viewer,
-// everything else in the system browser. Returns nil when no row is selected.
+// openSelected acts on the highlighted row: a directory holding an index.html
+// opens that report in the browser, any other directory toggles open, text
+// files go to the in-TUI viewer and everything else to the browser. Returns nil
+// when the row has no action.
 func (v *ArtifactView) openSelected() tea.Cmd {
-	idx := v.table.Cursor()
-	if idx < 0 || idx >= len(v.artifacts) {
+	_, url, container, ok := v.tree.Selected()
+	if !ok {
 		return nil
 	}
-	art := v.artifacts[idx]
+	if container {
+		if url == "" {
+			v.tree.Expand()
+			return nil
+		}
+		return openURLCmd(url)
+	}
+	art, found := v.byURL[url]
+	if !found {
+		return nil
+	}
 	if IsTextArtifact(art.DisplayPath) {
 		child := NewArtifactFileView(v.theme, v.client, v.store, v.nc, art, v.build, v.artifacts)
 		return func() tea.Msg { return PushViewMsg{View: child} }
 	}
-	return func() tea.Msg {
-		_ = exec.Command("xdg-open", art.URL).Start()
-		return nil
-	}
+	return openURLCmd(art.URL)
 }
 
 func (v *ArtifactView) View() string {
-	return v.table.View()
+	return v.tree.View()
 }
+
+// ApplySearch / SearchQuery implement Searchable so `/` filters the tree,
+// auto-expanding the ancestors of every match.
+func (v *ArtifactView) ApplySearch(pattern string) tea.Cmd {
+	v.searchQuery = pattern
+	v.tree.ApplySearch(widget.CompileSearchRegex(pattern))
+	return nil
+}
+
+func (v *ArtifactView) SearchQuery() string { return v.searchQuery }
 
 func (v *ArtifactView) Title() string {
 	return decodeName(v.nc.ProjectName)
@@ -161,14 +188,13 @@ func (v *ArtifactView) Commands() []command.Command {
 
 func (v *ArtifactView) Shortcuts() []component.Shortcut {
 	sc := []component.Shortcut{component.Nav("esc", "builds")}
-	if idx := v.table.Cursor(); idx >= 0 && idx < len(v.artifacts) {
-		action := "open"
-		if IsTextArtifact(v.artifacts[idx].DisplayPath) {
-			action = "view"
+	if key, url, container, ok := v.tree.Selected(); ok {
+		sc = append(sc, component.Nav("enter", artifactEnterAction(key, url, container)))
+		if url != "" {
+			sc = append(sc, component.Nav("o", "browser"))
 		}
-		sc = append(sc, component.Nav("enter", action))
-		sc = append(sc, component.Nav("o", "browser"))
 	}
+	sc = append(sc, component.Filter("/", "search", v.searchQuery != ""))
 	sc = append(sc, detailViewTabs("")...)
 	if v.store != nil {
 		key := fmt.Sprintf("%s:%d", v.nc.JobPath(), v.build.Number)
@@ -181,14 +207,27 @@ func (v *ArtifactView) Shortcuts() []component.Shortcut {
 	return sc
 }
 
+// artifactEnterAction labels the enter shortcut for the highlighted row.
+func artifactEnterAction(key, url string, container bool) string {
+	switch {
+	case container && url != "":
+		return "open report"
+	case container:
+		return "expand"
+	case IsTextArtifact(key):
+		return "view"
+	default:
+		return "open"
+	}
+}
+
 func (v *ArtifactView) SetSize(width, height int) {
 	v.BaseView.SetSize(width, height)
-	v.table.SetColumnWidth(0, width-2)
-	v.table.SetSize(width, height)
+	v.tree.SetSize(width, height)
 }
 
 func (v *ArtifactView) ScrollInfo() widget.ScrollInfo {
-	return widget.ScrollInfo{Offset: v.table.ScrollOffset(), TotalLines: v.table.TotalRows(), ViewHeight: v.table.ContentHeight()}
+	return widget.ScrollInfo{Offset: v.tree.ScrollOffset(), TotalLines: v.tree.TotalRows(), ViewHeight: v.tree.ContentHeight()}
 }
 
 func (v *ArtifactView) ParentView(t theme.Theme, c jmodel.JenkinsClient, s *cache.Store) View {

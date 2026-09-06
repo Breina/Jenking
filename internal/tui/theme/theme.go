@@ -41,6 +41,7 @@ type Icons struct {
 	StatusNotBuilt    string
 	StatusPausedInput string
 	StatusUnknown     string
+	ScanQueued        string // container with a branch-indexing scan waiting
 
 	WeatherSun      string
 	WeatherUnstable string

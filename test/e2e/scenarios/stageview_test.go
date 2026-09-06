@@ -155,7 +155,7 @@ func pipelineRowSaysRunning(grid string) bool {
 	return false
 }
 
-// findFixtureBuildsView navigates Dashboard → fixture multibranch → first
+// findFixtureBuildsView navigates the job list → fixture multibranch → first
 // branch builds view, regardless of where the fixture lives in the folder
 // hierarchy. Skips the test if the fixture cannot be found.
 func findFixtureBuildsView(t *testing.T, h *harness.Harness) {
@@ -170,7 +170,7 @@ func findFixtureBuildsView(t *testing.T, h *harness.Harness) {
 		h.MustWaitFor(t, func(g string) bool { return strings.Contains(g, fixtureJobName) }, harness.NetworkTimeout)
 		h.SendKeys("<enter>")
 	} else {
-		// Walk: Dashboard → first folder that contains the fixture name.
+		// Walk: job list → first folder that contains the fixture name.
 		// The integration setup at jenkins-on.cumuli.be has the fixture
 		// inside a "Omgeving" folder; this loop generalises.
 		t.Skipf("fixture %q not at top-level; nested fixture navigation not implemented for this scenario", fixtureJobName)
@@ -190,12 +190,12 @@ func findFixtureBuildsView(t *testing.T, h *harness.Harness) {
 // build-API status and the BuildCompletedMsg handler short-circuits the
 // transition within ~1s of completion.
 //
-// Skips when the fixture isn't directly reachable from the Dashboard. The
+// Skips when the fixture isn't directly reachable from the job list. The
 // real lock-down is the unit tests in internal/tui/view/stageview_test.go;
 // this is a smoke test for the full lifecycle when a fixture is wired up.
 func TestStageViewBarTransitionsAfterBuildCompletes(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath, Context: "ontwikkel"})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	findFixtureBuildsView(t, h)
 

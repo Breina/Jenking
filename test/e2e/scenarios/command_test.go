@@ -12,7 +12,7 @@ import (
 // TestCommandPaletteOpens verifies the ':' key opens the command palette.
 func TestCommandPaletteOpens(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys(":")
 
@@ -26,7 +26,7 @@ func TestCommandPaletteOpens(t *testing.T) {
 
 	// Dismiss with Esc
 	h.SendKeys("<esc>")
-	h.MustWaitForText(t, "Dashboard", harness.RenderTimeout)
+	h.MustWaitForText(t, "jobs(", harness.RenderTimeout)
 }
 
 // TestCommandBuilds verifies :builds navigates to the all-builds view.
@@ -34,7 +34,7 @@ func TestCommandPaletteOpens(t *testing.T) {
 // may not be visible in the grid due to the debug overlay, so we assert on content.
 func TestCommandBuilds(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "jobs(Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys(harness.Cmd("builds"))
 
@@ -57,7 +57,7 @@ func TestCommandBuilds(t *testing.T) {
 // With only one context in the isolated config, the picker auto-selects and returns.
 func TestCommandContextList(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "jobs(Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys(":context<cr>")
 
@@ -82,23 +82,22 @@ func TestCommandContextList(t *testing.T) {
 // TestCommandBogusShowsError verifies that an unknown command shows an error, not a crash.
 func TestCommandBogusShowsError(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
-	h.SendKeys(harness.Cmd("zzznotacommand"))
+	runCmd(h, "zzznotacommand")
 
-	// Should show some error feedback without crashing
-	// Give it a moment to react
+	// Should show some error feedback without crashing.
 	if err := h.WaitFor(func(grid string) bool {
 		g := strings.ToLower(grid)
 		return strings.Contains(g, "unknown") ||
 			strings.Contains(g, "error") ||
-			strings.Contains(g, "dashboard") // still alive
+			strings.Contains(g, "jobs(") // still alive
 	}, harness.RenderTimeout); err != nil {
 		t.Fatalf("app became unresponsive after bogus command: %v", err)
 	}
 
-	// The app must still be alive and show the dashboard
-	if !h.Contains("Dashboard") {
+	// The app must still be alive on its job list.
+	if !h.Contains("jobs(") {
 		t.Logf("grid after bogus command:\n%s", h.Grid())
 	}
 }
@@ -106,7 +105,7 @@ func TestCommandBogusShowsError(t *testing.T) {
 // TestCommandSearch verifies the '/' key opens search input.
 func TestCommandSearch(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys("/")
 
@@ -119,5 +118,5 @@ func TestCommandSearch(t *testing.T) {
 
 	// Type something and clear with Esc
 	h.SendKeys("test<esc>")
-	h.MustWaitForText(t, "Dashboard", harness.RenderTimeout)
+	h.MustWaitForText(t, "jobs(", harness.RenderTimeout)
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
 	"github.com/Breina/Jenking/internal/jenkins"
 	"github.com/Breina/Jenking/internal/tui/command"
@@ -27,6 +28,7 @@ const (
 
 // stageRefreshMsg carries the result of a periodic stage refresh.
 type stageRefreshMsg struct {
+	gen           int // polling generation; see StageView.pollGen
 	stages        []jmodel.Stage
 	build         *jmodel.Build // official build status from Jenkins API
 	pendingInputs []jmodel.PendingInput
@@ -36,7 +38,9 @@ type stageRefreshMsg struct {
 }
 
 // stageProgressTickMsg triggers a re-render for smooth progress bar animation.
-type stageProgressTickMsg struct{}
+type stageProgressTickMsg struct {
+	gen int // polling generation; see StageView.pollGen
+}
 
 // prevStagesFetchedMsg carries stages from the previous completed build.
 type prevStagesFetchedMsg struct {
@@ -133,6 +137,18 @@ type StageView struct {
 	input   *inputBehavior // pipeline `input` step approval
 	host    widget.BehaviorHost
 
+	// Polling supervision. polling reports whether a live refresh chain owns
+	// this view; pollGen identifies it. Every scheduled tick carries the
+	// generation it was born under and is dropped on arrival if the
+	// generation has moved on, so exactly one chain is ever live no matter
+	// how often the view is re-entered. See ensurePolling.
+	polling bool
+	pollGen int
+
+	// registryFinalized guards publishCompletion so the registry (and its
+	// persistence) is notified once, not on every tick after the build ends.
+	registryFinalized bool
+
 	// pendingInputs is the latest snapshot of input steps awaiting decision.
 	// Sourced from BuildDetail.PendingInputs on every detail/refresh tick;
 	// drives ApplyPendingInputs (stage rendering) and the Enter shortcut.
@@ -155,6 +171,10 @@ func NewStageView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Store
 		autoFollowing: true,
 		trigger:       newTriggerMixin(t, client, base.nc),
 	}
+	// Seed the breadcrumb identity from the initial build so a custom display
+	// name shows immediately, before the first live refresh.
+	sv.SeedBuildIdentity(build)
+	sv.preview.SetBuildRef(sv.nc.Build)
 	sv.registerBehaviors()
 	return sv
 }
@@ -305,12 +325,35 @@ func (sv *StageView) stageCacheKey() string {
 // setBuild updates the build and caches it for later restoration.
 func (sv *StageView) setBuild(b jmodel.Build) {
 	sv.build = b
+	// Keep the breadcrumb identity in sync with the live build so a display
+	// name set (or changed) mid-run is reflected immediately. Only overwrite
+	// when the build carries a number so we never clobber a pending nc.
+	sv.SyncBuildIdentity(b)
+	sv.preview.SetBuildRef(sv.nc.Build)
 	if b.Duration > 0 {
 		sv.buildDetailRetries = 0
 	}
 	if sv.store != nil {
 		sv.store.BuildDetail.Put(sv.stageCacheKey(), b)
 	}
+	sv.publishCompletion(b)
+}
+
+// publishCompletion tells the registry a build has finished, the moment this
+// view's own 2s poll observes it. The registry is the shared authority on
+// terminality — fetchArtifacts, for one, refuses to persist an artifact list
+// until it agrees the build is done — and it would otherwise only learn this
+// on the engine's slower running-set reconciliation. Reporting it here closes
+// that window instead of letting each consumer invent its own workaround.
+func (sv *StageView) publishCompletion(b jmodel.Build) {
+	if sv.registryFinalized || b.Number == 0 || !isTerminalStatus(b.Status) {
+		return
+	}
+	if sv.store == nil || sv.store.Registry == nil {
+		return
+	}
+	sv.registryFinalized = true
+	sv.store.Registry.ApplyCompletion(buildregistry.Key{JobPath: sv.nc.JobPath(), Number: b.Number}, b)
 }
 
 func (sv *StageView) Init() tea.Cmd {
@@ -340,6 +383,8 @@ func (sv *StageView) syncBuildDetailCache() {
 		if e := sv.store.BuildDetail.Get(sv.stageCacheKey()); e != nil {
 			slog.Debug("stageview.Init: restored build from cache", "status", e.Value.Status, "duration", e.Value.Duration)
 			sv.build = e.Value
+			sv.SyncBuildIdentity(e.Value)
+			sv.preview.SetBuildRef(sv.nc.Build)
 		} else {
 			slog.Debug("stageview.Init: no cached build found", "key", sv.stageCacheKey())
 		}
@@ -365,13 +410,19 @@ func (sv *StageView) restorePendingInputsCache() {
 // initReentry handles the path where stages are already loaded (returning
 // from a child view): cancel stale goroutines and restart the preview.
 func (sv *StageView) initReentry() tea.Cmd {
+	// The old context (and with it every in-flight tick) dies here, so the
+	// chain must be retired before a new one is started.
+	sv.stopPolling()
 	sv.cancel()
 	sv.ctx, sv.cancel = context.WithCancel(context.Background())
 	sv.preview.SetContext(sv.ctx)
 
 	cmds := []tea.Cmd{sv.preview.Restart(sv.previewIdxForCursor(sv.table.Cursor()), sv.stages)}
-	if sv.isRunning() {
-		cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick(), sv.fetchPrevStages)
+	if sv.shouldPoll() {
+		// Build state may have moved on while the child view was open;
+		// re-fetch it so a build that finished meanwhile is finalized (and
+		// its artifacts fetched) instead of waiting for the first tick.
+		cmds = append(cmds, sv.ensurePolling(), sv.fetchBuildDetail(), sv.fetchPrevStages)
 	}
 	return tea.Batch(cmds...)
 }
@@ -395,15 +446,12 @@ func (sv *StageView) initFromCachedStages() (tea.Cmd, bool) {
 	sv.setInitialCursorFromCache()
 
 	cmds := []tea.Cmd{sv.fetchStages, sv.preview.UpdateForCursor(sv.previewIdxForCursor(sv.table.Cursor()), sv.stages)}
-	if sv.build.Status == "" || sv.isRunning() {
+	if sv.shouldPoll() {
 		// For running builds we kick a build-detail fetch up front so the
 		// PendingInputs snapshot arrives in ~200ms — without it the top bar
 		// and stage rows briefly show progress before the first refresh tick
 		// (2s later) flips them to Paused.
-		cmds = append(cmds, sv.fetchBuildDetail())
-	}
-	if sv.isRunning() {
-		cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick(), sv.fetchPrevStages)
+		cmds = append(cmds, sv.fetchBuildDetail(), sv.ensurePolling(), sv.fetchPrevStages)
 	} else {
 		cmds = append(cmds, sv.buildDataCmds()...)
 	}
@@ -431,14 +479,13 @@ func (sv *StageView) initFresh() tea.Cmd {
 		sv.fetchStages,
 		sv.preview.UpdateForCursor(pipelinePreviewIdx, sv.stages),
 	}
-	if sv.build.Status == "" || sv.build.Status == jmodel.BuildStatusRunning {
+	if sv.shouldPoll() {
 		// See initFromCachedStages: a fresh fetch surfaces PendingInputs
 		// quickly so the paused indicator paints on first refresh, not 2s in.
-		cmds = append(cmds, sv.fetchBuildDetail())
-	}
-	if sv.build.Status == jmodel.BuildStatusRunning {
-		cmds = append(cmds, sv.fetchPrevStages)
-	} else if sv.build.Status != "" {
+		// ensurePolling starts the loop here rather than leaving it to the
+		// StagesMsg handler: an unconfirmed status must never mean "no loop".
+		cmds = append(cmds, sv.fetchBuildDetail(), sv.ensurePolling(), sv.fetchPrevStages)
+	} else {
 		cmds = append(cmds, sv.buildDataCmds()...)
 	}
 	return tea.Batch(cmds...)
@@ -531,6 +578,7 @@ func (sv *StageView) scheduleWhenSkipRetry() tea.Cmd {
 
 func (sv *StageView) scheduleProgressTick() tea.Cmd {
 	ctx := sv.ctx
+	gen := sv.pollGen
 	return func() tea.Msg {
 		select {
 		case <-ctx.Done():
@@ -540,12 +588,85 @@ func (sv *StageView) scheduleProgressTick() tea.Cmd {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return stageProgressTickMsg{}
+		return stageProgressTickMsg{gen: gen}
 	}
+}
+
+// --- polling supervision -------------------------------------------------
+//
+// The refresh loop is a self-perpetuating chain: each tick schedules the
+// next. That makes *starting* it the fragile part — a single start decision
+// taken from ambiguous state (an unconfirmed build status, a momentary gap
+// where no stage is marked running) used to kill auto-refresh for the whole
+// lifetime of the view, with no way back. These four methods are the only
+// places allowed to touch the chain's lifecycle:
+//
+//   - shouldPoll     — the one predicate: poll unless Jenkins has confirmed
+//     the build is finished. Ambiguity means "keep polling".
+//   - ensurePolling  — idempotent (re)start; safe to call from anywhere,
+//     including every Init path and every message handler that learns new
+//     build state.
+//   - continuePolling — a live chain scheduling its own next tick.
+//   - stopPolling    — teardown; invalidates in-flight ticks.
+
+// shouldPoll reports whether the view still needs live data. Only a
+// confirmed terminal build status stops the loop: an empty or unknown status
+// is treated as "possibly running", because guessing wrong in that direction
+// costs one extra request, while guessing wrong the other way freezes the
+// view.
+func (sv *StageView) shouldPoll() bool {
+	return !isTerminalStatus(sv.build.Status)
+}
+
+// ensurePolling starts the refresh + progress chains if they are not already
+// running and the build still warrants them. Idempotent: calling it on every
+// Init path and whenever fresh build state arrives is both safe and the
+// intended usage — it is what makes a frozen view impossible.
+func (sv *StageView) ensurePolling() tea.Cmd {
+	if sv.polling || sv.pending || !sv.shouldPoll() {
+		return nil
+	}
+	sv.polling = true
+	sv.pollGen++
+	slog.Debug("stageview.ensurePolling: starting", "gen", sv.pollGen, "buildStatus", sv.build.Status)
+	return tea.Batch(sv.scheduleRefresh(), sv.scheduleProgressTick())
+}
+
+// continuePolling schedules the next refresh tick of the chain that is
+// already live. Used by the tick handlers themselves; everything else calls
+// ensurePolling.
+func (sv *StageView) continuePolling() tea.Cmd {
+	sv.polling = true
+	return sv.scheduleRefresh()
+}
+
+// stopPolling ends the live chain and invalidates any tick still in flight,
+// so a late arrival cannot resurrect a loop the view has retired.
+func (sv *StageView) stopPolling() {
+	if !sv.polling {
+		return
+	}
+	slog.Debug("stageview.stopPolling", "gen", sv.pollGen, "buildStatus", sv.build.Status)
+	sv.polling = false
+	sv.pollGen++
+}
+
+// isLiveTick reports whether a tick belongs to the current generation.
+// Ticks from a superseded chain (view re-entered, context replaced, build
+// finalized) are dropped on arrival.
+func (sv *StageView) isLiveTick(gen int) bool { return gen == sv.pollGen }
+
+// Close stops the polling chain before tearing down the view context, so a
+// tick that is mid-flight when the view goes away cannot schedule a
+// successor.
+func (sv *StageView) Close() error {
+	sv.stopPolling()
+	return sv.BaseView.Close()
 }
 
 func (sv *StageView) scheduleRefresh() tea.Cmd {
 	ctx := sv.ctx
+	gen := sv.pollGen
 	client := sv.client
 	jobPath := sv.nc.JobPath()
 	buildNumber := sv.build.Number
@@ -579,7 +700,7 @@ func (sv *StageView) scheduleRefresh() tea.Cmd {
 			logChunk = pl.Text
 			logNext = pl.NextStart
 		}
-		return stageRefreshMsg{stages: stages, build: build, pendingInputs: pending, err: err, logChunk: logChunk, logNextStart: logNext}
+		return stageRefreshMsg{gen: gen, stages: stages, build: build, pendingInputs: pending, err: err, logChunk: logChunk, logNextStart: logNext}
 	}
 }
 
@@ -632,6 +753,11 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StagesMsg:
 		return sv, sv.handleStagesMsg(msg)
 	case stageProgressTickMsg:
+		// The animation is part of the polling chain: it lives and dies with
+		// it, and is never left running on its own.
+		if !sv.polling || !sv.isLiveTick(msg.gen) {
+			return sv, nil
+		}
 		if sv.isRunning() {
 			sv.populateTable()
 		}
@@ -649,7 +775,7 @@ func (sv *StageView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Don't set status eagerly — let the refresh loop pick up the
 		// official status from Jenkins so the progress bar transitions
 		// smoothly instead of disappearing and reappearing.
-		return sv, sv.scheduleRefresh()
+		return sv, sv.ensurePolling()
 	case BuildCompletedMsg:
 		return sv, sv.handleBuildCompleted(msg)
 	case tea.KeyMsg:
@@ -672,12 +798,10 @@ func (sv *StageView) handlePendingBuildFound(msg pendingBuildFoundMsg) tea.Cmd {
 	sv.pending = false
 	sv.queuedInfo = nil
 	sv.setBuild(msg.build)
-	sv.nc.Build = NavBuildRef{Number: msg.build.Number}
-	sv.preview.SetBuildNumber(msg.build.Number)
 	// Now start normal operation (fetch stages, Pipeline preview).
 	sv.populateTable()
 	sv.table.SetCursor(0) // Pipeline row
-	cmds := []tea.Cmd{sv.fetchStages, sv.fetchPrevStages}
+	cmds := []tea.Cmd{sv.fetchStages, sv.fetchPrevStages, sv.ensurePolling()}
 	cmds = append(cmds, sv.preview.UpdateForCursor(pipelinePreviewIdx, sv.stages))
 	return tea.Batch(cmds...)
 }
@@ -708,8 +832,8 @@ func (sv *StageView) handleStagesMsg(msg StagesMsg) tea.Cmd {
 	sv.populateTable()
 	sv.applyInitialStagesCursor()
 	cmds := []tea.Cmd{sv.preview.UpdateForCursor(sv.previewIdxForCursor(sv.table.Cursor()), sv.stages)}
-	if sv.isRunning() {
-		cmds = append(cmds, sv.scheduleRefresh(), sv.scheduleProgressTick())
+	if sv.shouldPoll() {
+		cmds = append(cmds, sv.ensurePolling())
 	} else {
 		cmds = append(cmds, sv.finalizeStagesCmds(msg.Stages)...)
 	}
@@ -748,11 +872,19 @@ func (sv *StageView) finalizeStagesCmds(stages []jmodel.Stage) []tea.Cmd {
 }
 
 func (sv *StageView) handleStageRefresh(msg stageRefreshMsg) tea.Cmd {
+	if !sv.isLiveTick(msg.gen) {
+		// A tick from a superseded chain (view re-entered while it was in
+		// flight). Dropping it keeps exactly one live chain.
+		return nil
+	}
 	if msg.err != nil {
 		slog.Warn("stageview.stageRefreshMsg error", "err", msg.err)
-		if sv.build.Status == jmodel.BuildStatusRunning {
-			return sv.scheduleRefresh()
+		// A transient API error must not retire the loop: keep polling for
+		// as long as the build is not known to be finished.
+		if sv.shouldPoll() {
+			return sv.continuePolling()
 		}
+		sv.stopPolling()
 		return nil
 	}
 	hadStages := len(sv.stages) > 0
@@ -823,10 +955,11 @@ func (sv *StageView) applyRefreshCursor(hadStages bool, prevCursor int) {
 // refreshContinuationCmds decides whether to reschedule another refresh or
 // finalize the build (when stages stopped running and Jenkins reports done).
 func (sv *StageView) refreshContinuationCmds(msg stageRefreshMsg) []tea.Cmd {
-	buildFinished := msg.build != nil && msg.build.Status != jmodel.BuildStatusRunning
+	buildFinished := msg.build != nil && isTerminalStatus(msg.build.Status)
 	if sv.anyStageRunning() || !buildFinished {
-		return []tea.Cmd{sv.scheduleRefresh()}
+		return []tea.Cmd{sv.continuePolling()}
 	}
+	sv.stopPolling()
 	slog.Debug("stageview.refresh: build finished", "buildStatus", sv.build.Status)
 	sv.ghostsValid = false
 	sv.populateTable()
@@ -869,14 +1002,19 @@ func (sv *StageView) handleBuildDetail(msg buildDetailMsg) tea.Cmd {
 	sv.setBuild(msg.build)
 	sv.setPendingInputs(msg.pendingInputs)
 	sv.populateTable()
+	// This is the recovery point for the polling loop: whatever state the
+	// view started from, once Jenkins confirms the build is still running the
+	// chain is (re)started here. ensurePolling is idempotent, so the common
+	// case — chain already live — costs nothing.
+	cmds := []tea.Cmd{sv.ensurePolling()}
 	// Jenkins sometimes reports a terminal status before it has written the
 	// final Duration. Retry (bounded) until the duration materialises.
 	if msg.build.Duration == 0 && isTerminalStatus(msg.build.Status) &&
 		sv.buildDetailRetries < maxBuildDetailRetries {
 		sv.buildDetailRetries++
-		return sv.scheduleBuildDetailRetry()
+		cmds = append(cmds, sv.scheduleBuildDetailRetry())
 	}
-	return nil
+	return tea.Batch(cmds...)
 }
 
 // setPendingInputs updates the pending-inputs snapshot, re-projects stage
@@ -1036,7 +1174,7 @@ func (sv *StageView) openConsoleSwap() (tea.Model, tea.Cmd, bool) {
 func (sv *StageView) newSeededConsole() *ConsoleView {
 	seedLines, seedNext, seedDone := sv.preview.ConsoleSnapshot()
 	child := NewConsoleViewSeeded(sv.theme, sv.client, sv.nc, seedLines, seedNext, seedDone)
-	child.build = sv.build
+	child.SetBuild(sv.build)
 	child.store = sv.store
 	return child
 }

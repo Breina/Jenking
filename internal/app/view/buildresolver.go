@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Breina/Jenking/internal/app/engine"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
@@ -31,6 +32,7 @@ type buildResolver struct {
 	// Resolved target.
 	resolvedPath string
 	resolvedNum  int
+	resolvedName string // custom display name of the resolved build, if any
 	// UI state.
 	loading bool
 	// Cancellation.
@@ -219,7 +221,7 @@ func (r *buildResolver) bestMatch(builds []jmodel.UserBuild) *jmodel.UserBuild {
 		if r.filterRunning && b.Status != jmodel.BuildStatusRunning {
 			continue
 		}
-		if r.filterMine && !matchesUser(b.Build, r.username, r.gitUsernames) {
+		if r.filterMine && !b.MatchesUser(r.username, r.gitUsernames) {
 			continue
 		}
 		candidates = append(candidates, b)
@@ -247,5 +249,6 @@ func (r *buildResolver) cacheSlowBuilds(builds []jmodel.UserBuild) {
 	switch r.scope.Level {
 	case CtxRoot, CtxFolder:
 		r.store.Registry.IngestScan(builds)
+		go engine.FillSCMURLs(context.Background(), r.client, r.store, scanJobPaths(builds))
 	}
 }

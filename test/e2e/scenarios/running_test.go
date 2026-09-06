@@ -13,7 +13,7 @@ import (
 // TestRunningBuildsView verifies the 'R' view opens and renders.
 func TestRunningBuildsView(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys("R")
 
@@ -30,7 +30,7 @@ func TestRunningBuildsView(t *testing.T) {
 // TestRunningBuildsScrolling verifies scrolling doesn't crash the view.
 func TestRunningBuildsScrolling(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 	h.SendKeys("R")
 	h.MustWaitFor(t, func(grid string) bool {
 		return strings.Contains(strings.ToLower(grid), "running")
@@ -53,14 +53,14 @@ func TestRunningBuildsScrolling(t *testing.T) {
 // TestRunningBuildsEscReturns verifies Esc returns to the dashboard.
 func TestRunningBuildsEscReturns(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 	h.SendKeys("R")
 	h.MustWaitFor(t, func(grid string) bool {
 		return strings.Contains(strings.ToLower(grid), "running")
 	}, harness.NetworkTimeout)
 
 	h.SendKeys("<esc>")
-	h.MustWaitForText(t, "Dashboard", harness.RenderTimeout)
+	h.MustWaitForText(t, "jobs(", harness.RenderTimeout)
 }
 
 // TestRunningBuildsMonitorRace exercises the background poll goroutine by
@@ -68,7 +68,7 @@ func TestRunningBuildsEscReturns(t *testing.T) {
 // This test is run with -race to detect data races in internal/monitor/running.go.
 func TestRunningBuildsMonitorRace(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	for i := 0; i < 5; i++ {
 		h.SendKeys("R")
@@ -77,13 +77,13 @@ func TestRunningBuildsMonitorRace(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	h.MustWaitForText(t, "Dashboard", harness.RenderTimeout)
+	h.MustWaitForText(t, "jobs(", harness.RenderTimeout)
 }
 
 // TestRunningBuildsResizeDuringPoll verifies resize while the monitor is polling.
 func TestRunningBuildsResizeDuringPoll(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 	h.SendKeys("R")
 	h.MustWaitFor(t, func(grid string) bool {
 		return strings.Contains(strings.ToLower(grid), "running")

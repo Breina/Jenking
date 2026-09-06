@@ -30,7 +30,7 @@ func twoContextOpts() harness.Options {
 // other tests in this file.
 func TestContextPickerShowsTwoContexts(t *testing.T) {
 	h := harness.New(t, twoContextOpts())
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Send `:` separately so Bubbletea processes command-mode activation before
 	// the remaining chars arrive. Sending all bytes in one Write can cause them to
@@ -44,10 +44,10 @@ func TestContextPickerShowsTwoContexts(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	h.MustSnapshot(t, "ctx-picker-two-contexts")
 
-	// Dismiss without switching — Dashboard must return.
+	// Dismiss without switching — the list must return.
 	h.SendKeys("<esc>")
-	if err := h.WaitForText("Dashboard", harness.NetworkTimeout); err != nil {
-		t.Fatalf("Dashboard didn't return after dismissing context picker: %v", err)
+	if err := h.WaitForText("jobs(", harness.NetworkTimeout); err != nil {
+		t.Fatalf("job list didn't return after dismissing context picker: %v", err)
 	}
 }
 
@@ -55,20 +55,20 @@ func TestContextPickerShowsTwoContexts(t *testing.T) {
 // doesn't crash or leave the app in a bad state.
 func TestContextSwitchRoundTrip(t *testing.T) {
 	h := harness.New(t, twoContextOpts())
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 	h.MustSnapshot(t, "ctx-ontwikkel-start")
 
 	// Switch to build
 	h.SendKeys(harness.Cmd("context build"))
-	if err := h.WaitForText("Dashboard", harness.NetworkTimeout); err != nil {
-		t.Fatalf("Dashboard not reached after switching to build: %v", err)
+	if err := waitForRootList(h); err != nil {
+		t.Fatalf("root list not reached after switching to build: %v", err)
 	}
 	h.MustSnapshot(t, "ctx-switched-to-build")
 
 	// Switch back to ontwikkel
 	h.SendKeys(harness.Cmd("context ontwikkel"))
-	if err := h.WaitForText("Dashboard", harness.NetworkTimeout); err != nil {
-		t.Fatalf("Dashboard not reached after switching back to ontwikkel: %v", err)
+	if err := waitForRootList(h); err != nil {
+		t.Fatalf("root list not reached after switching back to ontwikkel: %v", err)
 	}
 	h.MustSnapshot(t, "ctx-switched-back-to-ontwikkel")
 }
@@ -128,7 +128,7 @@ func TestContextSwitchMonarch(t *testing.T) {
 // connection attempt, which can cause nil-pointer panics in the view layer.
 func TestContextSwitchNoPanicOnRapidReuse(t *testing.T) {
 	h := harness.New(t, twoContextOpts())
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Switch context and immediately hammer keys before connection completes
 	h.SendKeys(harness.Cmd("context build"))

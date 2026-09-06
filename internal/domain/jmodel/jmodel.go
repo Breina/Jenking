@@ -103,6 +103,30 @@ type Build struct {
 	TriggeredBy       string
 	TriggeredByName   string
 	Cause             string
+	// Name is the build's custom display name when set (Jenkins `displayName`),
+	// e.g. "release-2.3.1". Empty when the build uses the default "#<number>".
+	Name string
+	// Description is the build's free-text description (Jenkins `description`).
+	// May be multi-line; kept raw (no HTML stripping).
+	Description string
+}
+
+// MatchesUser reports whether this build belongs to the given user. It matches
+// a manual trigger by Jenkins userId first, then falls back to substring-
+// matching the trigger cause against any configured git usernames (e.g.
+// "Brecht Derwael" matches "Started by GitLab push by Brecht Derwael"). This is
+// the single source of truth for the "mine" filter across the TUI, CLI, and MCP
+// server.
+func (b Build) MatchesUser(username string, gitUsernames []string) bool {
+	if username != "" && b.TriggeredBy == username {
+		return true
+	}
+	for _, name := range gitUsernames {
+		if name != "" && strings.Contains(b.Cause, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildDetail extends Build with stage information.
@@ -151,12 +175,38 @@ type UserBuild struct {
 	Build
 }
 
+// QueueKind distinguishes the two structurally different things Jenkins pushes
+// through its single build queue. A scan (branch indexing on a multibranch
+// project, or folder computation) is a run of the container itself: it never
+// produces a build number, and its normal steady state is blocked on the
+// indexing throttle — so counting it as a queued build inflates the queue
+// counter and skews the dashboard's wait histogram.
+type QueueKind string
+
+const (
+	QueueKindBuild QueueKind = "build" // a run will come out of this
+	QueueKindScan  QueueKind = "scan"  // branch indexing / folder computation
+)
+
+// KindOrBuild returns the item's kind, treating the zero value as a build.
+// The adapter always classifies, so an empty kind means the item was built by
+// hand (tests, the pending-view seed); defaulting it to a build keeps the
+// "anything we cannot identify is a build" rule true at every filter site
+// rather than silently dropping the item.
+func (q QueueItem) KindOrBuild() QueueKind {
+	if q.Kind == "" {
+		return QueueKindBuild
+	}
+	return q.Kind
+}
+
 // QueueItem is a build waiting in the Jenkins queue. It has no build number
 // yet (the build does not exist until an executor picks it up). The four
 // boolean flags are mutually-informative sub-states reported by Jenkins; Why
 // is the human-readable waiting reason.
 type QueueItem struct {
 	ID              int64
+	Kind            QueueKind
 	JobPath         string
 	DisplayName     string
 	Why             string
@@ -169,6 +219,23 @@ type QueueItem struct {
 	Cause           string
 	TriggeredBy     string
 	TriggeredByName string
+}
+
+// Node is a Jenkins build node (agent or the built-in controller) with its
+// executor utilization and health from the node monitors. NumExecutors is the
+// declared executor capacity; BusyExecutors is how many are currently running
+// a build. Monitor fields are 0 when unavailable (e.g. node offline, or the
+// monitor not reporting).
+type Node struct {
+	Name          string
+	Offline       bool
+	OfflineCause  string
+	NumExecutors  int
+	BusyExecutors int
+	FreeDiskBytes int64    // free space on the Jenkins remote FS root
+	FreeMemBytes  int64    // available physical memory
+	ResponseMs    int64    // controller→agent round-trip (ResponseTimeMonitor)
+	Labels        []string // assigned labels used for build routing
 }
 
 // User represents a Jenkins user.
@@ -299,17 +366,26 @@ type ValidationResult struct {
 // Jenkins server. The adapter at internal/jenkins implements this.
 type JenkinsClient interface {
 	ListJobs(ctx context.Context, folder string) ([]Job, error)
+	ListViews(ctx context.Context, folder string) ([]JenkinsView, error)
+	ListMyViews(ctx context.Context, username string) ([]JenkinsView, error)
+	ListViewJobs(ctx context.Context, v JenkinsView) ([]Job, error)
 	ListBuilds(ctx context.Context, jobPath string) ([]Build, error)
 	ListProjectBuilds(ctx context.Context, projectPath string) ([]ProjectBuild, error)
 	ListUserBuilds(ctx context.Context, username string) ([]UserBuild, error)
 	ListRunningBuilds(ctx context.Context) ([]UserBuild, error)
+	ListNodes(ctx context.Context) ([]Node, error)
 	ListQueue(ctx context.Context) ([]QueueItem, error)
 	ScanAllBuilds(ctx context.Context, maxPerJob int) ([]UserBuild, error)
 	ListStages(ctx context.Context, jobPath string, buildNumber int) ([]Stage, error)
 	GetBuild(ctx context.Context, jobPath string, number int) (*BuildDetail, error)
+	GetChanges(ctx context.Context, jobPath string, number int) ([]Change, error)
+	FindCommit(ctx context.Context, jobPath, commitPrefix string, maxBuilds int) ([]BuildCommitHit, error)
 	GetConsoleOutput(ctx context.Context, jobPath string, number int) (io.ReadCloser, error)
 	GetFullConsoleText(ctx context.Context, jobPath string, number int) (string, error)
 	GetProgressiveLog(ctx context.Context, jobPath string, number, start int) (*ProgressiveLog, error)
+	GetScanLogProgressive(ctx context.Context, jobPath string, start int) (*ProgressiveLog, error)
+	GetScanConsoleText(ctx context.Context, jobPath string) (string, error)
+	StopScan(ctx context.Context, jobPath string) error
 	GetNodeLog(ctx context.Context, jobPath string, buildNumber, nodeID int) (string, error)
 	GetNodeLogProgressive(ctx context.Context, jobPath string, buildNumber, nodeID, start int) (*NodeLog, error)
 	GetJobParameters(ctx context.Context, jobPath string) ([]ParameterDefinition, error)
@@ -323,10 +399,13 @@ type JenkinsClient interface {
 	GetTestReport(ctx context.Context, jobPath string, buildNum int) (*TestReport, error)
 	GetArtifacts(ctx context.Context, jobPath string, buildNum int) ([]Artifact, error)
 	GetArtifactContent(ctx context.Context, artifactURL string) (content, contentType string, err error)
-	TriggerBuild(ctx context.Context, jobPath string, params map[string]string) error
+	TriggerBuild(ctx context.Context, jobPath string, params map[string]string) (queueID int64, err error)
+	GetQueueItem(ctx context.Context, id int64) (item *QueueItem, buildNumber int, err error)
 	ReplayBuild(ctx context.Context, jobPath string, buildNum int, script string) error
 	CancelBuild(ctx context.Context, jobPath string, number int) error
 	CancelQueueItem(ctx context.Context, id int64) error
+	SetJobEnabled(ctx context.Context, jobPath string, enabled bool) error
+	ToggleNodeOffline(ctx context.Context, name, reason string) error
 	ProceedInput(ctx context.Context, jobPath string, buildNumber int, inputID string, params map[string]string) error
 	AbortInput(ctx context.Context, jobPath string, buildNumber int, inputID string) error
 	WhoAmI(ctx context.Context) (*User, error)

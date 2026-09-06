@@ -55,6 +55,7 @@ func NewArtifactFileView(t theme.Theme, client jmodel.JenkinsClient, store *cach
 		parentArtifacts: parentArtifacts,
 		trigger:         newTriggerMixin(t, client, nc),
 	}
+	af.SeedBuildIdentity(build)
 	// Sideways navigation to sibling detail views (l/s/d/T) and build actions
 	// (x/t) via popSwapTo, mirroring StageLogView: navigating away replaces the
 	// pushed artifact list parent, clearing the ":file" breadcrumb tail.
@@ -190,7 +191,7 @@ func (af *ArtifactFileView) openConsoleSwap() tea.Cmd {
 	store := af.store
 	return func() tea.Msg {
 		cv := NewConsoleView(af.theme, af.client, nc)
-		cv.build = build
+		cv.SetBuild(build)
 		cv.store = store
 		return PopSwapViewMsg{View: cv}
 	}

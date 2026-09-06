@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Breina/Jenking/internal/app/usecase"
 	"github.com/Breina/Jenking/internal/cache"
 	"github.com/Breina/Jenking/internal/domain/buildregistry"
 	"github.com/Breina/Jenking/internal/domain/jmodel"
@@ -43,6 +44,16 @@ type BuildsView struct {
 	// re-run the provider's Builds() query. Refreshed by populateTable, which is
 	// called on every data-changing message and on filter/search toggles.
 	builds []UnifiedBuild
+	// commit accordion (follow-cursor): when showCommits is on, the selected
+	// build expands inline to show its SCM commits as disabled sub-rows. The
+	// expansion follows the cursor, so only expandedKey's build is ever open.
+	showCommits   bool
+	expandedKey   string // buildKey of the currently expanded build, or ""
+	commits       map[string][]jmodel.Change
+	commitErr     map[string]error
+	commitLoading map[string]bool
+	buildRowCount int  // build (non-commit) rows currently in the table
+	hasLastRow    bool // true when a pinned "#last" alias row occupies table row 0
 }
 
 // NewBuildsView creates a BuildsView backed by the given provider.
@@ -73,6 +84,7 @@ func NewBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Stor
 		progressBar:    component.NewProgressBar(t),
 		flexColIdx:     0,
 		fixedColsWidth: fixedColsWidth,
+		showCommits:    true, // commit accordion is on by default
 	}
 	// Row-aware accessor: returns the currently selected build's NC + Build.
 	access := func() (NavigationContext, jmodel.Build, bool) {
@@ -87,7 +99,7 @@ func NewBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.Stor
 			// stages, log, describe, tests, artifacts, trigger) do not apply.
 			return NavigationContext{}, jmodel.Build{}, false
 		}
-		return bv.ncForSelected(selected).AtBuild(selected.Number), selected.Build, true
+		return bv.ncForSelected(selected).AtBuildRef(bv.refForSelected(selected)), selected.Build, true
 	}
 	storeFn := func() *cache.Store { return bv.store }
 	bv.trigger = newTriggerMixin(t, client, nc)
@@ -133,7 +145,8 @@ func (bv *BuildsView) ApplySearch(pattern string) tea.Cmd {
 	bv.searchRe = widget.CompileSearchRegex(pattern)
 	bv.populateTable()
 	bv.table.SetCursor(0)
-	return nil
+	// Selection jumped to row 0; re-point the accordion at it (and fetch).
+	return bv.syncExpansion()
 }
 
 func (bv *BuildsView) SearchQuery() string {
@@ -187,11 +200,27 @@ func (bv *BuildsView) currentBuilds() []UnifiedBuild {
 	return bv.builds
 }
 
+// populateTable re-queries the provider (registry sort over all records) and
+// rebuilds the table. Use it only when the underlying data or filters change —
+// not on plain cursor movement, where rebuildRows suffices.
 func (bv *BuildsView) populateTable() {
-	builds := bv.provider.Builds()
-	bv.builds = builds
-	bv.filteredBuilds = nil
+	bv.builds = bv.provider.Builds()
+	bv.rebuildRows()
+}
+
+// rebuildRows regenerates the table rows from the cached bv.builds snapshot,
+// without hitting the provider. This is what the follow-cursor accordion uses to
+// re-splice commit sub-rows as the selection moves, keeping keystrokes cheap.
+func (bv *BuildsView) rebuildRows() {
+	builds := bv.builds
+	bv.buildRowCount = 0
+	bv.hasLastRow = false
+
 	var rows []component.Row
+	meta := []int{}      // per table row: build index in builds, or -1 for a commit sub-row
+	isCommit := []bool{} // per table row: true for a disabled commit sub-row
+	firstBuildIdx := -1  // index of the newest visible non-queued build (target of "#last")
+
 	for i, b := range builds {
 		buildLabel := fmt.Sprintf("#%d", b.Number)
 		if bv.searchRe != nil && !bv.searchRe.MatchString(buildLabel) {
@@ -200,33 +229,306 @@ func (bv *BuildsView) populateTable() {
 		if bv.filters.Running && b.Status != jmodel.BuildStatusRunning {
 			continue
 		}
-		if bv.filters.Mine && bv.nc.Username != "" && !matchesUser(b.Build, bv.nc.Username, bv.nc.GitUsernames) {
+		if bv.filters.Mine && bv.nc.Username != "" && !b.MatchesUser(bv.nc.Username, bv.nc.GitUsernames) {
 			continue
 		}
-		bv.filteredBuilds = append(bv.filteredBuilds, i)
+		bv.buildRowCount++
+		if firstBuildIdx < 0 && !b.Queued {
+			firstBuildIdx = i
+		}
 		ref := renderBuildRef(bv.theme, b, bv.nc.Level)
+		var row component.Row
 		if b.Queued {
-			row := component.Row{ref, renderQueueStatus(bv.theme, b.QueueState), "—", relativeTime(b.Timestamp), b.Why}
-			rows = append(rows, row)
-			continue
-		}
-		var statusStr, durationStr string
-		if b.Status == jmodel.BuildStatusRunning {
-			elapsed := time.Since(b.Timestamp)
-			if isBuildPausedOnInput(bv.store, b.JobPath, b.Number) {
-				statusStr = renderStatus(bv.theme, jmodel.BuildStatusPausedInput)
-			} else {
-				statusStr = renderRunningStatus(bv.theme, bv.progressBar, colStatusBWidth, elapsed, b.EstimatedDuration)
-			}
-			durationStr = "~" + formatDuration(elapsed)
+			row = component.Row{ref, renderQueueStatus(bv.theme, b.QueueState), "—", relativeTime(b.Timestamp), b.Why}
 		} else {
-			statusStr = renderStatus(bv.theme, b.Status)
-			durationStr = formatDuration(b.Duration)
+			statusStr, durationStr := bv.buildStatusCells(b)
+			row = component.Row{ref, statusStr, durationStr, relativeTime(b.Timestamp), b.Cause}
 		}
-		row := component.Row{ref, statusStr, durationStr, relativeTime(b.Timestamp), b.Cause}
 		rows = append(rows, row)
+		meta = append(meta, i)
+		isCommit = append(isCommit, false)
+		// Follow-cursor commit accordion: expand the selected build inline. The
+		// sub-rows are disabled so the cursor skips over them and stays on builds.
+		if !b.Queued && bv.isExpanded(b) {
+			subRows := bv.commitRowsFor(b)
+			if !bv.showCommits {
+				subRows = bv.descriptionRowsFor(b)
+			}
+			for _, cr := range subRows {
+				rows = append(rows, cr)
+				meta = append(meta, -1)
+				isCommit = append(isCommit, true)
+			}
+		}
+	}
+
+	// Pinned "#last" alias at the top of a job's build list: a selectable row
+	// that maps to the newest build, so every build action (enter/stages, log,
+	// describe, …) resolves to it. Job/branch level only.
+	if bv.nc.Level == CtxBranch && firstBuildIdx >= 0 {
+		rows = append([]component.Row{bv.lastAliasRow(builds[firstBuildIdx])}, rows...)
+		meta = append([]int{firstBuildIdx}, meta...)
+		isCommit = append([]bool{false}, isCommit...)
+		bv.hasLastRow = true
+	}
+
+	bv.filteredBuilds = meta
+	disabled := map[int]bool{}
+	for idx, c := range isCommit {
+		if c {
+			disabled[idx] = true
+		}
 	}
 	bv.table.SetRows(rows)
+	bv.table.SetDisabled(disabled)
+}
+
+// buildStatusCells renders the STATUS and DURATION cells for a real build,
+// accounting for running/paused state. Shared by the normal rows and the
+// "#last" alias row.
+func (bv *BuildsView) buildStatusCells(b UnifiedBuild) (string, string) {
+	if b.Status == jmodel.BuildStatusRunning {
+		elapsed := time.Since(b.Timestamp)
+		if isBuildPausedOnInput(bv.store, b.JobPath, b.Number) {
+			return renderStatus(bv.theme, jmodel.BuildStatusPausedInput), "~" + formatDuration(elapsed)
+		}
+		return renderRunningStatus(bv.theme, bv.progressBar, colStatusBWidth, elapsed, b.EstimatedDuration), "~" + formatDuration(elapsed)
+	}
+	return renderStatus(bv.theme, b.Status), formatDuration(b.Duration)
+}
+
+// lastAliasRow renders the pinned "#last → #N" row mirroring the newest build's
+// status, duration, start time, and cause.
+func (bv *BuildsView) lastAliasRow(b UnifiedBuild) component.Row {
+	target := fmt.Sprintf("→ #%d", b.Number)
+	if b.Name != "" {
+		target = "→ " + b.Name
+	}
+	ref := bv.theme.Breadcrumb.BuildNum.Render("#last") + " " + bv.theme.Breadcrumb.Paren.Render(target)
+	statusStr, durationStr := bv.buildStatusCells(b)
+	return component.Row{ref, statusStr, durationStr, relativeTime(b.Timestamp), b.Cause}
+}
+
+// buildCommitsMsg carries the fetched SCM commits for one build's accordion.
+type buildCommitsMsg struct {
+	key     string
+	changes []jmodel.Change
+	err     error
+}
+
+// buildKey uniquely identifies a build across jobs (queued rows use number 0).
+func (bv *BuildsView) buildKey(b UnifiedBuild) string {
+	return fmt.Sprintf("%s:%d", b.JobPath, b.Number)
+}
+
+// isExpanded reports whether b is the currently expanded build. With the commit
+// accordion on, the selected build always expands (to show commits). With it
+// off, the selected build expands only when it has a description to show.
+func (bv *BuildsView) isExpanded(b UnifiedBuild) bool {
+	if b.Queued || bv.buildKey(b) != bv.expandedKey {
+		return false
+	}
+	if bv.showCommits {
+		return true
+	}
+	return b.Description != ""
+}
+
+// selectedBuild returns the build under the cursor. Commit sub-rows are disabled
+// so the cursor never rests on one, but the guard keeps callers safe regardless.
+func (bv *BuildsView) selectedBuild() (UnifiedBuild, bool) {
+	builds := bv.currentBuilds()
+	di := bv.dataIndex(bv.table.Cursor())
+	if di < 0 || di >= len(builds) {
+		return UnifiedBuild{}, false
+	}
+	return builds[di], true
+}
+
+// selectedBuildKey returns the buildKey of the selected non-queued build, or "".
+func (bv *BuildsView) selectedBuildKey() string {
+	if b, ok := bv.selectedBuild(); ok && !b.Queued {
+		return bv.buildKey(b)
+	}
+	return ""
+}
+
+// setCursorToBuildKey pins the cursor onto the row for the given build key,
+// used after a repopulate shifts row indices (commit rows spliced in/out).
+func (bv *BuildsView) setCursorToBuildKey(key string) {
+	if key == "" {
+		return
+	}
+	for tableIdx, di := range bv.filteredBuilds {
+		if di < 0 {
+			continue
+		}
+		// Skip the "#last" alias (row 0) so we pin the real build row, not its
+		// duplicate — otherwise a repopulate would jerk the cursor up to #last.
+		if bv.hasLastRow && tableIdx == 0 {
+			continue
+		}
+		if bv.buildKey(bv.builds[di]) == key {
+			bv.table.SetCursor(tableIdx)
+			return
+		}
+	}
+}
+
+// pinCursor restores the cursor after a rebuild shifts row indices: it keeps the
+// "#last" alias selected if it was, else re-finds the selected build, else falls
+// back to the raw index.
+func (bv *BuildsView) pinCursor(prevOnLast bool, prevKey string, prevIdx int) {
+	switch {
+	case prevOnLast && bv.hasLastRow:
+		bv.table.SetCursor(0)
+	case prevKey != "":
+		bv.setCursorToBuildKey(prevKey)
+	default:
+		bv.table.SetCursor(prevIdx)
+	}
+}
+
+// repopulatePinned rebuilds rows from the cached snapshot (no provider re-query)
+// while keeping the cursor on the same build. Used by the accordion re-splice.
+func (bv *BuildsView) repopulatePinned() {
+	onLast := bv.hasLastRow && bv.table.Cursor() == 0
+	key := bv.selectedBuildKey()
+	idx := bv.table.Cursor()
+	bv.rebuildRows()
+	bv.pinCursor(onLast, key, idx)
+}
+
+// requeryPinned re-queries the provider and rebuilds, keeping the cursor pinned.
+// Used when the underlying data changed (provider messages).
+func (bv *BuildsView) requeryPinned() {
+	onLast := bv.hasLastRow && bv.table.Cursor() == 0
+	key := bv.selectedBuildKey()
+	idx := bv.table.Cursor()
+	bv.populateTable()
+	bv.pinCursor(onLast, key, idx)
+}
+
+// commitRowsFor renders the accordion sub-rows for an expanded build: a loading
+// or error placeholder, an empty-set note, or one muted row per commit.
+func (bv *BuildsView) commitRowsFor(b UnifiedBuild) []component.Row {
+	key := bv.buildKey(b)
+	if bv.commitLoading[key] {
+		return []component.Row{bv.commitInfoRow("loading commits…")}
+	}
+	if err := bv.commitErr[key]; err != nil {
+		return []component.Row{bv.commitInfoRow("failed to load commits: " + err.Error())}
+	}
+	changes, ok := bv.commits[key]
+	if !ok {
+		return nil
+	}
+	if len(changes) == 0 {
+		return []component.Row{bv.commitInfoRow("no SCM changes recorded")}
+	}
+	// Jenkins returns changes oldest-first; render newest commit on top.
+	rows := make([]component.Row, 0, len(changes))
+	for i := len(changes) - 1; i >= 0; i-- {
+		rows = append(rows, bv.commitRow(changes[i]))
+	}
+	return rows
+}
+
+// commitRow renders one commit as a muted sub-row: the message under the REF
+// (flex) column, the commit's relative time under STARTED, and the author under
+// TRIGGERED BY. STATUS and DURATION are left blank.
+func (bv *BuildsView) commitRow(c jmodel.Change) component.Row {
+	summary := c.Message
+	if i := strings.IndexByte(summary, '\n'); i >= 0 {
+		summary = summary[:i]
+	}
+	dim := bv.theme.Log.Dim
+	return component.Row{dim.Render("  " + summary), "", "", dim.Render(relativeTime(c.Timestamp)), dim.Render(decodeName(c.Author))}
+}
+
+// descriptionRowsFor renders a build's description as muted sub-rows in the
+// accordion when the commit accordion is off — one row per line, newline-aware
+// and kept raw (no markup stripping). Callers gate on a non-empty description.
+func (bv *BuildsView) descriptionRowsFor(b UnifiedBuild) []component.Row {
+	dim := bv.theme.Log.Dim
+	lines := strings.Split(strings.TrimRight(b.Description, "\n"), "\n")
+	rows := make([]component.Row, 0, len(lines))
+	for _, ln := range lines {
+		rows = append(rows, component.Row{dim.Render("  " + ln), "", "", "", ""})
+	}
+	return rows
+}
+
+// commitInfoRow renders a single muted placeholder sub-row (loading/error/empty).
+func (bv *BuildsView) commitInfoRow(text string) component.Row {
+	return component.Row{bv.theme.Log.Dim.Render("  " + text), "", "", "", ""}
+}
+
+// fetchCommitsCmd loads a build's SCM commits off the UI thread. It hits the same
+// usecase.GetChanges path as the `changes` CLI verb and get_changes MCP tool.
+func (bv *BuildsView) fetchCommitsCmd(b UnifiedBuild) tea.Cmd {
+	key := bv.buildKey(b)
+	deps := usecase.Deps{Client: bv.client, Store: bv.store}
+	ctx := bv.ctx
+	jobPath := b.JobPath
+	num := b.Number
+	return func() tea.Msg {
+		changes, err := deps.GetChanges(ctx, jobPath, num)
+		return buildCommitsMsg{key: key, changes: changes, err: err}
+	}
+}
+
+// fetchExpandedCommits fires a commit fetch for the selected build if its commits
+// are not already loaded or in flight, marking it loading for the placeholder row.
+func (bv *BuildsView) fetchExpandedCommits() tea.Cmd {
+	b, ok := bv.selectedBuild()
+	if !ok || b.Queued {
+		return nil
+	}
+	key := bv.buildKey(b)
+	if _, done := bv.commits[key]; done {
+		return nil
+	}
+	if bv.commitLoading[key] {
+		return nil
+	}
+	if bv.commitLoading == nil {
+		bv.commitLoading = map[string]bool{}
+	}
+	bv.commitLoading[key] = true
+	return bv.fetchCommitsCmd(b)
+}
+
+// syncExpansion keeps the follow-cursor accordion pointed at the selected build.
+// On a selection change it re-pins the expansion, splices the sub-rows under the
+// new build, and fetches its commits if needed. No-op when commits are hidden.
+func (bv *BuildsView) syncExpansion() tea.Cmd {
+	key := bv.selectedBuildKey()
+	if key == bv.expandedKey {
+		return nil
+	}
+	bv.expandedKey = key
+	var cmd tea.Cmd
+	if bv.showCommits {
+		cmd = bv.fetchExpandedCommits()
+	}
+	bv.repopulatePinned()
+	return cmd
+}
+
+// ToggleCommits flips the follow-cursor commit accordion. When enabled, the
+// selected build expands inline to show its SCM commits.
+func (bv *BuildsView) ToggleCommits() tea.Cmd {
+	bv.showCommits = !bv.showCommits
+	// The accordion follows the cursor in both modes: commits when on, the
+	// selected build's description when off (expands only if one exists).
+	bv.expandedKey = bv.selectedBuildKey()
+	var cmd tea.Cmd
+	if bv.showCommits {
+		cmd = bv.fetchExpandedCommits()
+	}
+	bv.repopulatePinned()
+	return cmd
 }
 
 // maybeFetchSelected fires fetch commands for the selected build if not already cached.
@@ -275,10 +577,8 @@ func (bv *BuildsView) maybeFetchSelected() tea.Cmd {
 func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Delegate to provider first; on handled messages repopulate and return.
 	if handled, cmds := bv.provider.HandleMsg(msg); handled {
-		cursorIdx := bv.table.Cursor()
-		bv.populateTable()
-		bv.table.SetCursor(cursorIdx)
-		return bv, tea.Batch(append(cmds, bv.maybeFetchSelected())...)
+		bv.requeryPinned()
+		return bv, tea.Batch(append(cmds, bv.maybeFetchSelected(), bv.syncExpansion())...)
 	}
 
 	// TriggerBuildResultMsg is intercepted before the host's triggerBehavior
@@ -316,12 +616,29 @@ func (bv *BuildsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return bv, bv.provider.Refresh()
 
+	case buildCommitsMsg:
+		if bv.commits == nil {
+			bv.commits = map[string][]jmodel.Change{}
+		}
+		bv.commits[msg.key] = msg.changes
+		delete(bv.commitLoading, msg.key)
+		if msg.err != nil {
+			if bv.commitErr == nil {
+				bv.commitErr = map[string]error{}
+			}
+			bv.commitErr[msg.key] = msg.err
+		} else {
+			delete(bv.commitErr, msg.key)
+		}
+		bv.repopulatePinned()
+		return bv, nil
+
 	case tea.KeyMsg:
 		if cmd, returned := bv.handleKeyMsg(msg); returned {
 			return bv, cmd
 		}
 	}
-	return bv, bv.maybeFetchSelected()
+	return bv, tea.Batch(bv.syncExpansion(), bv.maybeFetchSelected())
 }
 
 // handleKeyMsg processes view-local keys after the behavior host has had its
@@ -345,6 +662,23 @@ func (bv *BuildsView) handleKeyMsg(msg tea.KeyMsg) (tea.Cmd, bool) {
 			bv.queueCancelTarget = q
 			bv.queueDialog.Open()
 			return nil, true
+		}
+	}
+	// The "#last" alias intercepts only the stages/log drill-ins, routing them to
+	// the scope-resolving views so the destination tracks the latest build
+	// dynamically rather than baking in a number. Everything else — the
+	// build-specific host behaviors (describe/tests/artifacts/cancel) and the
+	// trigger popup lifecycle — flows through the host below, operating on the
+	// newest build the row already resolves to.
+	// While a host popup (trigger param form, cancel confirm) is open it owns all
+	// keys — its enter/esc submit or dismiss the dialog and must not be stolen by
+	// the #last drill-in below.
+	if bv.selectedIsLast() && !bv.host.HasPopup() {
+		switch msg.String() {
+		case "enter", "s":
+			return bv.openLastStages(), true
+		case "l":
+			return bv.openLastLog(), true
 		}
 	}
 	if handled, cmd := bv.host.HandleKey(msg); handled {
@@ -373,6 +707,8 @@ func (bv *BuildsView) handleKeyMsg(msg tea.KeyMsg) (tea.Cmd, bool) {
 		bv.ToggleMine()
 	case "r":
 		bv.ToggleRunning()
+	case "c":
+		return bv.ToggleCommits(), true
 	}
 	return nil, false
 }
@@ -400,6 +736,37 @@ func (bv *BuildsView) selectedJobPath() string {
 		return ""
 	}
 	return builds[di].JobPath
+}
+
+// refForSelected builds the navigation cursor for a selected row. This is the
+// one place that knows whether the cursor sits on the pinned "#last" alias, so
+// every drill-in from here — stages, log, describe, tests, artifacts — carries
+// the same alias-ness and the same display name, instead of each edge deciding
+// for itself.
+func (bv *BuildsView) refForSelected(selected UnifiedBuild) NavBuildRef {
+	return NavBuildRef{
+		Number:      selected.Number,
+		DisplayName: selected.Name,
+		IsLast:      bv.selectedIsLast(),
+	}
+}
+
+// selectedIsLast reports whether the cursor is on the pinned "#last" alias row.
+func (bv *BuildsView) selectedIsLast() bool {
+	return bv.hasLastRow && bv.table.Cursor() == 0
+}
+
+// openLastStages drills the "#last" row into the scope-resolving stages view,
+// which tracks whichever build is currently newest rather than pinning a number.
+func (bv *BuildsView) openLastStages() tea.Cmd {
+	child := NewMyBuildsView(bv.theme, bv.client, bv.store, bv.nc.AtScope(), 0)
+	return func() tea.Msg { return PushViewMsg{View: child} }
+}
+
+// openLastLog drills the "#last" row into the scope-resolving console view.
+func (bv *BuildsView) openLastLog() tea.Cmd {
+	child := NewMyConsoleView(bv.theme, bv.client, bv.store, bv.nc.AtScope(), 0)
+	return func() tea.Msg { return PushViewMsg{View: child} }
 }
 
 // selectedQueued returns the currently selected row iff it is a queued item.
@@ -496,7 +863,7 @@ func (bv *BuildsView) Breadcrumb() BreadcrumbSegment {
 
 func (bv *BuildsView) ItemCount() int {
 	if bv.filteredBuilds != nil {
-		return len(bv.filteredBuilds)
+		return bv.buildRowCount
 	}
 	return len(bv.currentBuilds())
 }
@@ -521,6 +888,12 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 			component.Filter("r", "running", bv.filters.Running),
 		)
 	}
+	// The "#last" alias resolves to the newest real build (its row maps to
+	// firstBuildIdx), so every build behavior — describe/tests/artifacts/
+	// cancel/trigger — applies to it exactly as to a normal row. It shares the
+	// path below; only the stages/log *destination* differs (handleKeyMsg routes
+	// those to the scope-tracking views), which is a key-handling concern, not a
+	// shortcut-advertisement one.
 	sc := []component.Shortcut{
 		component.Nav("enter", "stages"),
 		component.Nav("esc", "jobs"),
@@ -542,6 +915,7 @@ func (bv *BuildsView) Shortcuts() []component.Shortcut {
 	// its own shortcut, gated on resolvability of the currently selected row.
 	sc = bv.host.AppendShortcuts(sc)
 	sc = append(sc,
+		component.Filter("c", "commits", bv.showCommits),
 		component.Filter("m", "mine", bv.filters.Mine),
 		component.Filter("r", "running", bv.filters.Running),
 	)
@@ -601,7 +975,7 @@ func (bv *BuildsView) InspectTarget() (NavigationContext, bool) {
 	if selected.Queued {
 		return bv.ncForSelected(selected), true
 	}
-	return bv.ncForSelected(selected).AtBuild(selected.Number), true
+	return bv.ncForSelected(selected).AtBuildRef(bv.refForSelected(selected)), true
 }
 
 // ncForSelected returns the NavigationContext to use for navigating into a build.
@@ -631,7 +1005,12 @@ func renderBuildRef(t theme.Theme, b UnifiedBuild, level ContextLevel) string {
 	if b.Queued {
 		return renderQueuedRef(t, b, level)
 	}
-	numStr := t.Breadcrumb.BuildNum.Render(fmt.Sprintf("#%d", b.Number))
+	label := fmt.Sprintf("#%d", b.Number)
+	if b.Name != "" {
+		label = b.Name
+	}
+	// Same identity style everywhere, whether a number or a custom name.
+	numStr := t.Breadcrumb.BuildNum.Render(label)
 	switch level {
 	case CtxBranch:
 		return numStr

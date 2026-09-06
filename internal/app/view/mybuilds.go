@@ -1,7 +1,6 @@
 package view
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/Breina/Jenking/internal/cache"
@@ -53,33 +52,6 @@ func NewMyBuildsView(t theme.Theme, client jmodel.JenkinsClient, store *cache.St
 		},
 	})
 	return &MyBuildsView{ScopedView: sv}
-}
-
-// resolverParts returns breadcrumb parts for the resolved #last build.
-// Only includes what #last adds beyond the scope — no redundancy.
-func resolverParts(r *buildResolver) []component.BreadcrumbPart {
-	if r.resolvedPath == "" || r.resolvedNum == 0 {
-		return nil
-	}
-	resolvedNC := ncFromJobPath(r.resolvedPath)
-	var parts []component.BreadcrumbPart
-	if r.scope.ProjectName == "" && resolvedNC.ProjectName != "" {
-		parts = append(parts, component.BreadcrumbPart{
-			Text: shortName(decodeName(resolvedNC.ProjectName)),
-		})
-	}
-	if r.scope.BranchName == "" && resolvedNC.BranchName != "" {
-		parts = append(parts, component.BreadcrumbPart{
-			Text:      decodeName(resolvedNC.BranchName),
-			Separator: branchIcon(resolvedNC.BranchName),
-		})
-	}
-	parts = append(parts, component.BreadcrumbPart{
-		Text:       fmt.Sprintf("%d", r.resolvedNum),
-		IsBuildNum: true,
-		Separator:  " ",
-	})
-	return parts
 }
 
 // filterShortcuts returns the r/m shortcut hints for scoped views.

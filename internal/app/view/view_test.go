@@ -1,9 +1,11 @@
 package view
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Breina/Jenking/internal/domain/jmodel"
+	"github.com/Breina/Jenking/internal/tui/component"
 )
 
 func TestArtifactShortcutAction(t *testing.T) {
@@ -187,6 +189,204 @@ func TestNcFromJobPath(t *testing.T) {
 			}
 			if got := nc.JobPath(); got != tt.wantJobPath {
 				t.Errorf("JobPath() = %q, want %q", got, tt.wantJobPath)
+			}
+		})
+	}
+}
+
+// partsText flattens breadcrumb parts into a comparable string, marking build
+// parts the way the renderer does ("#44", or a bare display name).
+func partsText(parts []component.BreadcrumbPart) string {
+	var out []string
+	for _, p := range parts {
+		s := p.Text
+		if p.IsBuildNum && !p.NoHashPrefix {
+			s = "#" + s
+		}
+		out = append(out, s)
+	}
+	return strings.Join(out, "/")
+}
+
+// TestBreadcrumbAliasSplit pins the single rule: a "#last" cursor renders the
+// alias in the context and everything it resolved to in the tail, split at the
+// level the alias was anchored to.
+func TestBreadcrumbAliasSplit(t *testing.T) {
+	tests := []struct {
+		name         string
+		nc           NavigationContext
+		wantContext  string
+		wantResolved string
+	}{
+		{
+			name: "branch-anchored alias, resolved with display name",
+			nc: NavigationContext{
+				Level: CtxBuild, AliasScope: CtxBranch,
+				ProjectName: "s3-provisioning-operator", BranchName: "main",
+				Build: NavBuildRef{IsLast: true, Number: 44, DisplayName: "Release 1.0.7"},
+			},
+			wantContext:  "s3-provisioning-operator/main/#last",
+			wantResolved: "Release 1.0.7",
+		},
+		{
+			name: "branch-anchored alias, resolved without display name",
+			nc: NavigationContext{
+				Level: CtxBuild, AliasScope: CtxBranch,
+				ProjectName: "app", BranchName: "main",
+				Build: NavBuildRef{IsLast: true, Number: 44},
+			},
+			wantContext:  "app/main/#last",
+			wantResolved: "#44",
+		},
+		{
+			name: "root-anchored alias resolves project and branch into the tail",
+			nc: NavigationContext{
+				Level: CtxBuild, AliasScope: CtxRoot,
+				ProjectName: "app", BranchName: "main",
+				Build: NavBuildRef{IsLast: true, Number: 44, DisplayName: "Release 1.0.7"},
+			},
+			wantContext:  "*/#last",
+			wantResolved: "app/main/Release 1.0.7",
+		},
+		{
+			name: "project-anchored alias resolves only the branch into the tail",
+			nc: NavigationContext{
+				Level: CtxBuild, AliasScope: CtxProject,
+				ProjectName: "app", BranchName: "main",
+				Build: NavBuildRef{IsLast: true, Number: 44},
+			},
+			wantContext:  "app/#last",
+			wantResolved: "main/#44",
+		},
+		{
+			name: "unresolved alias keeps the stage in the context",
+			nc: NavigationContext{
+				Level: CtxStage, AliasScope: CtxBranch,
+				ProjectName: "app", BranchName: "main", StageName: "Deploy",
+				Build: NavBuildRef{IsLast: true},
+			},
+			wantContext:  "app/main/#last/Deploy",
+			wantResolved: "",
+		},
+		{
+			name: "resolved alias carries the stage into the tail",
+			nc: NavigationContext{
+				Level: CtxStage, AliasScope: CtxBranch,
+				ProjectName: "app", BranchName: "main", StageName: "Deploy",
+				Build: NavBuildRef{IsLast: true, Number: 44},
+			},
+			wantContext:  "app/main/#last",
+			wantResolved: "#44/Deploy",
+		},
+		{
+			name: "no alias renders everything as context",
+			nc: NavigationContext{
+				Level:       CtxBuild,
+				ProjectName: "app", BranchName: "main",
+				Build: NavBuildRef{Number: 44, DisplayName: "Release 1.0.7"},
+			},
+			wantContext:  "app/main/Release 1.0.7",
+			wantResolved: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seg := BreadcrumbFor("stages", tt.nc, tt.nc.Level)
+			if got := partsText(seg.Context); got != tt.wantContext {
+				t.Errorf("Context = %q, want %q", got, tt.wantContext)
+			}
+			if got := partsText(seg.ResolvedParts); got != tt.wantResolved {
+				t.Errorf("ResolvedParts = %q, want %q", got, tt.wantResolved)
+			}
+		})
+	}
+}
+
+// TestBreadcrumbStableAcrossViewHops walks the navigation edges from the three
+// flows that used to disagree — the same build reached three ways must produce
+// one breadcrumb, whatever view renders it.
+func TestBreadcrumbStableAcrossViewHops(t *testing.T) {
+	branch := NavigationContext{Level: CtxBranch, ProjectName: "s3-provisioning-operator", BranchName: "main"}
+	resolved := NavBuildRef{Number: 44, DisplayName: "Release 1.0.7"}
+
+	// The scoped stages view resolves the alias.
+	scoped := branch.AtLastBuild(resolved)
+	// Sibling swaps (describe/log/tests/artifacts) forward the nc verbatim.
+	describe := scoped
+	// …and back to stages, and on into a stage log and back out again.
+	stages := describe
+	stageLog := stages.AtStage("Deploy")
+	backToStages := stageLog.AtBuildRef(stageLog.Build)
+	// Drilling in from the pinned "#last" row of the builds view.
+	fromLastRow := branch.AtBuildRef(NavBuildRef{Number: 44, DisplayName: "Release 1.0.7", IsLast: true})
+
+	want := BreadcrumbFor("stages", scoped, CtxBuild)
+	for name, nc := range map[string]NavigationContext{
+		"describe":                   describe,
+		"stages":                     stages,
+		"back to stages":             backToStages,
+		"from #last row":             fromLastRow,
+		"stage log clipped to build": stageLog,
+	} {
+		got := BreadcrumbFor("stages", nc, CtxBuild)
+		if partsText(got.Context) != partsText(want.Context) ||
+			partsText(got.ResolvedParts) != partsText(want.ResolvedParts) {
+			t.Errorf("%s: got (%q → %q), want (%q → %q)", name,
+				partsText(got.Context), partsText(got.ResolvedParts),
+				partsText(want.Context), partsText(want.ResolvedParts))
+		}
+	}
+
+	// Pinning to a concrete number is the one edge that drops the alias.
+	pinned := BreadcrumbFor("stages", branch.AtBuild(44), CtxBuild)
+	if len(pinned.ResolvedParts) != 0 || partsText(pinned.Context) != "s3-provisioning-operator/main/#44" {
+		t.Errorf("AtBuild should pin, got (%q → %q)", partsText(pinned.Context), partsText(pinned.ResolvedParts))
+	}
+}
+
+// TestScopedViewTargetNC checks that the resolving view writes its resolution
+// into the nc — the value handed to the inner view and to every view swapped in
+// from it — rather than into a breadcrumb field only it can render.
+func TestScopedViewTargetNC(t *testing.T) {
+	tests := []struct {
+		name         string
+		scope        NavigationContext
+		wantContext  string
+		wantResolved string
+	}{
+		{
+			name:         "branch scope",
+			scope:        NavigationContext{Level: CtxBranch, FolderPath: "folder", ProjectName: "app", BranchName: "main"},
+			wantContext:  "app/main/#last",
+			wantResolved: "Release 1.0.7",
+		},
+		{
+			name:         "root scope resolves the location too",
+			scope:        NavigationContext{Level: CtxRoot},
+			wantContext:  "*/#last",
+			wantResolved: "app/main/Release 1.0.7",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sv := &ScopedView{cfg: ScopedViewConfig{BreadcrumbType: "stages"}}
+			sv.resolver.scope = tt.scope
+			sv.resolver.resolvedPath = "folder/app/main"
+			sv.resolver.resolvedNum = 44
+			sv.resolver.resolvedName = "Release 1.0.7"
+
+			seg := sv.Breadcrumb()
+			if got := partsText(seg.Context); got != tt.wantContext {
+				t.Errorf("Context = %q, want %q", got, tt.wantContext)
+			}
+			if got := partsText(seg.ResolvedParts); got != tt.wantResolved {
+				t.Errorf("ResolvedParts = %q, want %q", got, tt.wantResolved)
+			}
+			// The inner view's nc must render the identical breadcrumb.
+			inner := BreadcrumbFor("stages", sv.targetNC(), CtxBuild)
+			if partsText(inner.Context) != partsText(seg.Context) ||
+				partsText(inner.ResolvedParts) != partsText(seg.ResolvedParts) {
+				t.Errorf("inner nc diverges: (%q → %q)", partsText(inner.Context), partsText(inner.ResolvedParts))
 			}
 		})
 	}

@@ -96,6 +96,7 @@ type Header struct {
 	runningCount  int
 	runningKey    string // key letter shown next to count when > 0
 	queuedCount   int
+	scanCount     int
 	filterMine    bool
 	debug         bool
 	// debug counters (only used when debug=true)
@@ -156,6 +157,13 @@ func (h *Header) SetQueuedBuilds(count int) {
 	h.queuedCount = count
 }
 
+// SetQueuedScans updates the queued branch-indexing scan count. It is shown
+// apart from the queued builds count: a scan produces no build, so folding it
+// into "Queued" overstates the work that is actually waiting to run.
+func (h *Header) SetQueuedScans(count int) {
+	h.scanCount = count
+}
+
 // SetURL updates the server URL shown in the header.
 func (h *Header) SetURL(url string) {
 	h.url = url
@@ -210,6 +218,12 @@ func (h Header) View() string {
 	if h.queuedCount > 0 {
 		runningStr += "   " + t.Header.Label.Render("Queued:") + " " +
 			t.Header.RunningBadge.Render(fmt.Sprintf("⏳ %d", h.queuedCount))
+	}
+	// Scans follow the same rule but stay visually quieter: they are background
+	// housekeeping, not work the user is waiting on.
+	if h.scanCount > 0 {
+		runningStr += "   " + t.Header.Label.Render("Scans:") + " " +
+			t.Header.Value.Faint(true).Render(fmt.Sprintf("⏳ %d", h.scanCount))
 	}
 
 	userValue := t.Header.Value.Render(h.user)

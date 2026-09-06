@@ -3,11 +3,11 @@ package view
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/Breina/Jenking/internal/cache"
+	"github.com/Breina/Jenking/internal/domain/jmodel"
 )
 
 // DeepLinkKind classifies the view a clipboard URL points to.
@@ -35,20 +35,28 @@ type DeepLink struct {
 // origin does not match baseURL. The job cache is consulted to split the
 // /job/<name>/... chain into folder + project + branch; when the cache is cold
 // the presence of a Jenkins /view/<name>/ marker is used as a fallback signal
-// that the leaf segment is a multibranch branch rather than the project.
+// that the leaf segment is a multibranch branch rather than the project. The
+// marker's name is also captured into NC.ViewName, so pasting a view URL lands
+// on the job list filtered by that view.
 func ParseJenkinsURL(baseURL, rawURL string, store *cache.Store) (*DeepLink, error) {
-	segs, err := extractPathSegments(baseURL, rawURL)
+	segs, err := jmodel.URLPathSegments(baseURL, rawURL)
 	if err != nil {
 		return nil, err
 	}
-	jobSegs, hadView, trailing := walkJobChain(segs)
-	if len(jobSegs) == 0 {
+	chain := jmodel.WalkJobChain(segs)
+	if len(chain.Segs) == 0 {
+		// A bare view URL (…/view/Team%20Infra/) names no job, but it does name
+		// a job list: the view's own.
+		if chain.ViewName != "" {
+			return viewDeepLink(chain.ViewName), nil
+		}
 		return nil, errors.New("URL has no /job/ segments")
 	}
 
-	folderPath, projectName, branchName := resolveJobSegs(jobSegs, store, hadView)
-	buildNum, trailingKind := splitTrailing(trailing)
+	folderPath, projectName, branchName := resolveJobSegs(chain.Segs, store, chain.HadView)
+	buildNum, trailingKind := splitTrailing(chain.Trailing)
 	nc := buildDeepLinkNC(folderPath, projectName, branchName, buildNum)
+	nc.ViewName = chain.ViewName
 
 	kind, kindLabel := classifyDeepLink(buildNum, trailingKind, nc.Level)
 	return &DeepLink{
@@ -58,53 +66,14 @@ func ParseJenkinsURL(baseURL, rawURL string, store *cache.Store) (*DeepLink, err
 	}, nil
 }
 
-// extractPathSegments validates rawURL against baseURL and returns the path's
-// slash-separated segments (after stripping the origin, query, fragment, and
-// surrounding slashes).
-func extractPathSegments(baseURL, rawURL string) ([]string, error) {
-	if baseURL == "" || rawURL == "" {
-		return nil, errors.New("empty URL")
+// viewDeepLink builds the deeplink for a bare Jenkins view URL: the job list
+// filtered by that view.
+func viewDeepLink(viewName string) *DeepLink {
+	return &DeepLink{
+		Kind:  DeepLinkJobs,
+		NC:    NavigationContext{Level: CtxRoot, ViewName: viewName},
+		Label: "jobs · " + viewName,
 	}
-	rawURL = strings.TrimSpace(rawURL)
-	base := strings.TrimRight(baseURL, "/")
-	if rawURL != base && !strings.HasPrefix(rawURL, base+"/") {
-		return nil, errors.New("URL does not match current Jenkins context")
-	}
-	path := strings.TrimPrefix(rawURL, base)
-	if i := strings.IndexAny(path, "?#"); i >= 0 {
-		path = path[:i]
-	}
-	path = strings.Trim(path, "/")
-	if path == "" {
-		return nil, errors.New("URL has no path")
-	}
-	return strings.Split(path, "/"), nil
-}
-
-// walkJobChain consumes /job/<name>/ pairs from the head of segs into the
-// jobSegs list, transparently skipping /view/<name>/ pairs (the Jenkins UI
-// grouping marker is set in hadView). The first non-matching segment and the
-// rest are returned as trailing.
-func walkJobChain(segs []string) (jobSegs []string, hadView bool, trailing []string) {
-	i := 0
-	for i < len(segs) {
-		seg := segs[i]
-		switch {
-		case seg == "job" && i+1 < len(segs):
-			decoded, err := url.PathUnescape(segs[i+1])
-			if err != nil {
-				decoded = segs[i+1]
-			}
-			jobSegs = append(jobSegs, decoded)
-			i += 2
-		case seg == "view" && i+1 < len(segs):
-			hadView = true
-			i += 2
-		default:
-			return jobSegs, hadView, segs[i:]
-		}
-	}
-	return jobSegs, hadView, nil
 }
 
 // splitTrailing extracts (build number, view-kind segment) from the part of

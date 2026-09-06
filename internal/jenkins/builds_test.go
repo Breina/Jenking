@@ -279,7 +279,8 @@ func TestParseFlowGraphTable_Duration(t *testing.T) {
 	if len(stages) != 1 {
 		t.Fatalf("expected 1 stage, got %d", len(stages))
 	}
-	want := 4*time.Minute + 13*time.Second
+	// Midpoint of the truncated "4 min 13 sec" Jenkins renders.
+	want := 4*time.Minute + 13*time.Second + 500*time.Millisecond
 	if stages[0].Duration != want {
 		t.Errorf("stage.Duration = %v, want %v", stages[0].Duration, want)
 	}
@@ -353,11 +354,20 @@ func TestParseDurationText(t *testing.T) {
 		input string
 		want  time.Duration
 	}{
-		{"4 min 13 sec", 4*time.Minute + 13*time.Second},
-		{"6.4 sec", 6400 * time.Millisecond},
-		{"39 ms", 39 * time.Millisecond},
-		{"1 hr 2 min 3 sec", time.Hour + 2*time.Minute + 3*time.Second},
-		{"0.14 sec", 140 * time.Millisecond},
+		// Jenkins truncates when rendering these strings, so each parses to the
+		// midpoint of the interval it represents (value + half its quantum).
+		{"4 min 13 sec", 4*time.Minute + 13*time.Second + 500*time.Millisecond},
+		{"6.4 sec", 6450 * time.Millisecond},
+		{"39 ms", 39*time.Millisecond + 500*time.Microsecond},
+		{"1 hr 2 min 3 sec", time.Hour + 2*time.Minute + 3*time.Second + 500*time.Millisecond},
+		{"0.14 sec", 145 * time.Millisecond},
+		// Units below the two most significant ones are dropped entirely.
+		{"12 min", 12*time.Minute + 30*time.Second},
+		{"47 sec", 47*time.Second + 500*time.Millisecond},
+		{"11 hr", 11*time.Hour + 30*time.Minute},
+		// No recognisable unit: no value, no correction.
+		{"", 0},
+		{"n/a", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

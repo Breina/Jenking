@@ -37,7 +37,7 @@ type Store struct {
 	BuildDetail   *Cache[string, jmodel.Build]            // key: "jobPath:buildNum"
 	PendingInputs *Cache[string, []jmodel.PendingInput]   // key: "jobPath:buildNum"
 	Symbols       *Cache[string, *pipelinesyntax.Symbols] // key: "jobPath#buildNum"
-	RepoURLs      *Cache[string, string]                  // key: jobPath; "" = no SCM URL
+	RepoURLs      *Cache[string, string]                  // key: jobPath; "" = no SCM URL (unlimited: reverse SCM index)
 
 	// Registry is the single source of truth for build status.
 	Registry *buildregistry.Registry
@@ -63,7 +63,7 @@ func NewStore(disk *DiskStore) *Store {
 		BuildDetail:   New[string, jmodel.Build](100),
 		PendingInputs: New[string, []jmodel.PendingInput](100),
 		Symbols:       New[string, *pipelinesyntax.Symbols](200),
-		RepoURLs:      New[string, string](200),
+		RepoURLs:      New[string, string](0),
 		Queue:         NewQueueStore(),
 		Disk:          disk,
 		dirtyJobs:     make(map[string]bool),
@@ -71,16 +71,19 @@ func NewStore(disk *DiskStore) *Store {
 	}
 	// Registry: persistent build-status truth. Reconcile is wired by the app
 	// (which owns the JenkinsClient) via Registry.SetReconcile.
+	// The persist callback runs on the mutating goroutine — including the UI
+	// thread when the all-builds scan ingests. Route it through an async
+	// coalescing writer so a flock'd registry read-modify-write never blocks the
+	// caller (and never freezes the TUI event loop).
 	var persist buildregistry.PersistFn
 	if disk != nil {
-		persist = func(records []buildregistry.Record) {
-			_ = disk.SaveRegistry(records)
-		}
+		ap := newAsyncPersister(disk.SaveRegistryMerged)
+		persist = ap.persist
 	}
 	s.Registry = buildregistry.New(buildregistry.Config{Persist: persist})
 	if disk != nil {
 		_ = disk.RemoveLegacyFiles()
-		disk.populate(s.Jobs, s.Stages, s.TestReports, s.Artifacts, s.Symbols)
+		disk.populate(s.Jobs, s.Stages, s.TestReports, s.Artifacts, s.Symbols, s.RepoURLs)
 		if records, err := disk.LoadRegistry(); err == nil && len(records) > 0 {
 			s.Registry.LoadFromDisk(records)
 		}

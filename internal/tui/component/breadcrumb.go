@@ -24,7 +24,10 @@ type BreadcrumbSegment struct {
 type BreadcrumbPart struct {
 	Text       string
 	IsBuildNum bool
-	Separator  string // ":" instead of "/" before this part; empty = default "/"
+	// NoHashPrefix suppresses the leading "#" for an IsBuildNum part. Used when
+	// the build is identified by a custom display name rather than a number.
+	NoHashPrefix bool
+	Separator    string // ":" instead of "/" before this part; empty = default "/"
 }
 
 const maxContextPartWidth = 30
@@ -147,7 +150,11 @@ func (b Breadcrumb) renderParts(parts []BreadcrumbPart) string {
 		}
 		text := shortenPart(part.Text, maxContextPartWidth)
 		if part.IsBuildNum {
-			out += st.BuildNum.Render("#" + text)
+			prefix := "#"
+			if part.NoHashPrefix {
+				prefix = ""
+			}
+			out += st.BuildNum.Render(prefix + text)
 		} else {
 			out += st.Context.Render(text)
 		}

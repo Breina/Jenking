@@ -216,10 +216,17 @@ func TestDiskStore_Populate(t *testing.T) {
 	reportsCache := New[string, *jmodel.TestReport](100)
 	artifactsCache := New[string, []jmodel.Artifact](100)
 	symbolsCache := New[string, *pipelinesyntax.Symbols](100)
-	d.populate(jobsCache, stagesCache, reportsCache, artifactsCache, symbolsCache)
+	repoURLsCache := New[string, string](0)
+	if err := d.SaveRepoURL("Code/git/omv/main", "https://github.com/org/omv/tree/main"); err != nil {
+		t.Fatalf("SaveRepoURL: %v", err)
+	}
+	d.populate(jobsCache, stagesCache, reportsCache, artifactsCache, symbolsCache, repoURLsCache)
 
 	if e := jobsCache.Get("Code"); e == nil || len(e.Value) != 1 {
 		t.Errorf("Jobs not populated: %v", e)
+	}
+	if e := repoURLsCache.Get("Code/git/omv/main"); e == nil || e.Value == "" {
+		t.Errorf("RepoURLs not populated: %v", e)
 	}
 	if e := stagesCache.Get("job:1"); e == nil || len(e.Value) != 1 {
 		t.Errorf("Stages not populated: %v", e)

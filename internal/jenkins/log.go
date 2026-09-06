@@ -42,7 +42,38 @@ func (c *Client) GetConsoleOutput(ctx context.Context, jobPath string, number in
 // GetProgressiveLog fetches console output starting at byte offset start.
 // Poll with NextStart from the returned value until MoreData is false.
 func (c *Client) GetProgressiveLog(ctx context.Context, jobPath string, number, start int) (*jmodel.ProgressiveLog, error) {
-	path := fmt.Sprintf("%s/%d/logText/progressiveText?start=%d", jmodel.JobPathToURL(jobPath), number, start)
+	return c.progressiveAt(ctx, fmt.Sprintf("%s/%d", jmodel.JobPathToURL(jobPath), number), start)
+}
+
+// scanRunURL is the URL of a container's scan run — branch indexing on a
+// multibranch project, or the computation of a folder. Jenkins serves both at
+// "computation"; "indexing" is a multibranch-only alias for the same object, so
+// one path covers every scannable container and no caller has to know which
+// kind it is holding.
+func scanRunURL(jobPath string) string {
+	return jmodel.JobPathToURL(jobPath) + "/computation"
+}
+
+// GetScanLogProgressive fetches a container's scan log from byte offset start,
+// with the same semantics as GetProgressiveLog. A container that has never been
+// scanned returns an HTTPError with status 404.
+func (c *Client) GetScanLogProgressive(ctx context.Context, jobPath string, start int) (*jmodel.ProgressiveLog, error) {
+	return c.progressiveAt(ctx, scanRunURL(jobPath), start)
+}
+
+// GetScanConsoleText reads a container's entire scan log.
+func (c *Client) GetScanConsoleText(ctx context.Context, jobPath string) (string, error) {
+	data, err := c.get(ctx, scanRunURL(jobPath)+"/consoleText")
+	if err != nil {
+		return "", fmt.Errorf("get scan log for %s: %w", jobPath, err)
+	}
+	return string(data), nil
+}
+
+// progressiveAt reads Jenkins' progressive text stream for any run — a build or
+// a container's scan — given the run's base URL.
+func (c *Client) progressiveAt(ctx context.Context, runURL string, start int) (*jmodel.ProgressiveLog, error) {
+	path := fmt.Sprintf("%s/logText/progressiveText?start=%d", runURL, start)
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {

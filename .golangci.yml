@@ -53,8 +53,6 @@ linters:
               desc: "domain must not depend on UI"
             - pkg: "github.com/Breina/Jenking/internal/monitor"
               desc: "domain must not depend on app layer"
-            - pkg: "github.com/Breina/Jenking/internal/action"
-              desc: "domain must not depend on app layer"
             - pkg: "github.com/Breina/Jenking/internal/notify"
               desc: "domain must not depend on adapters"
             - pkg: "github.com/Breina/Jenking/internal/updater"
@@ -83,8 +81,6 @@ linters:
               desc: "tui framework must be Jenking-agnostic"
             - pkg: "github.com/Breina/Jenking/internal/monitor"
               desc: "tui framework must be Jenking-agnostic"
-            - pkg: "github.com/Breina/Jenking/internal/action"
-              desc: "tui framework must be Jenking-agnostic"
             - pkg: "github.com/Breina/Jenking/internal/config"
               desc: "tui framework must be Jenking-agnostic"
             - pkg: "github.com/Breina/Jenking/internal/notify"
@@ -104,8 +100,6 @@ linters:
               desc: "adapters must not depend on UI"
             - pkg: "github.com/Breina/Jenking/internal/monitor"
               desc: "adapters must not depend on app layer"
-            - pkg: "github.com/Breina/Jenking/internal/action"
-              desc: "adapters must not depend on app layer"
             - pkg: "github.com/Breina/Jenking/internal/cache"
               desc: "adapters must not depend on other adapters"
             - pkg: "github.com/Breina/Jenking/internal/notify"
@@ -123,8 +117,6 @@ linters:
             - pkg: "github.com/Breina/Jenking/internal/tui"
               desc: "adapters must not depend on UI"
             - pkg: "github.com/Breina/Jenking/internal/monitor"
-              desc: "adapters must not depend on app layer"
-            - pkg: "github.com/Breina/Jenking/internal/action"
               desc: "adapters must not depend on app layer"
 
         adapter-notify:
@@ -149,16 +141,35 @@ linters:
             - pkg: "github.com/Breina/Jenking/internal/jenkins"
               desc: "adapters must not depend on other adapters"
 
-        # ---- app/monitor + app/action: must not reach into UI internals ---
-        # They emit bubbletea.Msg; views consume.
+        # ---- app/monitor: must not reach into UI internals ---------------
+        # It emits bubbletea.Msg; views consume.
         app-headless:
           list-mode: lax
           files:
             - "**/internal/monitor/**"
-            - "**/internal/action/**"
           deny:
             - pkg: "github.com/Breina/Jenking/internal/app/view"
               desc: "headless app code must not reach into UI views; emit a bubbletea.Msg instead (architecture.md §6.1)"
+            - pkg: "github.com/Breina/Jenking/internal/tui/component"
+              desc: "headless app code must not reach into UI components"
+            - pkg: "github.com/Breina/Jenking/cmd"
+              desc: "app must not depend on cmd; cmd wires app"
+
+        # ---- app headless sublayer: usecase/dto/engine/mcp -----------------
+        # Shared by the headless MCP server, so unlike monitor these must
+        # be tea-free (no bubbletea) in addition to never reaching into the UI.
+        app-headless-pure:
+          list-mode: lax
+          files:
+            - "**/internal/app/usecase/**"
+            - "**/internal/app/dto/**"
+            - "**/internal/app/engine/**"
+            - "**/internal/app/mcp/**"
+          deny:
+            - pkg: "github.com/charmbracelet/bubbletea"
+              desc: "usecase/dto/engine/mcp must be tea-free — they are shared by the headless MCP server (architecture.md §3)"
+            - pkg: "github.com/Breina/Jenking/internal/app/view"
+              desc: "headless app code must not reach into UI views"
             - pkg: "github.com/Breina/Jenking/internal/tui/component"
               desc: "headless app code must not reach into UI components"
             - pkg: "github.com/Breina/Jenking/cmd"

@@ -122,7 +122,8 @@ type RunningBuildsUpdatedMsg struct {
 	Arrived     []string
 	Departed    []string
 	Count       int
-	QueuedCount int
+	QueuedCount int // queued builds only
+	ScanCount   int // queued branch-indexing scans, counted separately
 }
 
 // ConnectionLostMsg is emitted by the RunningBuildsMonitor when a poll fails.

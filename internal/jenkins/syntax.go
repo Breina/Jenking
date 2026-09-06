@@ -32,52 +32,6 @@ func defaultUserGDSLDir() string {
 	return ""
 }
 
-// ApplyJobParameters fetches the job's parameter definitions and exposes each
-// one as a member of the `params` global, so `params.RELEASE_TAG` etc. get
-// proper completion. Param definitions live on the JOB (not per-build), so
-// this is fast — one API call per describe-view open.
-//
-// Best-effort: a transport error or a non-parameterised job leaves sym
-// untouched.
-func (c *Client) ApplyJobParameters(ctx context.Context, sym *pipelinesyntax.Symbols, jobPath string) {
-	if sym == nil || c == nil {
-		return
-	}
-	defs, err := c.GetJobParameters(ctx, jobPath)
-	if err != nil || len(defs) == 0 {
-		return
-	}
-	members := make([]pipelinesyntax.Member, 0, len(defs))
-	for _, d := range defs {
-		menu := fmt.Sprintf("params.%s : %s", d.Name, d.Type)
-		doc := d.Description
-		if d.Default != "" {
-			if doc != "" {
-				doc += "\n\n"
-			}
-			doc += "Default: " + d.Default
-		}
-		if len(d.Choices) > 0 {
-			if doc != "" {
-				doc += "\n\n"
-			}
-			doc += "Choices: " + strings.Join(d.Choices, ", ")
-		}
-		members = append(members, pipelinesyntax.Member{
-			Name: d.Name, Signature: menu, Doc: doc,
-		})
-	}
-	for i := range sym.Globals {
-		if sym.Globals[i].Name == "params" {
-			sym.Globals[i].Members = append(sym.Globals[i].Members, members...)
-			return
-		}
-	}
-	sym.Globals = append(sym.Globals, pipelinesyntax.GlobalVar{
-		Name: "params", Doc: "jmodel.Build parameters", Members: members,
-	})
-}
-
 // ApplyUserGDSL re-reads UserGDSLDir and overlays its members onto sym.
 // Idempotent — repeated calls don't duplicate entries, because each call
 // resets Members on user-declared globals before re-attaching the freshly

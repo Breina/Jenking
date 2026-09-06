@@ -47,14 +47,25 @@ type Tree struct {
 	search   *regexp.Regexp
 
 	cursorPath string // remembered to restore the cursor across rebuilds
+
+	hideLeafValues bool   // render leaves as bare keys (values are payload, not text)
+	emptyText      string // placeholder shown when there are no rows
 }
 
 // NewTree creates an empty tree.
 func NewTree(t theme.Theme) Tree {
-	return Tree{theme: t, expanded: map[string]bool{}, width: 80, height: 20}
+	return Tree{theme: t, expanded: map[string]bool{}, width: 80, height: 20, emptyText: "(no metadata)"}
 }
 
 func (t *Tree) SetTheme(th theme.Theme) { t.theme = th }
+
+// HideLeafValues renders leaves as their key alone instead of "key = value",
+// and excludes values from search matching. Use it when the value carries a
+// payload the user shouldn't see (e.g. a URL behind a file name).
+func (t *Tree) HideLeafValues() { t.hideLeafValues = true }
+
+// SetEmptyText overrides the placeholder rendered when the tree has no rows.
+func (t *Tree) SetEmptyText(s string) { t.emptyText = s }
 
 func (t *Tree) SetSize(w, h int) {
 	t.width = w
@@ -177,6 +188,16 @@ func (t *Tree) SelectedValue() (string, bool) {
 	return r.value, true
 }
 
+// Selected reports the cursor node's key, value and container flag. Unlike
+// SelectedValue it also describes containers, so callers can act on a folder.
+func (t *Tree) Selected() (key, value string, container, ok bool) {
+	r, found := t.cursorRow()
+	if !found {
+		return "", "", false, false
+	}
+	return r.key, r.value, r.container, true
+}
+
 func (t *Tree) ScrollOffset() int  { return t.offset }
 func (t *Tree) TotalRows() int     { return len(t.rows) }
 func (t *Tree) ContentHeight() int { return t.viewHeight() }
@@ -295,12 +316,15 @@ func (t *Tree) matches(n TreeNode) bool {
 	if t.search == nil {
 		return false
 	}
-	return t.search.MatchString(n.Key) || (!n.Container && t.search.MatchString(n.Value))
+	if t.search.MatchString(n.Key) {
+		return true
+	}
+	return !n.Container && !t.hideLeafValues && t.search.MatchString(n.Value)
 }
 
 func (t *Tree) View() string {
 	if len(t.rows) == 0 {
-		return t.theme.Log.Dim.Render("(no metadata)")
+		return t.theme.Log.Dim.Render(t.emptyText)
 	}
 	vh := t.viewHeight()
 	end := t.offset + vh
@@ -333,7 +357,7 @@ func (t *Tree) renderRow(r treeRow, selected bool) string {
 		if r.hasKids {
 			label = r.key + " " + t.theme.Breadcrumb.Paren.Render("["+strconv.Itoa(t.childCount(r))+"]")
 		}
-	} else {
+	} else if !t.hideLeafValues {
 		label = r.key + t.theme.Breadcrumb.Paren.Render(" = ") + r.value
 	}
 

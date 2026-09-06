@@ -64,6 +64,15 @@ type artifactBehavior struct {
 	store    func() *cache.Store // lazy: some views set store after construction
 	access   buildAccessor
 	navigate navigateCmd
+
+	// observed is the artifact list delivered by the most recent
+	// ArtifactsMsg, keyed by the build it describes. The store cache is not a
+	// reliable channel on its own: fetchArtifacts only persists a list once
+	// the registry has confirmed the build terminal, which lags the moment a
+	// view observes the build finish. Holding the delivered list here means
+	// "A" lights up as soon as the data arrives, cached or not.
+	observed    []jmodel.Artifact
+	observedKey string
 }
 
 // newArtifactBehavior wires the artifact shortcut for a fixed-build view.
@@ -76,21 +85,38 @@ func newArtifactBehavior(t theme.Theme, client jmodel.JenkinsClient, store func(
 
 func (b *artifactBehavior) SetTheme(t theme.Theme) { b.theme = t }
 
-func (b *artifactBehavior) HandleMsg(tea.Msg) (bool, tea.Cmd) { return false, nil }
-func (b *artifactBehavior) PopupView() string                 { return "" }
-
-// resolve returns the cached artifact list and matching nc/build if all
-// preconditions hold (store present, build number known, cache hit, non-empty).
-func (b *artifactBehavior) resolve() (nc NavigationContext, build jmodel.Build, arts []jmodel.Artifact, ok bool) {
-	store := b.store()
-	if store == nil {
-		return
+// HandleMsg records the artifact list carried by an ArtifactsMsg. It never
+// claims the message: list views run their own artifactTracker on the same
+// broadcast, and consuming it here would starve them.
+func (b *artifactBehavior) HandleMsg(msg tea.Msg) (bool, tea.Cmd) {
+	am, ok := msg.(ArtifactsMsg)
+	if !ok || am.Err != nil {
+		return false, nil
 	}
+	b.observed = am.Artifacts
+	b.observedKey = testKey(am.JobPath, am.BuildNum)
+	return false, nil
+}
+
+func (b *artifactBehavior) PopupView() string { return "" }
+
+// resolve returns the artifact list for the view's current build and the
+// matching nc/build, preferring the list this behavior was handed over the
+// store cache (which may not have been written — see the observed field).
+func (b *artifactBehavior) resolve() (nc NavigationContext, build jmodel.Build, arts []jmodel.Artifact, ok bool) {
 	nc, build, ok = b.access()
 	if !ok {
 		return NavigationContext{}, jmodel.Build{}, nil, false
 	}
-	entry := store.Artifacts.Get(testKey(nc.JobPath(), build.Number))
+	key := testKey(nc.JobPath(), build.Number)
+	if key == b.observedKey && len(b.observed) > 0 {
+		return nc, build, b.observed, true
+	}
+	store := b.store()
+	if store == nil {
+		return NavigationContext{}, jmodel.Build{}, nil, false
+	}
+	entry := store.Artifacts.Get(key)
 	if entry == nil || len(entry.Value) == 0 {
 		return NavigationContext{}, jmodel.Build{}, nil, false
 	}

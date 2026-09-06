@@ -14,7 +14,7 @@ import (
 // the jobs panel updates.
 func TestNavigationDrillIn(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys("<enter>")
 
@@ -31,7 +31,7 @@ func TestNavigationDrillIn(t *testing.T) {
 // TestNavigationEscBack verifies that Esc from a sub-view returns to the dashboard.
 func TestNavigationEscBack(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	// Drill into the first item (might be folder or job)
 	h.SendKeys("<enter>")
@@ -40,8 +40,8 @@ func TestNavigationEscBack(t *testing.T) {
 	// Press Esc to go back
 	h.SendKeys("<esc>")
 
-	if err := h.WaitForText("Dashboard", harness.NetworkTimeout); err != nil {
-		t.Fatalf("did not return to Dashboard after Esc: %v", err)
+	if err := h.WaitForText("jobs(", harness.NetworkTimeout); err != nil {
+		t.Fatalf("did not return to the job list after Esc: %v", err)
 	}
 	h.MustSnapshot(t, "navigation-esc-back")
 }
@@ -49,7 +49,7 @@ func TestNavigationEscBack(t *testing.T) {
 // TestNavigationMyBuilds verifies the 'm' key navigates to a user-filtered builds view.
 func TestNavigationMyBuilds(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "jobs(Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys("m")
 
@@ -66,7 +66,7 @@ func TestNavigationMyBuilds(t *testing.T) {
 		// Acceptable: if the user truly has zero builds, we might not see any
 		// of the above text but the app should still be alive.
 		t.Logf("my builds returned no content (may be empty): %v", err)
-		if !h.Contains("dashboard") && !h.Contains("Dashboard") {
+		if !h.Contains("dashboard") && !h.Contains("jobs(") {
 			// At least we should be alive somewhere
 			t.Fatalf("app unresponsive after 'm' key: %v", err)
 		}
@@ -77,7 +77,7 @@ func TestNavigationMyBuilds(t *testing.T) {
 // TestNavigationRunningBuilds verifies the 'R' key opens the Running Builds view.
 func TestNavigationRunningBuilds(t *testing.T) {
 	h := harness.New(t, harness.Options{BinaryPath: binaryPath})
-	h.MustWaitForText(t, "Dashboard", harness.NetworkTimeout)
+	openAllJobs(t, h)
 
 	h.SendKeys("R")
 

@@ -50,6 +50,9 @@ type PreferencesConfig struct {
 	// (without leading dot) that open in the in-TUI artifact viewer instead of
 	// the browser. Empty keeps the package default.
 	TextArtifactExtensions []string `mapstructure:"text_artifact_extensions"`
+	// LastViews remembers, per Jenkins context name, the Jenkins view whose job
+	// list was last opened, so a session resumes where the previous one left off.
+	LastViews map[string]string `mapstructure:"last_views"`
 }
 
 // VimIntegrationConfig gates the per-build vim runtime and Jenkinsfile
@@ -129,6 +132,24 @@ func (m *Manager) SetTextArtifactExtensions(exts []string) error {
 	m.Preferences.TextArtifactExtensions = exts
 	m.v.Set("preferences.text_artifact_extensions", exts)
 	return m.v.WriteConfig()
+}
+
+// SetLastView remembers the Jenkins view last opened in the given context.
+func (m *Manager) SetLastView(contextName, viewName string) error {
+	if m.Preferences.LastViews == nil {
+		m.Preferences.LastViews = map[string]string{}
+	}
+	if m.Preferences.LastViews[contextName] == viewName {
+		return nil // already recorded; don't rewrite the config on every hop
+	}
+	m.Preferences.LastViews[contextName] = viewName
+	m.v.Set("preferences.last_views", m.Preferences.LastViews)
+	return m.v.WriteConfig()
+}
+
+// LastView returns the view last opened in the given context, or "".
+func (m *Manager) LastView(contextName string) string {
+	return m.Preferences.LastViews[contextName]
 }
 
 // SetTheme persists the theme preference to the config file.
