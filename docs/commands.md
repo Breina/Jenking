@@ -129,6 +129,8 @@ jenking                                # TUI, dashboard
 jenking <verb> [args...]               # headless: print to stdout, no TUI
 jenking ui <verb> [args...]            # TUI, pre-navigated (deep-linked) to <verb>
 jenking mcp [--context <name>] [--read-only]   # MCP server over stdio (for AI agents)
+jenking mcp --http <addr> [--tls-cert f --tls-key f]   # MCP over Streamable HTTP, per-user Basic auth
+jenking mcp --daemon --url <jenkins> [--http :8808]    # server-side: no config file, auth on every request
 ```
 
 `jenking mcp` runs the long-lived Model Context Protocol server; see the
@@ -145,28 +147,28 @@ Headless verbs bypass the TUI entirely. Output goes to stdout, errors to
 stderr, exit code is 0 on success and 1 on any failure. `#last` (or omitting
 `#`) resolves the latest build by hitting the API; for multibranch projects
 this requires you to also specify the branch.
-
-| Verb        | Args                                   | Output                                              |
-|-------------|----------------------------------------|-----------------------------------------------------|
-| `views`     | `[<folder>]`                           | Views defined on the container, plus your personal views. |
-| `jobs`      | `[<folder>]` `--view <name>`           | Folders and jobs at the path; `--view` lists a Jenkins view's jobs instead. |
-| `builds`    | `<project> [<branch>]` `--mine`        | Recent build history; `--mine` keeps only builds you triggered or pushed. |
-| `running`   | `--mine`                               | Currently running builds; `--mine` keeps only builds you triggered or pushed. |
-| `queue`     | `--kind build\|scan\|all`               | The build queue. Branch-indexing scans are excluded unless asked for. |
-| `scans`     | `[<folder>]`                           | Branch-indexing scans waiting in the queue.          |
-| `scan-log`  | `<container> [--tail N]`               | Repository scan log of a multibranch project or folder. |
-| `whoami`    | none                                   | The authenticated user.                             |
-| `params`    | `<project> [<branch>]`                 | Build parameter definitions.                        |
-| `metadata`  | `<project> [<branch>]`                 | Raw Jenkins metadata.                               |
-| `artifacts` | `<project> <branch> [#N]`              | Artifact listing for a build.                       |
-| `artifact`  | `<project> <branch> [#N] <file>`       | A single artifact's contents.                       |
-| `logs`      | `<project> <branch> [#N]`              | Full console text, verbatim (always plain text).    |
-| `describe`  | `<project> <branch> [#N]`              | The build's Jenkinsfile / replay script (plain text).|
-| `tests`     | `<project> <branch> [#N]`              | JUnit test report.                                  |
-| `changes`   | `<project> <branch> [#N]` `--find <commit>` | SCM commits in the build; with `--find`, which recent builds contain a commit (prefix match, `--max-builds` caps the scan). |
-| `trigger`   | `<project> [<branch>]`                 | Trigger a build (see `-p` for parameters).          |
-| `cancel`    | `<project> <branch> #N`                | Cancel a running build.                             |
-| `dequeue`   | `<id>`                                 | Remove an item from the queue.                      |
+    
+    | Verb        | Args                                   | Output                                                                                                                      |
+    |-------------|----------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+    | `views`     | `[<folder>]`                           | Views defined on the container, plus your personal views.                                                                   |
+    | `jobs`      | `[<folder>]` `--view <name>`           | Folders and jobs at the path; `--view` lists a Jenkins view's jobs instead.                                                 |
+    | `builds`    | `<project> [<branch>]` `--mine`        | Recent build history; `--mine` keeps only builds you triggered or pushed.                                                   |
+    | `running`   | `--mine`                               | Currently running builds; `--mine` keeps only builds you triggered or pushed.                                               |
+    | `queue`     | `--kind build\|scan\|all`               | The build queue. Branch-indexing scans are excluded unless asked for.                                                       |
+    | `scans`     | `[<folder>]`                           | Branch-indexing scans waiting in the queue.                                                                                 |
+    | `scan-log`  | `<container> [--tail N]`               | Repository scan log of a multibranch project or folder.                                                                     |
+    | `whoami`    | none                                   | The authenticated user.                                                                                                     |
+    | `params`    | `<project> [<branch>]`                 | Build parameter definitions.                                                                                                |
+    | `metadata`  | `<project> [<branch>]`                 | Raw Jenkins metadata.                                                                                                       |
+    | `artifacts` | `<project> <branch> [#N]`              | Artifact listing for a build.                                                                                               |
+    | `artifact`  | `<project> <branch> [#N] <file>`       | A single artifact's contents.                                                                                               |
+    | `logs`      | `<project> <branch> [#N]`              | Full console text, verbatim (always plain text).                                                                            |
+    | `describe`  | `<project> <branch> [#N]`              | The build's Jenkinsfile / replay script (plain text).                                                                       |
+    | `tests`     | `<project> <branch> [#N]`              | JUnit test report.                                                                                                          |
+    | `changes`   | `<project> <branch> [#N]` `--find <commit>` | SCM commits in the build; with `--find`, which recent builds contain a commit (prefix match, `--max-builds` caps the scan). |
+    | `trigger`   | `<project> [<branch>]`                 | Trigger a build (see `-p` for parameters).                                                                                  |
+    | `cancel`    | `<project> <branch> #N`                | Cancel a running build.                                                                                                     |
+    | `dequeue`   | `<id>`                                 | Remove an item from the queue.                                                                                              |
 
 ### Output formats
 

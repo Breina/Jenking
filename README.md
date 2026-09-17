@@ -277,6 +277,52 @@ standard MCP server format:
 
 Add `"--read-only"` to the `args` array to expose only read tools.
 
+### Remote / shared server (HTTP)
+
+```sh
+jenking mcp --context my-jenkins --http 0.0.0.0:8808 --tls-cert cert.pem --tls-key key.pem
+```
+
+Serves MCP Streamable HTTP at `/mcp` (sessions) and `/mcp/stateless`, plus an
+unauthenticated `/healthz` probe. Each client authenticates with HTTP Basic
+credentials — its **own** Jenkins username and API token — which Jenking passes
+through to Jenkins, so every caller sees and does exactly what their Jenkins
+permissions allow. Callers get separate caches and session tables. Without
+`--tls-cert`/`--tls-key`, put a TLS-terminating proxy in front: Basic
+credentials are otherwise cleartext.
+
+```sh
+claude mcp add --transport http jenking https://ci-tools.example.com:8808/mcp \
+  --header "Authorization: Basic $(printf '%s' "$USER:$JENKINS_TOKEN" | base64)"
+```
+
+Over HTTP the log files `get_logs` writes live on the server host, so remote
+agents read logs with `search_logs` or `get_logs` line windows instead.
+
+### Server-side daemon (no config file)
+
+For a shared deployment (container, VM, Kubernetes), run the daemon. It reads
+no config file and stores no credentials — the Jenkins URL is all it needs, and
+every request must bring its caller's own Jenkins username and API token:
+
+```sh
+jenking mcp --daemon --url https://jenkins.example.com --http :8808
+# or entirely from the environment:
+JENKING_URL=https://jenkins.example.com JENKING_HTTP_ADDR=:8808 jenking mcp --daemon
+```
+
+| Flag | Environment | Default |
+|---|---|---|
+| `--url` | `JENKING_URL` | required |
+| `--http` | `JENKING_HTTP_ADDR` | `:8808` |
+| `--insecure` | `JENKING_INSECURE=true` | off |
+| `--cache-dir` | `JENKING_CACHE_DIR` | XDG cache dir |
+| — | `JENKING_LOG_LEVEL` | off |
+
+`--read-only` and `--tls-cert`/`--tls-key` work as above. With no service
+account, nothing warms a shared SCM index, so `resolve_job` finds only jobs the
+caller's own sessions have seen, and `get_queue_history` has no samples.
+
 ### Tools
 
 **Read-only** (always available): `list_jobs`, `list_views`, `list_builds`, `get_build`,
@@ -284,11 +330,12 @@ Add `"--read-only"` to the `args` array to expose only read tools.
 `get_queue_history`, `list_nodes`, `get_stages`, `get_test_report`,
 `list_artifacts`, `get_artifact`, `get_params`, `get_metadata`, `whoami`, `describe_pipeline`,
 `get_pipeline_symbols`, `lint_pipeline`, `list_inputs`, `get_logs`,
-`get_scan_log`, `list_scans`, `wait_for_build`, `wait_for_new_build`,
-`wait_for_log_match`.
+`search_logs`, `get_scan_log`, `list_scans`, `wait_for_build`, `wait_for_new_build`,
+`wait_for_log_match`, `get_status`, `get_queue_item`, `get_scm`, `resolve_job`.
 
 **Mutating** (omitted under `--read-only`, carry destructive/idempotent hints):
-`trigger_build` (with progress notifications while waiting), `replay_build`,
+`trigger_build` (with progress notifications while waiting), `rebuild_build`,
+`update_build`, `replay_build`,
 `cancel_build`, `dequeue`, `approve_input`, `reject_input`, `enable_job`,
 `disable_job`, `rescan`, `set_node_offline`, `set_node_online`.
 

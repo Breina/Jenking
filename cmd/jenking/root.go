@@ -67,6 +67,11 @@ func init() {
 		if cmd.Name() == "__complete" || cmd.Name() == "completion" || cmd.Name() == "version" {
 			return nil
 		}
+		// A server-side MCP daemon runs without a config file or stored
+		// credentials; every caller authenticates per request instead.
+		if daemon, _ := cmd.Flags().GetBool("daemon"); daemon && cmd.Name() == "mcp" {
+			return setupDaemonLogging()
+		}
 		return setupCmdState()
 	}
 

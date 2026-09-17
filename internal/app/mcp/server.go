@@ -23,7 +23,7 @@ Conventions:
 
 Which job is this repo? Run "git remote get-url origin" in the working copy,
 then call resolve_job with that URL to get the Jenkins job path(s). It reads a
-warm index (populated as builds run; no live scan), so a never-observed pipeline
+warm index (populated by the Jenking TUI as builds run; no live scan), so a never-observed pipeline
 may not resolve yet.
 
 Waiting for a build to finish: call wait_for_build — do NOT sleep and re-poll
@@ -53,10 +53,23 @@ Editing a Jenkinsfile: call get_pipeline_symbols to discover the exact steps,
 globals, and keywords available (resolved against the build's shared libraries)
 instead of guessing; edit; lint_pipeline to validate; then replay_build. Console
 logs from get_logs are written to a file — grep that file with your own shell
-rather than loading it into context.
+rather than loading it into context, or call search_logs to have the server
+return only the matching lines.
 
-Mutating tools (trigger_build, replay_build, cancel_build, approve_input, …)
-change Jenkins state. They may be absent when the server runs read-only.`
+Health: get_status answers "is Jenkins up and able to build" in one call.
+
+Mutating tools (trigger_build, rebuild_build, replay_build, update_build,
+cancel_build, approve_input, …) change Jenkins state. They may be absent when
+the server runs read-only.`
+
+// remoteInstructions is appended when the server is reached over HTTP, where
+// the files the handoff tools write live on the server host, not the client's.
+const remoteInstructions = `
+
+This server is remote: paths returned by get_logs, get_artifact, and
+get_scan_log are on the server host, not your machine, so you cannot grep them.
+Use search_logs for matching lines, or get_logs with start_line/max_lines (or
+max_bytes) for an inline window.`
 
 // Server wraps a configured go-sdk server bound to Jenking's usecase layer.
 type Server struct {
@@ -69,9 +82,14 @@ type Server struct {
 // reported in the MCP initialize handshake. When readOnly is set, the mutating
 // tools are not registered at all, so a read-only client cannot even see them.
 func NewServer(deps usecase.Deps, version string, readOnly bool) *Server {
+	return newServer(deps, version, readOnly, instructions)
+}
+
+// newServer is NewServer with the client instructions supplied by the transport.
+func newServer(deps usecase.Deps, version string, readOnly bool, instr string) *Server {
 	srv := mcp.NewServer(
 		&mcp.Implementation{Name: "jenking", Title: "Jenking (Jenkins)", Version: version},
-		&mcp.ServerOptions{Instructions: instructions},
+		&mcp.ServerOptions{Instructions: instr},
 	)
 	s := &Server{deps: deps, srv: srv, caps: newCapabilities()}
 	s.registerReadTools()

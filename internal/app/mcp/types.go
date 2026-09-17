@@ -102,6 +102,103 @@ type getLogsIn struct {
 	Stage       string `json:"stage,omitempty" jsonschema:"Restrict the log to this pipeline stage (case-insensitive) instead of the whole build"`
 	MaxBytes    int    `json:"max_bytes,omitempty" jsonschema:"If set (max 16384), also return this many bytes of the log inline from offset_bytes; otherwise only the file path is returned"`
 	OffsetBytes int    `json:"offset_bytes,omitempty" jsonschema:"Byte offset for the inline window (used with max_bytes)"`
+	StartLine   int    `json:"start_line,omitempty" jsonschema:"If set, also return log lines inline starting at this 1-based line (negative counts back from the end, -200 = the last 200 lines); lines are cleaned of Jenkins console annotations, unlike the raw byte window"`
+	MaxLines    int    `json:"max_lines,omitempty" jsonschema:"Lines to return inline with start_line (default 200, max 2000; also capped at 16384 bytes)"`
+}
+
+type searchLogsIn struct {
+	JobPath      string `json:"job_path" jsonschema:"Full slash-separated job path"`
+	BuildNumber  int    `json:"build_number,omitempty" jsonschema:"Build number; omit or 0 for the latest build"`
+	Stage        string `json:"stage,omitempty" jsonschema:"Search only this pipeline stage's log (case-insensitive)"`
+	Pattern      string `json:"pattern" jsonschema:"RE2 regular expression matched against each line; prefix (?i) for a case-insensitive match"`
+	MaxMatches   int    `json:"max_matches,omitempty" jsonschema:"Maximum matches to return (default 50, max 500); total_matches still counts every hit"`
+	ContextLines int    `json:"context_lines,omitempty" jsonschema:"Lines of context to include before and after each match (default 0, max 10)"`
+}
+
+type logMatchOut struct {
+	LineNumber int      `json:"line_number"`
+	Line       string   `json:"line"`
+	Before     []string `json:"before,omitempty"`
+	After      []string `json:"after,omitempty"`
+}
+
+type searchLogsOut struct {
+	BuildNumber  int           `json:"build_number"`
+	Matches      []logMatchOut `json:"matches"`
+	TotalMatches int           `json:"total_matches"`
+	Truncated    bool          `json:"truncated,omitempty" jsonschema:"true when more lines matched than max_matches"`
+	Complete     bool          `json:"complete" jsonschema:"false while the build is still writing its log"`
+	Path         string        `json:"path" jsonschema:"File the searched log was written to (on the server host)"`
+	SizeBytes    int64         `json:"size_bytes"`
+}
+
+type queueItemIn struct {
+	QueueID int64 `json:"queue_id" jsonschema:"Queue item id (from trigger_build, rebuild_build, or list_queue)"`
+}
+
+type queueItemOut struct {
+	Item        dto.QueueItem `json:"item"`
+	BuildNumber int           `json:"build_number,omitempty" jsonschema:"Set once the item has left the queue and started building"`
+}
+
+type statusOut struct {
+	Reachable     bool     `json:"reachable"`
+	Version       string   `json:"version,omitempty"`
+	Mode          string   `json:"mode,omitempty" jsonschema:"NORMAL or EXCLUSIVE (built-in node only runs label-restricted jobs)"`
+	QuietingDown  bool     `json:"quieting_down" jsonschema:"true when Jenkins is preparing for shutdown and starts no new builds"`
+	User          string   `json:"user,omitempty"`
+	LatencyMs     int64    `json:"latency_ms"`
+	Nodes         int      `json:"nodes"`
+	OfflineNodes  int      `json:"offline_nodes"`
+	Executors     int      `json:"executors"`
+	BusyExecutors int      `json:"busy_executors"`
+	QueueLength   int      `json:"queue_length"`
+	StuckItems    int      `json:"stuck_items"`
+	BlockedItems  int      `json:"blocked_items"`
+	Warnings      []string `json:"warnings,omitempty" jsonschema:"Parts of the snapshot that could not be read (e.g. missing permission)"`
+}
+
+type scmRevisionOut struct {
+	Revision   string   `json:"revision"`
+	Branches   []string `json:"branches,omitempty"`
+	RemoteURLs []string `json:"remote_urls,omitempty"`
+}
+
+type scmOut struct {
+	JobPath     string           `json:"job_path"`
+	SCMURL      string           `json:"scm_url,omitempty" jsonschema:"The job's SCM web URL (repository or branch/PR page), when the job has one"`
+	BuildNumber int              `json:"build_number,omitempty"`
+	Revisions   []scmRevisionOut `json:"revisions,omitempty" jsonschema:"Revisions the build checked out, one per repository"`
+}
+
+type updateBuildIn struct {
+	JobPath     string  `json:"job_path" jsonschema:"Full slash-separated job path"`
+	BuildNumber int     `json:"build_number" jsonschema:"Build number to update (required)"`
+	DisplayName *string `json:"display_name,omitempty" jsonschema:"New display name (non-empty); omit to leave unchanged"`
+	Description *string `json:"description,omitempty" jsonschema:"New description; empty string clears it; omit to leave unchanged"`
+}
+
+type updateBuildOut struct {
+	JobPath string    `json:"job_path"`
+	Build   dto.Build `json:"build"`
+}
+
+type rebuildIn struct {
+	JobPath         string            `json:"job_path" jsonschema:"Full slash-separated job path"`
+	BuildNumber     int               `json:"build_number,omitempty" jsonschema:"Build whose parameters to reuse; omit or 0 for the latest build"`
+	Params          map[string]string `json:"params,omitempty" jsonschema:"Parameter values to override, as name=value pairs"`
+	Wait            bool              `json:"wait,omitempty" jsonschema:"Block until the new build finishes (default false)"`
+	WaitTimeoutSecs int               `json:"wait_timeout_seconds,omitempty" jsonschema:"Max seconds to wait when wait is set (default 300, max 600)"`
+}
+
+type rebuildOut struct {
+	JobPath       string            `json:"job_path"`
+	FromBuild     int               `json:"from_build"`
+	QueueID       int64             `json:"queue_id"`
+	BuildNumber   int               `json:"build_number,omitempty"`
+	Status        string            `json:"status,omitempty"`
+	Params        map[string]string `json:"params,omitempty" jsonschema:"The parameters the new build was queued with"`
+	DroppedParams []string          `json:"dropped_params,omitempty" jsonschema:"Password parameters whose values Jenkins never exposes; the new build uses the job default unless overridden in params"`
 }
 
 type symbolsIn struct {
@@ -269,6 +366,9 @@ type getLogsOut struct {
 	SizeBytes   int64  `json:"size_bytes"`
 	Complete    bool   `json:"complete"`
 	Window      string `json:"window,omitempty"`
+	Lines       string `json:"lines,omitempty" jsonschema:"Inline log lines requested with start_line"`
+	FirstLine   int    `json:"first_line,omitempty" jsonschema:"1-based number of the first line in lines"`
+	TotalLines  int    `json:"total_lines,omitempty" jsonschema:"Total lines in the log, reported with start_line"`
 }
 
 type symbolsOut struct {

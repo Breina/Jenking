@@ -73,7 +73,15 @@ func buildAppConfig(
 // newDiskStore creates a DiskStore under the XDG cache dir for the given server URL.
 // Returns nil on failure so the app starts without persistence rather than crashing.
 func newDiskStore(serverURL string) *cache.DiskStore {
-	base := os.Getenv("XDG_CACHE_HOME")
+	return diskStoreIn("", serverURL)
+}
+
+// diskStoreIn creates a DiskStore for key under base (the XDG cache dir when
+// base is empty). Returns nil on failure, like newDiskStore.
+func diskStoreIn(base, key string) *cache.DiskStore {
+	if base == "" {
+		base = os.Getenv("XDG_CACHE_HOME")
+	}
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -82,7 +90,7 @@ func newDiskStore(serverURL string) *cache.DiskStore {
 		base = filepath.Join(home, ".cache")
 	}
 	h := fnv.New32a()
-	_, _ = h.Write([]byte(serverURL))
+	_, _ = h.Write([]byte(key))
 	dir := filepath.Join(base, "jenking", fmt.Sprintf("%08x", h.Sum32()))
 	disk, err := cache.NewDiskStore(dir)
 	if err != nil {

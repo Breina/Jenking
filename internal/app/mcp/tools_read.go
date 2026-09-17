@@ -23,6 +23,7 @@ func (s *Server) registerReadTools() {
 	s.registerPipelineTools()
 	s.registerWaitTools()
 	s.registerFollowTools()
+	s.registerStatusTools()
 }
 
 // addBuildScopedTool registers a tool taking a job path + optional build number,
@@ -135,7 +136,7 @@ func (s *Server) registerInfoTools() {
 
 	mcp.AddTool(s.srv, &mcp.Tool{
 		Name:        "resolve_job",
-		Description: "Resolve a git remote or SCM URL to the matching Jenkins job path(s) — the \"which job is this repo?\" lookup. Reads Jenking's warm SCM-URL index (populated as builds run; no live scan), so a repo whose pipeline has never been observed may return no matches. Results are ranked primary-branch-first.",
+		Description: "Resolve a git remote or SCM URL to the matching Jenkins job path(s) — the \"which job is this repo?\" lookup. Reads Jenking's warm SCM-URL index (populated by the Jenking TUI as builds run; no live scan), so a repo whose pipeline has never been observed may return no matches. Results are ranked primary-branch-first.",
 		Annotations: readOnlyHint(),
 	}, s.handleResolveJob)
 
@@ -341,9 +342,9 @@ func (s *Server) handleListRunning(ctx context.Context, _ *mcp.CallToolRequest, 
 }
 
 // handleResolveJob serves resolve_job: a cache-only reverse lookup from an SCM
-// URL / git remote to the matching Jenkins job path(s).
-func (s *Server) handleResolveJob(_ context.Context, _ *mcp.CallToolRequest, in resolveJobIn) (*mcp.CallToolResult, resolveJobOut, error) {
-	matches := s.deps.ResolveJob(in.ScmURL)
+// URL / git remote to the matching Jenkins job path(s) the caller can read.
+func (s *Server) handleResolveJob(ctx context.Context, _ *mcp.CallToolRequest, in resolveJobIn) (*mcp.CallToolResult, resolveJobOut, error) {
+	matches := s.deps.ResolveJobVisible(ctx, in.ScmURL)
 	return nil, resolveJobOut{Matches: mapSlice(matches, dto.ToJobMatch), Count: len(matches)}, nil
 }
 

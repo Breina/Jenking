@@ -93,12 +93,20 @@ func (e *HTTPError) HTTPStatusCode() int { return e.StatusCode }
 // doRequest builds and executes an HTTP request with Basic Auth.
 // The caller is responsible for closing the response body.
 func (c *Client) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	return c.doRequestType(ctx, method, path, body, "")
+}
+
+// doRequestType is doRequest with an explicit Content-Type for the body.
+func (c *Client) doRequestType(ctx context.Context, method, path string, body io.Reader, contentType string) (*http.Response, error) {
 	url := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.SetBasicAuth(c.username, c.token)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -142,3 +142,6 @@ Temporary Items
 # Integration test artifacts
 test/e2e/snapshots/
 test/e2e/bin/
+
+# Claude Code agent worktrees
+.claude/worktrees/

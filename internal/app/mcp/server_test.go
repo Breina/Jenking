@@ -95,6 +95,7 @@ func TestListTools(t *testing.T) {
 		"trigger_build", "replay_build", "cancel_build", "dequeue",
 		"approve_input", "reject_input", "enable_job", "disable_job",
 		"rescan", "set_node_offline", "set_node_online",
+		"get_status", "get_queue_item", "get_scm", "search_logs", "rebuild_build", "update_build",
 	}
 	got := map[string]bool{}
 	for _, tool := range res.Tools {

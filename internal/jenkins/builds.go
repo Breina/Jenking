@@ -290,10 +290,12 @@ func parseDurationText(s string) time.Duration {
 	return total + quantum/2
 }
 
-// cleanLogLine strips Jenkins ANSI hidden text blocks and remaining escape codes.
+// CleanLogLine strips Jenkins ANSI hidden text blocks and remaining escape codes.
 // The /logText/progressiveText endpoint embeds base64 metadata inside ANSI hidden
 // blocks (\x1b[8m...\x1b[0m) which must be fully removed for regex matching.
-func cleanLogLine(s string) string {
+// Exported because log text handed to callers (the MCP line windows and
+// searches) must be readable rather than padded with that metadata.
+func CleanLogLine(s string) string {
 	s = ansiHiddenBlockRe.ReplaceAllString(s, "")
 	s = ansiEscRe.ReplaceAllString(s, "")
 	return s
@@ -309,7 +311,7 @@ func ParseSkippedStages(logText string) map[string][]bool {
 	var currentIdx int
 	for _, line := range strings.Split(logText, "\n") {
 		line = strings.TrimRight(line, "\r")
-		line = cleanLogLine(line)
+		line = CleanLogLine(line)
 		if m := stageEnterRe.FindStringSubmatch(line); m != nil {
 			currentStage = m[1]
 			currentIdx = len(result[currentStage])

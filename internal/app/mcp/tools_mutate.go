@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Breina/Jenking/internal/app/dto"
 	"github.com/Breina/Jenking/internal/app/usecase"
 )
 
@@ -32,8 +33,73 @@ func destructiveHint() *mcp.ToolAnnotations {
 // server is not in --read-only mode, so these tools are simply absent otherwise.
 func (s *Server) registerMutateTools() {
 	s.registerBuildMutations()
+	s.registerBuildEdits()
 	s.registerInputMutations()
 	s.registerLifecycleMutations()
+}
+
+// waitContext bounds a trigger's wait and wires progress notifications into
+// opt. It is a no-op when opt.Wait is unset.
+func waitContext(ctx context.Context, req *mcp.CallToolRequest, opt *usecase.TriggerOptions, timeoutSecs int) (context.Context, context.CancelFunc) {
+	if !opt.Wait {
+		return ctx, func() {}
+	}
+	timeout := min(time.Duration(intOr(timeoutSecs, 300))*time.Second, maxTriggerWait)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	opt.Progress = progressReporter(ctx, req)
+	return ctx, cancel
+}
+
+// registerBuildEdits wires rebuild and build metadata edits.
+func (s *Server) registerBuildEdits() {
+	d := s.deps
+
+	mcp.AddTool(s.srv, &mcp.Tool{
+		Name: "rebuild_build",
+		Description: "Queue a new build with the same parameters as an earlier build (omit build_number for the latest); override individual values with params. " +
+			"Password parameters cannot be read back from Jenkins: they are listed in dropped_params and use the job default unless given in params. " +
+			"wait behaves as in trigger_build.",
+		Annotations: mutateHint(),
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in rebuildIn) (*mcp.CallToolResult, rebuildOut, error) {
+		in.JobPath = d.CanonicalJobPath(ctx, in.JobPath)
+		n, err := d.ResolveBuild(ctx, in.JobPath, in.BuildNumber)
+		if err != nil {
+			return nil, rebuildOut{}, err
+		}
+		opt := usecase.TriggerOptions{Params: in.Params, Wait: in.Wait}
+		ctx, cancel := waitContext(ctx, req, &opt, in.WaitTimeoutSecs)
+		defer cancel()
+		res, err := d.Rebuild(ctx, in.JobPath, n, opt)
+		if err != nil {
+			return nil, rebuildOut{}, err
+		}
+		return nil, rebuildOut{
+			JobPath:       res.JobPath,
+			FromBuild:     n,
+			QueueID:       res.QueueID,
+			BuildNumber:   res.BuildNumber,
+			Status:        string(res.Status),
+			Params:        res.Params,
+			DroppedParams: res.Dropped,
+		}, nil
+	})
+
+	mcp.AddTool(s.srv, &mcp.Tool{
+		Name: "update_build",
+		Description: "Set a build's display name and/or description, e.g. to label a release or note why it failed. " +
+			"Omitted fields are left unchanged; an empty description clears it. build_number is required.",
+		Annotations: mutateHint(),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in updateBuildIn) (*mcp.CallToolResult, updateBuildOut, error) {
+		in.JobPath = d.CanonicalJobPath(ctx, in.JobPath)
+		if in.BuildNumber <= 0 {
+			return nil, updateBuildOut{}, fmt.Errorf("build_number is required to update a build")
+		}
+		b, err := d.UpdateBuild(ctx, in.JobPath, in.BuildNumber, in.DisplayName, in.Description)
+		if err != nil {
+			return nil, updateBuildOut{}, err
+		}
+		return nil, updateBuildOut{JobPath: in.JobPath, Build: dto.ToBuild(b)}, nil
+	})
 }
 
 // registerBuildMutations wires trigger/replay/cancel/dequeue.
@@ -46,16 +112,8 @@ func (s *Server) registerBuildMutations() {
 		Annotations: mutateHint(),
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in triggerIn) (*mcp.CallToolResult, triggerOut, error) {
 		opt := usecase.TriggerOptions{Params: in.Params, Wait: in.Wait}
-		if in.Wait {
-			timeout := time.Duration(intOr(in.WaitTimeoutSecs, 300)) * time.Second
-			if timeout > maxTriggerWait {
-				timeout = maxTriggerWait
-			}
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, timeout)
-			defer cancel()
-			opt.Progress = progressReporter(ctx, req)
-		}
+		ctx, cancel := waitContext(ctx, req, &opt, in.WaitTimeoutSecs)
+		defer cancel()
 		res, err := d.Trigger(ctx, in.JobPath, opt)
 		if err != nil {
 			return nil, triggerOut{}, err

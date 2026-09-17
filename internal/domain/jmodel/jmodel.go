@@ -409,6 +409,26 @@ type JenkinsClient interface {
 	ProceedInput(ctx context.Context, jobPath string, buildNumber int, inputID string, params map[string]string) error
 	AbortInput(ctx context.Context, jobPath string, buildNumber int, inputID string) error
 	WhoAmI(ctx context.Context) (*User, error)
+	GetControllerStatus(ctx context.Context) (ControllerStatus, error)
+	GetBuildSCM(ctx context.Context, jobPath string, number int) ([]SCMRevision, error)
+	SetBuildDescription(ctx context.Context, jobPath string, number int, description string) error
+	ConfigureBuild(ctx context.Context, jobPath string, number int, displayName, description string) error
+}
+
+// ControllerStatus is the controller-level state reported by the root API.
+type ControllerStatus struct {
+	Version      string
+	Mode         string // NORMAL or EXCLUSIVE
+	QuietingDown bool
+}
+
+// SCMRevision is a source revision a build checked out, as recorded on the
+// build's actions by whichever SCM plugin is installed. A build that checks out
+// several repositories (e.g. shared libraries) carries one per repository.
+type SCMRevision struct {
+	Revision   string
+	Branches   []string
+	RemoteURLs []string
 }
 
 // ApplyPendingInputs marks any currently-running stage as PausedInput when

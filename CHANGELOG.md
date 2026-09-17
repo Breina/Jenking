@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-17
+
+#### Added
+- **MCP over HTTP** (`jenking mcp --http <addr>`): Streamable HTTP at `/mcp`
+  and `/mcp/stateless` with a `/healthz` probe and optional TLS. Clients pass
+  their own Jenkins username + API token as Basic credentials, which are
+  forwarded to Jenkins, so each caller acts with their own permissions.
+- **MCP daemon mode** (`jenking mcp --daemon --url <jenkins>`): server-side
+  deployment with no config file and no stored credentials; every request
+  authenticates. Configurable via `JENKING_URL`, `JENKING_HTTP_ADDR`,
+  `JENKING_INSECURE`, `JENKING_CACHE_DIR`, `JENKING_LOG_LEVEL`.
+- MCP tools `search_logs` (server-side regex over a build or stage log with
+  context lines), `get_status` (controller health, capacity, queue pressure),
+  `get_queue_item`, `get_scm` (job SCM URL plus the revisions a build checked
+  out), `rebuild_build` (re-run with the same parameters, with overrides), and
+  `update_build` (display name / description).
+- `get_logs` can return inline line windows (`start_line`/`max_lines`;
+  negative `start_line` reads the tail).
+
+#### Changed
+- `jenking mcp` no longer runs a background poll of running builds and the
+  queue; it only answers tool calls. `list_running` queries Jenkins directly,
+  and `resolve_job` reads the SCM index the TUI keeps warm on disk.
+
 ## [1.0.0] - 2026-09-06
 
 The first stable release. Highlights of the feature set at 1.0.0:
@@ -83,6 +107,7 @@ The first stable release. Highlights of the feature set at 1.0.0:
 
 - Initial alpha release.
 
-[Unreleased]: https://github.com/Breina/Jenking/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Breina/Jenking/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/Breina/Jenking/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Breina/Jenking/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/Breina/Jenking/releases/tag/v0.1.0

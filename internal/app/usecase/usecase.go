@@ -29,6 +29,10 @@ type Deps struct {
 	// against a build's trigger cause by the "mine" filter (empty disables the
 	// cause-substring fallback).
 	GitUsernames []string
+	// SharedIndex marks Store.RepoURLs as populated under other credentials
+	// (the multi-user HTTP server), so resolve results are re-checked against
+	// Client before being revealed.
+	SharedIndex bool
 }
 
 // Resolved is a concrete project + build target produced from CLI-style words.
