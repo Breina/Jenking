@@ -442,6 +442,29 @@ func (r *Registry) ApplyCompletion(k Key, b jmodel.Build) {
 	}
 }
 
+// Forget drops a build the controller reports as not found, so nothing keeps
+// asking for it. A later scan or running poll that sees it again re-adds it.
+func (r *Registry) Forget(k Key) {
+	r.mu.Lock()
+	_, existed := r.records[k]
+	delete(r.records, k)
+	delete(r.liveRunning, k)
+	snapshot := r.snapshotLocked()
+	onChange := r.onChange
+	persist := r.persist
+	r.mu.Unlock()
+
+	if !existed {
+		return
+	}
+	if onChange != nil {
+		onChange()
+	}
+	if persist != nil {
+		persist(snapshot)
+	}
+}
+
 // LoadFromDisk seeds the registry from persisted records. Any non-terminal
 // Running entries will be invisible to Query until a live IngestRunningSnapshot
 // confirms them (their LastSeenRunning is from a previous run and far in the

@@ -65,7 +65,7 @@ func (d Deps) waitForBuild(ctx context.Context, res TriggerResult, progress func
 	lastWhy := ""
 	for buildNum == 0 {
 		item, num, err := d.Client.GetQueueItem(ctx, res.QueueID)
-		if err != nil {
+		if err != nil && !jmodel.IsTransient(err) {
 			return res, fmt.Errorf("waiting for queue item %d: %w", res.QueueID, err)
 		}
 		if num > 0 {
@@ -87,7 +87,13 @@ func (d Deps) waitForBuild(ctx context.Context, res TriggerResult, progress func
 	for {
 		detail, err := d.Client.GetBuild(ctx, res.JobPath, buildNum)
 		if err != nil {
-			return res, fmt.Errorf("waiting for build %s #%d: %w", res.JobPath, buildNum, err)
+			if !jmodel.IsTransient(err) {
+				return res, fmt.Errorf("waiting for build %s #%d: %w", res.JobPath, buildNum, err)
+			}
+			if err := sleepCtx(ctx, buildPollInterval); err != nil {
+				return res, fmt.Errorf("waiting for build %s #%d: %w", res.JobPath, buildNum, err)
+			}
+			continue
 		}
 		status := detail.Status
 		if len(detail.PendingInputs) > 0 && !inputNotified {

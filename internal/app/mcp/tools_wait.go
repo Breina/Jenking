@@ -74,6 +74,11 @@ func (s *Server) registerWaitForBuild() {
 			}
 			latest, err := d.GetBuild(ctx, in.JobPath, n)
 			if err != nil {
+				// A controller that is restarting or overloaded is waited out
+				// (the client backs off meanwhile); anything else ends the wait.
+				if jmodel.IsTransient(err) {
+					continue
+				}
 				return nil, waitForBuildOut{}, err
 			}
 			detail = latest
@@ -129,7 +134,7 @@ func (s *Server) registerWaitForNewBuild() {
 		progressToken := req.Params.GetProgressToken()
 		for {
 			out, found, err := pollNewBuild(ctx, d, in.JobPath, baseline, start)
-			if err != nil {
+			if err != nil && !jmodel.IsTransient(err) {
 				return nil, waitForNewBuildOut{}, err
 			}
 			if found {

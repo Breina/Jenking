@@ -19,3 +19,14 @@ func StatusOf(err error) int {
 
 // IsNotFound reports whether err carries an HTTP 404 status.
 func IsNotFound(err error) bool { return StatusOf(err) == 404 }
+
+// IsTransient reports whether err means the controller is temporarily
+// unavailable (5xx, 429, unreachable, or the client is backing off), so a
+// waiting caller should keep waiting rather than fail.
+func IsTransient(err error) bool {
+	if s := StatusOf(err); s == 429 || s >= 500 {
+		return true
+	}
+	var t interface{ Transient() bool }
+	return errors.As(err, &t) && t.Transient()
+}

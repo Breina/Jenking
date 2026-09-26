@@ -128,7 +128,14 @@ func followLog(ctx context.Context, poll logPoller, save func(text string) (LogF
 	for {
 		text, complete, err := poll(ctx)
 		if err != nil {
-			return FollowResult{}, err
+			if !jmodel.IsTransient(err) || (!opt.Deadline.IsZero() && !time.Now().Before(opt.Deadline)) {
+				return FollowResult{}, err
+			}
+			// Controller temporarily unavailable: wait it out.
+			if err := sleepCtx(ctx, interval); err != nil {
+				return FollowResult{}, err
+			}
+			continue
 		}
 		res := FollowResult{Complete: complete}
 		if loc := opt.Pattern.FindStringIndex(text); loc != nil {

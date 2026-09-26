@@ -54,12 +54,13 @@ func NewClient(baseURL, username, token string, insecure bool) *Client {
 		}
 		return nil
 	}
-	httpClient := &http.Client{CheckRedirect: reattachAuth}
+	var base http.RoundTripper = http.DefaultTransport
 	if insecure {
-		httpClient.Transport = &http.Transport{
+		base = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
 		}
 	}
+	httpClient := &http.Client{CheckRedirect: reattachAuth, Transport: &governedTransport{base: base}}
 	return &Client{
 		baseURL:    baseURL,
 		username:   username,

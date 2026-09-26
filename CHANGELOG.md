@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-09-26
+
+#### Fixed
+- Jenking no longer hammers an unhealthy controller. All requests to a
+  controller share one per-process governor: at most 4 in flight, exponential
+  backoff with jitter on 5xx/429/unreachable (honouring `Retry-After`, a single
+  probe on recovery), and identical `/api/json` polls coalesced for 1s.
+- Build reconciliation is debounced per build (5s, backing off to 5 min while
+  it fails) instead of refetching on every render/query, and a build that
+  returns 404 is dropped from the registry rather than polled forever.
+- `wait_for_build`, `wait_for_new_build`, log follows and trigger-and-wait
+  keep waiting through a controller outage instead of failing the call.
+
 ## [1.0.1] - 2026-09-17
 
 #### Added
@@ -107,7 +120,8 @@ The first stable release. Highlights of the feature set at 1.0.0:
 
 - Initial alpha release.
 
-[Unreleased]: https://github.com/Breina/Jenking/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Breina/Jenking/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/Breina/Jenking/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Breina/Jenking/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Breina/Jenking/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/Breina/Jenking/releases/tag/v0.1.0

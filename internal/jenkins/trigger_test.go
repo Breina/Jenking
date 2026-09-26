@@ -100,6 +100,9 @@ func TestGetQueueItem(t *testing.T) {
 	}
 
 	body = started
+	// Identical API polls are coalesced for apiCacheTTL; drop the cached one so
+	// the second poll sees the new body without sleeping.
+	governorFor(hostOf(srv)).invalidate()
 	_, num, err = client.GetQueueItem(t.Context(), 42)
 	if err != nil {
 		t.Fatalf("GetQueueItem() error: %v", err)
